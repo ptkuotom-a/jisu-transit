@@ -156,13 +156,13 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // 同名站牌依實際位置分開（相距 > 40 公尺視為不同站牌），之後依距離標「同向／對向」
+    // 同名站牌依實際位置分開（相距 > 20 公尺視為不同站牌），之後依距離標「同向／對向」
     const groups = {}, list = [];
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
       const pos = byUID[it.StopUID] || byName[name] || null;
       const arr = groups[name] = groups[name] || [];
-      let g = pos ? arr.find(x => x.lat !== null && haversine(x.lat, x.lon, pos.lat, pos.lon) <= 40) : arr.find(x => x.lat === null);
+      let g = pos ? arr.find(x => x.lat !== null && haversine(x.lat, x.lon, pos.lat, pos.lon) <= 20) : arr.find(x => x.lat === null);
       if (!g) {
         g = { name, dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, routes: {} };
         arr.push(g); list.push(g);
@@ -180,9 +180,10 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
     let destMap = {};
     try { destMap = await loadRouteDest("main", eta.map(e => e.RouteUID)); } catch (e) {}
     for (const arr of Object.values(groups)) {
-      if (arr.length < 2) continue;
-      arr.sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
-      arr.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
+      const located = arr.filter(g => g.dist !== null);   // 沒有座標的不標同向／對向
+      if (located.length < 2) continue;
+      located.sort((a, b) => a.dist - b.dist);
+      located.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
