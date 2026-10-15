@@ -83,6 +83,7 @@ svg{display:block}
 /* stop block (bus tab) */
 .stop{background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:14px}
 .stop-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.side-tag{display:inline-block;vertical-align:middle;font-size:13px;font-weight:700;padding:2px 8px;border-radius:999px;margin-left:6px;background:var(--surface2)}.side-tag.same{color:var(--lime)}.side-tag.opp{color:var(--muted)}
 .stop-h .name{flex:1;font-size:21px;font-weight:800}
 .rrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--line)}
 .rrow:first-of-type{border-top:0}
@@ -319,11 +320,12 @@ function errBox() {
   return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
 }
 
+const sideTag = s => s.side ? ` <span class="side-tag ${s.side === '同向' ? 'same' : 'opp'}">${s.side}</span>` : '';
 function stopCard(s) {
   const routes = [...new Set(s.routes.map(r => r.route))].join('、');
   return `<button class="card" data-act="stop" data-i="${reg(s)}">
     <span class="badge">${I.walk}</span>
-    <span class="body"><div class="title">${esc(s.name)}</div><div class="desc">${esc(routes)}</div></span>
+    <span class="body"><div class="title">${esc(s.name)}${sideTag(s)}</div><div class="desc">${esc(routes)}</div></span>
     <span class="pill">${distTxt(s.dist)}</span><span class="chev">${I.chev}</span></button>`;
 }
 function bikeCard(b) {
@@ -414,7 +416,7 @@ function vBus() {
 function stopBlock(s, limit) {
   const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
   const shown = limit ? rs.slice(0, limit) : rs;
-  return `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}</span><span class="pill">${distTxt(s.dist)}</span></div>
+  return `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}${sideTag(s)}</span><span class="pill">${distTxt(s.dist)}</span></div>
     ${shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')}
     ${limit && rs.length > limit ? `<button class="more" data-act="stop" data-i="${reg(s)}">顯示全部 ${rs.length} 條路線</button>` : ''}</div>`;
 }
