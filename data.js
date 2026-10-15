@@ -478,13 +478,14 @@ async function metroBoard(get, st) {
     const trains = live.map(t => ({
       line: t.LineNO || t.LineID || lineOf(st.op, t.StationID),
       dest: zh(t.DestinationStaionName) || zh(t.DestinationStationName) || zh(t.TripHeadSign) || "?",
+      via: (/(順行|逆行)/.exec(zh(t.TripHeadSign) || "") || [])[1] || null,   // 環狀線（高雄輕軌）起訖同站，用順／逆行區分
       eta: typeof t.EstimateTime === "number" ? (isSec ? Math.floor(t.EstimateTime / 60) : t.EstimateTime) : null,
     })).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
     return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
   }
   let recs = [];
   try { recs = await get("route", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) {}
-  if (!recs.length) return { kind: "metro", live: false, trains: [], note: "這個系統沒有提供即時到站或時刻表資料" };
+  if (!recs.length) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
   const dayKey = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getDay()];
   let todays = recs.filter(r => r.ServiceDay && r.ServiceDay[dayKey] === true);
   if (!todays.length) todays = recs;
@@ -492,14 +493,19 @@ async function metroBoard(get, st) {
   for (const r of todays) {
     const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向 ${r.Direction ?? "?"}`;
     const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
-    const k = dest + "|" + line;
-    const set = byKey[k] = byKey[k] || { dest, line, times: new Set() };
+    const dir = r.Direction ?? null;
+    const k = dest + "|" + line + "|" + dir;
+    const set = byKey[k] = byKey[k] || { dest, line, dir, times: new Set() };
     for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (x) set.times.add(x); }
   }
   const trains = [];
+  // 同一終點有兩個方向（環狀線）時補上方向；高雄輕軌 Direction 0 = 逆行、1 = 順行（已對照即時看板）
+  const dirsOf = {};
+  for (const g of Object.values(byKey)) (dirsOf[g.dest + "|" + g.line] = dirsOf[g.dest + "|" + g.line] || new Set()).add(g.dir);
   for (const g of Object.values(byKey)) {
+    if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向 ${g.dir}`;
     [...g.times].map(x => ({ x, t: toMin(x) })).filter(o => o.t >= now).sort((a, b) => a.t - b.t).slice(0, 3)
-      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, line: g.line, eta: o.t - now }));
+      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, line: g.line, via: g.via || null, eta: o.t - now }));
   }
   trains.sort((a, b) => a.t - b.t);
   return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note: trains.length ? "這個系統沒有即時到站資料，以下為時刻表" : "今日班次已結束" };
@@ -518,7 +524,7 @@ function groupTrains(kind, trains) {
   } else {
     const m = new Map();
     for (const t of trains) {
-      const label = "往 " + (t.dest || "?");
+      const label = "往 " + (t.dest || "?") + (t.via ? `（${t.via}）` : "");
       if (!m.has(label)) m.set(label, { label, line: t.line || null, trains: [] });
       m.get(label).trains.push(t);
     }
