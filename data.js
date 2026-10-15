@@ -505,13 +505,13 @@ async function metroBoard(get, st) {
   return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note: trains.length ? "這個系統沒有即時到站資料，以下為時刻表" : "今日班次已結束" };
 }
 
-// 依方向分組：台鐵／高鐵用 Direction（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
+// 依方向分組：台鐵用 Direction（0 順行、1 逆行）；高鐵（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
 // 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多 8 班
 function groupTrains(kind, trains) {
   const per = 8, key = t => t.t ?? t.eta ?? 9999;
   let groups;
   if (kind === "tra" || kind === "thsr") {
-    groups = [{ label: "南下", dir: 0, trains: [] }, { label: "北上", dir: 1, trains: [] }];
+    groups = kind === "tra" ? [{ label: "順行", dir: 0, trains: [] }, { label: "逆行", dir: 1, trains: [] }] : [{ label: "南下", dir: 0, trains: [] }, { label: "北上", dir: 1, trains: [] }];
     const other = { label: "其他", dir: null, trains: [] };
     for (const t of trains) (t.dir === 0 || t.dir === "0" ? groups[0] : t.dir === 1 || t.dir === "1" ? groups[1] : other).trains.push(t);
     if (other.trains.length) groups.push(other);
