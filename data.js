@@ -30,11 +30,14 @@ function getProxy() {
 const r_ok = c => c >= 200 && c < 300;
 
 // ---------- GET（經代理；429 稍等重試） ----------
-// profile "main" 用第一組金鑰，"route" 用第二組（Worker 端沒設第二組會自動退回第一組）
+// profile "main" 用第一組金鑰，"route" 用第二組，"rail"（軌道）用第三組（Worker 端沒設會退回第一組）
+// 遇到 429 時 Worker 會先換另一組金鑰重試；仍然限流就丟出 RATE_MSG
+const RATE_MSG = "查詢太頻繁，請稍後再試";
+const isRate = e => !!(e && (e.rate || String(e.message || e).includes(RATE_MSG)));
 async function tdx(profile, url) {
   const proxy = getProxy();
   if (!proxy) throw new Error("NO_PROXY");
-  const target = proxy + url.slice(TDX_ORIGIN.length) + "&__k=" + (profile === "route" ? 2 : 1);
+  const target = proxy + url.slice(TDX_ORIGIN.length) + "&__k=" + (profile === "rail" ? 3 : profile === "route" ? 2 : 1);
   let last = "";
   for (let i = 0; i < 3; i++) {
     let code = 0, res;
@@ -51,6 +54,7 @@ async function tdx(profile, url) {
     if (code === 429 || code === 0 || code >= 500) { await sleep(1000 + i * 800); continue; }
     break;
   }
+  if (last.startsWith("(429)")) { const e = new Error(RATE_MSG); e.rate = true; throw e; }
   throw new Error("資料讀取失敗 " + last);
 }
 
@@ -406,10 +410,10 @@ async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
   const [tt, tlive, slive] = await Promise.allSettled([
-    get("route", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
-      .catch(() => get("route", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
-    get("route", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`),
-    get("route", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
+    get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
+      .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
+    get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`),
+    get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
   ]);
   const delay = {};
   for (const r of [tlive, slive]) {
@@ -431,7 +435,7 @@ async function traBoard(get, st) {
   } else if (slive.status === "fulfilled") {        // 時刻表失敗時，至少顯示即將進站的車
     rows = slive.value.map(t => ({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.ScheduledDepartureTime || t.ScheduledArrivalTime) }));
   } else {
-    throw (tt.reason || new Error("台鐵時刻表讀取失敗"));
+    throw (isRate(tt.reason) ? tt.reason : tt.reason || new Error("台鐵時刻表讀取失敗"));
   }
   const now = nowMin(), seen = new Set();
   rows = rows.filter(r => r.time && !seen.has(r.no) && seen.add(r.no))
@@ -444,8 +448,8 @@ async function traBoard(get, st) {
 async function thsrBoard(get, st) {
   const id = st.ids[0];
   const [tt, seats] = await Promise.allSettled([
-    get("route", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
-    get("route", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`),
+    get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
+    get("rail", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`),
   ]);
   const seatMap = {};
   let seatList = [];
@@ -471,7 +475,7 @@ async function thsrBoard(get, st) {
 async function metroBoard(get, st) {
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
-  try { live = await get("route", `${RAIL_BASE}/v2/Rail/Metro/LiveBoard/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) {}
+  try { live = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/LiveBoard/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
   if (live.length) {
     const vals = live.map(t => t.EstimateTime).filter(v => typeof v === "number");
     const isSec = vals.some(v => v > 120);
@@ -484,7 +488,7 @@ async function metroBoard(get, st) {
     return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
   }
   let recs = [];
-  try { recs = await get("route", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) {}
+  try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
   if (!recs.length) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
   const dayKey = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getDay()];
   let todays = recs.filter(r => r.ServiceDay && r.ServiceDay[dayKey] === true);
@@ -544,18 +548,19 @@ async function railBoard(get, st) {
 function loadRailCache() { try { const c = JSON.parse(localStorage.getItem(RAIL_KEY)); if (c && c.systems) return c; } catch (e) {} return { systems: {} }; }
 async function loadRailStations() {
   const cache = loadRailCache(), now = Date.now();
+  let rateErr = null;
   const todo = RAIL_SYSTEMS.filter(s => { const c = cache.systems[s.key]; return !(c && c.stations && c.stations.length && now - c.time < RAIL_STATION_DAYS * 86400000); });
   for (let i = 0; i < todo.length; i += 3) {           // 一次 3 個系統，避免限流
     await Promise.all(todo.slice(i, i + 3).map(async s => {
       try {
-        const st = mapRailStations(await tdx("main", s.url), s);
+        const st = mapRailStations(await tdx("rail", s.url), s);
         if (st.length) cache.systems[s.key] = { time: now, stations: st };
-      } catch (e) {}
+      } catch (e) { if (isRate(e)) rateErr = e; }
     }));
   }
   if (todo.length) { try { localStorage.setItem(RAIL_KEY, JSON.stringify(cache)); } catch (e) {} }
   const all = Object.values(cache.systems).flatMap(s => s.stations);
-  if (!all.length) throw new Error("車站清單讀取失敗");
+  if (!all.length) throw (rateErr || new Error("車站清單讀取失敗"));
   return all;
 }
 
@@ -567,9 +572,9 @@ async function loadRailExits() {
   for (let i = 0; i < todo.length; i += 3) {
     await Promise.all(todo.slice(i, i + 3).map(async s => {
       try {
-        const list = await tdx("main", `${RAIL_BASE}/v2/Rail/Metro/StationExit/${s.key}?%24top=3000&%24format=JSON`);
+        const list = await tdx("rail", `${RAIL_BASE}/v2/Rail/Metro/StationExit/${s.key}?%24top=3000&%24format=JSON`);
         cache.systems[s.key] = { time: now, exits: mapExits(list, s.key) };
-      } catch (e) { cache.systems[s.key] = { time: now - (RAIL_STATION_DAYS - 1) * 86400000, exits: {} }; } // 失敗的明天再試
+      } catch (e) { if (!isRate(e)) cache.systems[s.key] = { time: now - (RAIL_STATION_DAYS - 1) * 86400000, exits: {} }; } // 失敗的明天再試；限流的下次開啟就重試
     }));
   }
   if (todo.length) { try { localStorage.setItem(EXIT_KEY, JSON.stringify(cache)); } catch (e) {} }
