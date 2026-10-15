@@ -78,6 +78,7 @@ svg{display:block}
 .chips{display:flex;flex-wrap:wrap;gap:10px}
 .chip{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:12px 20px;font-size:18px;font-weight:600}
 .chip:active{background:var(--surface2)}
+.chip.chip-on{background:var(--lime);color:var(--ink);border-color:var(--lime)}
 
 /* stop block (bus tab) */
 .stop{background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:14px}
@@ -120,11 +121,11 @@ svg{display:block}
 
 /* tab bar */
 .tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));
-  width:min(560px,calc(100% - 28px));display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px;
+  width:min(560px,calc(100% - 28px));display:grid;grid-template-columns:repeat(5,1fr);gap:2px;padding:7px;
   background:rgba(32,34,33,.92);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);
   border:1px solid #2E302F;border-radius:40px;z-index:20}
-.tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 8px;border-radius:32px;color:#D9DBD7;font-size:13px;font-weight:600}
-.tab svg{width:30px;height:30px}
+.tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 8px;border-radius:32px;color:#D9DBD7;font-size:12px;font-weight:600;white-space:nowrap}
+.tab svg{width:28px;height:28px}
 .tab.on{background:#121413;color:var(--lime)}
 
 /* route page */
@@ -176,6 +177,24 @@ svg{display:block}
 .btn.sec2{background:var(--surface2);color:var(--text);padding:0 20px}
 .btn.sec2.on{color:var(--lime)}
 
+/* rail */
+.sys{display:inline-block;font-size:12px;font-weight:700;color:var(--ink);background:var(--lime);border-radius:999px;padding:2px 8px;margin-right:6px;vertical-align:2px}
+.lb{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:22px;padding:0 6px;border-radius:7px;font-size:12px;font-weight:800;color:#fff;background:#4A4D4A;margin-right:4px}
+.trow{display:flex;align-items:center;gap:14px;padding:14px 4px;border-top:1px solid var(--line)}
+.trow:first-child{border-top:0}
+.ttime{flex:none;width:62px;font-size:22px;font-weight:800;letter-spacing:-0.5px}
+.tmain{flex:1;min-width:0}
+.tmain .td{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tmain .tt{font-size:13px;color:var(--muted);margin-top:3px}
+.delay{flex:none;padding:6px 11px;border-radius:999px;background:var(--surface2);font-size:14px;font-weight:700}
+.delay.ok{color:var(--lime)} .delay.late{color:var(--warn)} .delay.na{color:var(--dim);font-weight:600}
+.seats{flex:none;text-align:right;font-size:13px;line-height:1.5;color:var(--muted)}
+.seats b.ok{color:var(--lime)} .seats b.few{color:var(--warn)} .seats b.full{color:var(--bad)}
+.board{background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:6px 16px;margin-top:6px}
+.rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
+.navbtn{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 14px;color:var(--lime);font-weight:700;font-size:14px}
+.navbtn svg{width:16px;height:16px}
+
 /* settings */
 .set{background:var(--surface);border:1px solid var(--line);border-radius:26px;padding:18px;margin-bottom:12px}
 .set h3{margin:0 0 4px;font-size:18px;font-weight:700}
@@ -224,6 +243,7 @@ const I = {
   star:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2.8 2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2 6.4 20.2l1.1-6.3L2.9 9.5l6.3-.9Z"/></svg>',
   starO:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 2.8 2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2 6.4 20.2l1.1-6.3L2.9 9.5l6.3-.9Z"/></svg>',
   nav:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.6 3.4 3.8 10.2c-.9.4-.8 1.7.1 1.9l6.6 1.4 1.4 6.6c.2.9 1.5 1 1.9.1l6.8-16.8Z"/></svg>',
+  train:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="15" rx="4"/><path d="M5 10h14M9 14h.01M15 14h.01M8.5 17.5 6 21.5M15.5 17.5l2.5 4M7.5 20h9"/></svg>',
   swap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></svg>',
   signal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>',
 };
@@ -231,7 +251,8 @@ const I = {
 /* ---------- state ---------- */
 const S = {
   tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0,
-  settings:{busR:300, bikeR:500, auto:30},
+  settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},
+  rail:null, railData:null, railLoading:false, railError:null, page:null,
   favs:{bus:[], bike:[]},
   route:null, routeData:null, routeLoading:false, routeError:null,
   sheet:null, proxy:{},
@@ -267,12 +288,12 @@ const isFavBike = uid => S.favs.bike.some(x => x.uid === uid);
 
 /* ---------- render ---------- */
 function renderChrome() {
-  const titles = { home:'極速通勤', bus:'公車', bike:'YouBike', settings:'設定' };
+  const titles = { home:'極速通勤', bus:'公車', bike:'YouBike', rail:'軌道', settings:'設定' };
   $('#title').textContent = titles[S.tab];
-  $('#titleIco').innerHTML = S.tab === 'bike' ? I.bike : S.tab === 'settings' ? '' : I.bus;
+  $('#titleIco').innerHTML = S.tab === 'bike' ? I.bike : S.tab === 'rail' ? I.train : S.tab === 'settings' ? '' : I.bus;
   $('#searchBar').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
-  const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['settings','設定',I.gear]];
+  const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
   $('#tabbar').innerHTML = tabs.map(([k,l,ic]) => `<button class="tab ${S.tab===k?'on':''}" data-act="tab" data-v="${k}" aria-label="${l}">${ic}<span>${l}</span></button>`).join('');
   renderStatus();
 }
@@ -286,7 +307,7 @@ function renderStatus() {
 }
 function render() {
   renderChrome();
-  const v = { home:vHome, bus:vBus, bike:vBike, settings:vSettings }[S.tab];
+  const v = { home:vHome, bus:vBus, bike:vBike, rail:vRail, settings:vSettings }[S.tab];
   $('#main').innerHTML = v();
 }
 const skel = n => Array.from({length:n}, () => '<div class="sk"></div>').join('');
@@ -321,8 +342,8 @@ function vHome() {
   h += `<div class="sec"><h2>離你最近</h2></div>`;
   if (!d) h += S.error ? '' : skel(3);
   else {
-    const mix = [...d.busStops.slice(0,2).map(s => ({k:'s', d:s.dist ?? 9e9, o:s})), ...d.bikes.slice(0,2).map(b => ({k:'b', d:b.dist, o:b}))].sort((a,b) => a.d - b.d);
-    h += mix.length ? mix.map(x => x.k === 's' ? stopCard(x.o) : bikeCard(x.o)).join('') : `<div class="note">附近 ${S.settings.busR} 公尺內沒有公車站牌、${S.settings.bikeR} 公尺內沒有 YouBike。到「設定」加大搜尋範圍。</div>`;
+    const mix = [...d.busStops.slice(0,2).map(s => ({k:'s', d:s.dist ?? 9e9, o:s})), ...d.bikes.slice(0,2).map(b => ({k:'b', d:b.dist, o:b})), ...(d.rail || []).filter(r => !r.far && !r.fallback).slice(0,1).map(r => ({k:'r', d:r.dist, o:r}))].sort((a,b) => a.d - b.d);
+    h += mix.length ? mix.map(x => x.k === 's' ? stopCard(x.o) : x.k === 'r' ? railCard(x.o) : bikeCard(x.o)).join('') : `<div class="note">附近 ${S.settings.busR} 公尺內沒有公車站牌、${S.settings.bikeR} 公尺內沒有 YouBike。到「設定」加大搜尋範圍。</div>`;
     const routes = uniqRoutes(d).slice(0, 10);
     if (routes.length) {
       h += `<div class="sec"><h2 style="font-size:20px;color:var(--muted);font-weight:700">附近路線</h2></div><div class="chips">` +
@@ -372,6 +393,8 @@ function vSearch() {
   if (routes.length) h += `<div class="sec"><h2>路線</h2></div><div class="chips">` + routes.map(r => `<button class="chip" data-act="route" data-i="${reg(r)}">${esc(r.route)} <span style="color:var(--muted);font-size:14px">${esc(r.stopName)}</span></button>`).join('') + `</div>`;
   if (stops.length) h += `<div class="sec"><h2>站牌</h2></div>` + stops.map(stopCard).join('');
   if (bikes.length) h += `<div class="sec"><h2>YouBike</h2></div>` + bikes.map(bikeCard).join('');
+  const rails = (d.rail || []).filter(r => (r.name + r.sys).toLowerCase().includes(q));
+  if (rails.length) h += `<div class="sec"><h2>車站</h2></div>` + rails.map(railCard).join('');
   if (!h) h = `<div class="note" style="margin-top:8px">附近找不到「${esc(S.q)}」。初版只搜尋目前位置附近的路線與站點，到「設定」加大範圍可以找到更多。</div>`;
   return h;
 }
@@ -425,20 +448,106 @@ function vSettings() {
   <div class="sec"><h2>搜尋範圍</h2></div>
   <div class="set"><h3>公車站牌</h3><p>以目前位置為中心，找這個距離內的站牌。</p>${seg('busR',[200,300,500,800],v=>v+'m')}</div>
   <div class="set"><h3>YouBike 站點</h3><p>範圍越大，站點越多，讀取也越久。</p>${seg('bikeR',[300,500,800,1000],v=>v+'m')}</div>
+  <div class="set"><h3>軌道：步行範圍</h3><p>只列出走得到的車站，距離以最近的出口計算。範圍內沒有車站時，改列最近的 2 站。</p>${seg('railWalk',[0.8,1.5,3],v=>v<1? v*1000+'m' : v+' 公里')}</div>
+  <div class="set"><h3>附上最近的台鐵、高鐵站</h3><p>即使不在步行範圍，也在清單最後列出最近的台鐵、高鐵站各一站。</p>${seg('railFar',[1,0],v=>v?'顯示':'不顯示')}</div>
+  <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
+    <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
   <div class="sec"><h2>自動更新</h2></div>
   <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+' 秒':'關閉')}</div>
   <div class="sec"><h2>關於</h2></div>
   <div class="note">極速通勤 v1　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
 }
 
+/* ---------- rail ---------- */
+const RAIL_SYS_OPTS = [['TRA','台鐵'],['THSR','高鐵'],['TRTC','北捷'],['TYMC','桃捷'],['TMRT','中捷'],['KRTC','高捷'],['NTDLRT','淡海輕軌'],['NTALRT','安坑輕軌'],['KLRT','高雄輕軌'],['NTMC','新北捷運']];
+const LINE_COLOR = {
+  TRTC:{BL:'#0070BD',R:'#E3002C',G:'#008659',O:'#F8B61C',BR:'#C48C31',Y:'#FFDB00',V:'#A1D884'},
+  KRTC:{R:'#E20B65',O:'#FAA73F',C:'#7CBD52'}, KLRT:{C:'#7CBD52'}, TYMC:{A:'#8246AF'},
+  NTDLRT:{V:'#E3002C'}, NTALRT:{K:'#C3B091'}, NTMC:{LB:'#77BC1F',Y:'#FFDB00'},
+};
+const darkText = c => ['#FFDB00','#F8B61C','#FAA73F','#A1D884','#C3B091','#77BC1F','#7CBD52'].includes(c);
+function lineBadge(op, l) {
+  if (!l) return '';
+  const c = (LINE_COLOR[op] || {})[l] || '#4A4D4A';
+  return `<span class="lb" style="background:${c};color:${darkText(c) ? '#111' : '#fff'}">${esc(l)}</span>`;
+}
+function railCard(r) {
+  return `<button class="card" data-act="rail" data-i="${reg(r)}">
+    <span class="badge">${I.train}</span>
+    <span class="body"><div class="title">${esc(r.name)}</div><div class="desc" style="white-space:normal"><span class="sys">${esc(r.sys)}</span>${(r.lines || []).map(l => lineBadge(r.op, l)).join('')}${r.exit ? `<span style="font-size:14px;white-space:nowrap;display:inline-block">${esc(/出口/.test(r.exit) ? r.exit : r.exit + ' 出口')}</span>` : ''}</div></span>
+    <span class="pill">${distTxt(r.dist)}</span><span class="chev">${I.chev}</span></button>`;
+}
+function vRail() {
+  if (S.error === 'NO_PROXY') return errBox();
+  const d = S.data; let h = errBox();
+  const w = S.settings.railWalk || 1.5;
+  h += `<div class="sec"><h2>附近車站</h2><span class="side">步行 ${w < 1 ? w * 1000 + 'm' : w + ' 公里'}內</span></div>`;
+  if (!d) return h + (S.error ? '' : skel(3));
+  if (d.railError) h += `<div class="note">車站資料暫時讀不到：${esc(d.railError)}</div>`;
+  const list = filterQ(d.rail || [], r => r.name + r.sys);
+  const near = list.filter(r => !r.far && !r.fallback), fb = list.filter(r => r.fallback), far = list.filter(r => r.far);
+  if (near.length) h += near.map(railCard).join('');
+  else if (fb.length) h += `<div class="note" style="margin-bottom:12px">步行範圍內沒有車站，以下是離你最近的車站。</div>` + fb.map(railCard).join('');
+  else if (!d.railError) h += `<div class="note">附近沒有符合條件的車站。到「設定」調整步行範圍或要顯示的系統。</div>`;
+  if (far.length) h += `<div class="sub" style="margin:22px 2px 10px;font-weight:700">最近的台鐵、高鐵</div>` + far.map(railCard).join('');
+  if (d.accuracy && d.accuracy > 150) h += `<div class="note" style="margin-top:14px">目前定位誤差約 ${d.accuracy} 公尺，車站排序可能不準。到 iPhone 設定開啟 Safari 網站的「精確位置」會更準。</div>`;
+  return h;
+}
+function openRail(r) {
+  S.page = 'rail'; S.rail = r; S.railData = null; S.railError = null;
+  const p = $('#routePage'); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
+  renderRail(); loadRail();
+}
+async function loadRail() {
+  if (!S.rail || S.railLoading) return;
+  S.railLoading = true;
+  const want = S.rail;
+  try { const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name }); if (S.rail === want) { S.railData = r; S.railError = null; } }
+  catch (e) { if (S.rail === want) S.railError = e.message; }
+  S.railLoading = false; renderRail();
+}
+function delayPill(t) {
+  if (t.delay == null) return `<span class="delay na">表定</span>`;
+  return t.delay > 0 ? `<span class="delay late">晚 ${t.delay} 分</span>` : `<span class="delay ok">準點</span>`;
+}
+const SEAT_TXT = { ok:'有位', few:'少量', full:'售完' };
+function trainRow(kind, op, t) {
+  if (kind === 'tra') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
+    <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.type || '')} ${esc(t.no)} 次</div></span>${delayPill(t)}</div>`;
+  if (kind === 'thsr') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
+    <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.no)} 次</div></span>
+    ${t.seats ? `<span class="seats">標準 <b class="${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b><br>商務 <b class="${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b></span>` : ''}</div>`;
+  if (t.time) return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
+    <span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div><div class="tt">${t.eta != null ? `${t.eta} 分後` : ''}</div></span></div>`;
+  const e = t.eta == null ? { t:'—', k:'off' } : t.eta <= 0 ? { t:'進站中', k:'hot' } : t.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${t.eta} 分`, k: t.eta <= 3 ? 'soon' : '' };
+  return `<div class="trow"><span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div></span><span class="eta ${e.k}">${e.t}</span></div>`;
+}
+function renderRail() {
+  const R = S.rail; if (!R || S.page !== 'rail') return;
+  const D = S.railData;
+  const big = R.name.length > 6 ? 'font-size:38px' : '';
+  let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
+    <div class="rhead"><h1 style="${big}">${esc(R.name)}</h1></div>
+    <div class="rsub"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}<span>${distTxt(R.dist)}${R.exit ? `（${esc(R.exit)}）` : ''}</span>
+      <span style="flex:1"></span><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div>
+    <div class="rmeta">${S.railLoading && !D ? '讀取列車資訊中…' : S.railError ? '讀取失敗：' + esc(S.railError) : D ? (D.kind === 'metro' && D.live ? '即時到站' : D.kind === 'thsr' ? '今日班次與剩餘座位' : '即將發車（含誤點）') : ''}</div></div>`;
+  if (!D) h += S.railError ? '' : skel(4);
+  else {
+    if (D.note) h += `<div class="note" style="margin-bottom:10px">${esc(D.note)}</div>`;
+    h += D.trains.length ? `<div class="board">${D.trains.map(t => trainRow(D.kind, R.op, t)).join('')}</div>` : `<div class="note">目前沒有即將發車的班次。</div>`;
+  }
+  $('#routePage').innerHTML = h + '</div>';
+}
+
 /* ---------- route page ---------- */
 function openRoute(r) {
+  S.page = 'route';
   S.route = { routeUID:r.routeUID, route:r.route, dirNum:r.dirNum ?? 0, stopUID:r.stopUID, stopName:r.stopName, dest:r.dest };
   S.routeData = null; S.routeError = null;
   const p = $('#routePage'); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderRoute(); loadRoute(true);
 }
-function closeRoute() { S.route = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
+function closeRoute() { S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
 async function loadRoute(scroll) {
   if (!S.route || S.routeLoading) return;
   S.routeLoading = true;
@@ -448,7 +557,7 @@ async function loadRoute(scroll) {
   if (scroll) { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); }
 }
 function renderRoute() {
-  const R = S.route; if (!R) return;
+  const R = S.route; if (!R || S.page !== 'route') return;
   const D = S.routeData;
   const dest = D?.dest?.[R.dirNum] ?? R.dest;
   const canSwap = D && D.dirs && D.dirs.length > 1;
@@ -506,7 +615,7 @@ async function refresh() {
   } catch (e) { S.error = e.message; }
   S.loading = false;
   if (S.tab === 'settings') { renderStatus(); return; }
-  if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = ({home:vHome,bus:vBus,bike:vBike,settings:vSettings})[S.tab](); renderStatus(); }
+  if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = ({home:vHome,bus:vBus,bike:vBike,rail:vRail,settings:vSettings})[S.tab](); renderStatus(); }
 }
 function saveState() { api('saveState', { settings:S.settings, favs:S.favs }).catch(() => {}); }
 
@@ -518,6 +627,7 @@ document.addEventListener('click', e => {
     case 'tab': S.tab = el.dataset.v; window.scrollTo(0,0); render(); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
+    case 'rail': closeSheetQuiet(); if (o) openRail(o); break;
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
     case 'stop': if (o) stopSheet(o); break;
     case 'bikeSheet': if (o) bikeSheet(o); break;
@@ -536,6 +646,11 @@ document.addEventListener('click', e => {
       saveState(); bikeSheet(o); render(); refreshFavsSoon(); break;
     }
     case 'saveProxy': saveProxy(); break;
+    case 'railSys': {
+      const cur = new Set(S.settings.railSys || []); const k = el.dataset.v;
+      cur.has(k) ? cur.delete(k) : cur.add(k);
+      S.settings.railSys = cur.size ? [...cur] : null; saveState(); render(); refreshFavsSoon(); break;
+    }
     case 'set': S.settings[el.dataset.k] = +el.dataset.v; saveState(); render(); if (el.dataset.k !== 'auto') refresh(); break;
   }
 });
@@ -554,14 +669,14 @@ async function saveProxy() {
 }
 function closeSheetQuiet() { if (!$('#sheetWrap').hidden) closeSheet(); }
 let favT; function refreshFavsSoon() { clearTimeout(favT); favT = setTimeout(refresh, 600); }
-$('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadRoute(false); });
-$('#q').addEventListener('input', e => { S.q = e.target.value; $('#qClear').hidden = !S.q; $('#main').innerHTML = ({home:vHome,bus:vBus,bike:vBike,settings:vSettings})[S.tab](); });
+$('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); });
+$('#q').addEventListener('input', e => { S.q = e.target.value; $('#qClear').hidden = !S.q; $('#main').innerHTML = ({home:vHome,bus:vBus,bike:vBike,rail:vRail,settings:vSettings})[S.tab](); });
 $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#q').value = ''; $('#qClear').hidden = true; render(); });
 
 setInterval(() => {
   if (!S.settings.auto || document.hidden) return;
   const due = Date.now() - S.lastFetch > S.settings.auto * 1000;
-  if (due && !S.loading) { refresh(); if (S.route) loadRoute(false); }
+  if (due && !S.loading) { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); }
 }, 2000);
 
 /* ---------- boot ---------- */
@@ -599,7 +714,25 @@ async function demo(action, p) {
     const favs = { bus:{}, bike:{} };
     for (const f of S.favs.bus) favs.bus[busKey(f)] = { sec:rnd(30, 900), status:0 };
     for (const f of S.favs.bike) favs.bike[f.uid] = { rent:rnd(0,10), ret:rnd(0,10), status:1 };
-    return { busStops, bikes, favs };
+    const rail = [
+      { op:'TRTC', sys:'北捷', kind:'metro', ids:['R19'], name:'石牌', lines:['R'], dist:760, exit:'1號出口', lat:25.1146, lon:121.5155 },
+      { op:'TRTC', sys:'北捷', kind:'metro', ids:['R20'], name:'明德', lines:['R'], dist:1420, exit:'2號出口', lat:25.1097, lon:121.5189 },
+      { op:'TRA', sys:'台鐵', kind:'tra', ids:['1000'], name:'臺北', lines:[], dist:9800, far:true, lat:25.0478, lon:121.5170 },
+      { op:'THSR', sys:'高鐵', kind:'thsr', ids:['1000'], name:'台北', lines:[], dist:9850, far:true, lat:25.0478, lon:121.5170 },
+    ];
+    return { busStops, bikes, favs, rail };
+  }
+  if (action === 'railBoard') {
+    const now = new Date(), base = now.getHours() * 60 + now.getMinutes();
+    const t = m => { const x = (base + m) % 1440; return String(Math.floor(x / 60)).padStart(2,'0') + ':' + String(x % 60).padStart(2,'0'); };
+    if (p.kind === 'tra') return { kind:'tra', live:true, note:null, trains:[
+      { time:t(4), type:'區間', no:'1187', dest:'基隆', delay:0 }, { time:t(9), type:'自強', no:'152', dest:'七堵', delay:6 },
+      { time:t(12), type:'區間快', no:'4012', dest:'新竹', delay:0 }, { time:t(17), type:'莒光', no:'611', dest:'臺東', delay:null },
+      { time:t(23), type:'區間', no:'1191', dest:'蘇澳', delay:2 }, { time:t(31), type:'自強', no:'418', dest:'花蓮', delay:0 } ] };
+    if (p.kind === 'thsr') return { kind:'thsr', live:true, note:null, trains:[
+      { time:t(6), no:'615', dest:'左營', seats:{ std:'ok', biz:'few' } }, { time:t(16), no:'1217', dest:'左營', seats:{ std:'few', biz:'ok' } },
+      { time:t(26), no:'0816', dest:'南港', seats:{ std:'ok', biz:'ok' } }, { time:t(36), no:'121', dest:'左營', seats:{ std:'full', biz:'few' } } ] };
+    return { kind:'metro', live:true, note:null, trains:[ { line:'R', dest:'淡水', eta:1 }, { line:'R', dest:'象山', eta:3 }, { line:'R', dest:'北投', eta:7 }, { line:'R', dest:'大安', eta:9 } ] };
   }
   if (action === 'route') {
     const names = ['捷運石牌站','石牌國小','石牌路一段','振興醫院','榮總(石牌路)','榮總院區','榮光新村(榮總東院)','陽明大學','東華街口','天母國中','天母圓環','中山北路七段','天母運動公園','德行東路','芝山岩','雨農國小','士林區行政中心','捷運士林站','捷運劍潭站','圓山','民權西路口','中山國小','南京東路','市政府'];

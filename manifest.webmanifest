@@ -1,7 +1,7 @@
 {
   "name": "極速通勤",
   "short_name": "極速通勤",
-  "description": "附近公車即時到站與 YouBike 車位",
+  "description": "附近公車、YouBike、台鐵高鐵捷運即時資訊",
   "lang": "zh-Hant-TW",
   "start_url": "./",
   "scope": "./",
