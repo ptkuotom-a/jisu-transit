@@ -423,13 +423,13 @@ async function traBoard(get, st) {
       const list = s.TimeTables || s.Timetables || s.StopTimes;
       if (s.DailyTrainInfo) {                       // v2 格式
         const i = s.DailyTrainInfo, p = (s.StopTimes || [])[0] || {};
-        rows.push({ no: String(i.TrainNo), type: shortType(zh(i.TrainTypeName)), dest: zh(i.EndingStationName), time: hm(p.DepartureTime || p.ArrivalTime) });
+        rows.push({ no: String(i.TrainNo), type: shortType(zh(i.TrainTypeName)), dest: zh(i.EndingStationName), dir: i.Direction ?? s.Direction, time: hm(p.DepartureTime || p.ArrivalTime) });
       } else if (Array.isArray(list)) {             // v3 格式（每個方向一包）
-        for (const t of list) rows.push({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.DestinationStationName) || zh(t.EndingStationName), time: hm(t.DepartureTime || t.ArrivalTime) });
+        for (const t of list) rows.push({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.DestinationStationName) || zh(t.EndingStationName), dir: t.Direction ?? s.Direction, time: hm(t.DepartureTime || t.ArrivalTime) });
       }
     }
   } else if (slive.status === "fulfilled") {        // 時刻表失敗時，至少顯示即將進站的車
-    rows = slive.value.map(t => ({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.EndingStationName), time: hm(t.ScheduledDepartureTime || t.ScheduledArrivalTime) }));
+    rows = slive.value.map(t => ({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.ScheduledDepartureTime || t.ScheduledArrivalTime) }));
   } else {
     throw (tt.reason || new Error("台鐵時刻表讀取失敗"));
   }
@@ -437,8 +437,8 @@ async function traBoard(get, st) {
   rows = rows.filter(r => r.time && !seen.has(r.no) && seen.add(r.no))
     .map(r => ({ ...r, delay: delay[r.no] ?? null, t: toMin(r.time) }))
     .filter(r => r.t + (r.delay || 0) >= now - 1)
-    .sort((a, b) => a.t - b.t).slice(0, 16);
-  return { kind: "tra", live, trains: rows, note: live ? null : "誤點資訊暫時讀不到，只顯示表定時間" };
+    .sort((a, b) => a.t - b.t).slice(0, 24);
+  return { kind: "tra", live, trains: rows, groups: groupTrains("tra", rows), note: live ? null : "誤點資訊暫時讀不到，只顯示表定時間" };
 }
 
 async function thsrBoard(get, st) {
@@ -456,16 +456,16 @@ async function thsrBoard(get, st) {
   }
   let rows;
   if (tt.status === "fulfilled" && tt.value.length) {
-    rows = tt.value.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), time: hm(t.DepartureTime) }));
+    rows = tt.value.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
   } else if (seatList.length) {
-    rows = seatList.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), time: hm(t.DepartureTime) }));
+    rows = seatList.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
   } else {
     throw (tt.reason || new Error("高鐵時刻表讀取失敗"));
   }
   const now = nowMin();
   rows = rows.filter(r => r.time).map(r => ({ ...r, t: toMin(r.time), seats: seatMap[r.no] || null }))
-    .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t).slice(0, 16);
-  return { kind: "thsr", live: seats.status === "fulfilled", trains: rows, note: seats.status === "fulfilled" ? null : "座位資訊暫時讀不到" };
+    .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t).slice(0, 24);
+  return { kind: "thsr", live: seats.status === "fulfilled", trains: rows, groups: groupTrains("thsr", rows), note: seats.status === "fulfilled" ? null : "座位資訊暫時讀不到" };
 }
 
 async function metroBoard(get, st) {
@@ -480,7 +480,7 @@ async function metroBoard(get, st) {
       dest: zh(t.DestinationStaionName) || zh(t.DestinationStationName) || zh(t.TripHeadSign) || "?",
       eta: typeof t.EstimateTime === "number" ? (isSec ? Math.floor(t.EstimateTime / 60) : t.EstimateTime) : null,
     })).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains, note: null };
+    return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
   }
   let recs = [];
   try { recs = await get("route", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) {}
@@ -502,7 +502,31 @@ async function metroBoard(get, st) {
       .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, line: g.line, eta: o.t - now }));
   }
   trains.sort((a, b) => a.t - b.t);
-  return { kind: "metro", live: false, trains, note: trains.length ? "這個系統沒有即時到站資料，以下為時刻表" : "今日班次已結束" };
+  return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note: trains.length ? "這個系統沒有即時到站資料，以下為時刻表" : "今日班次已結束" };
+}
+
+// 依方向分組：台鐵／高鐵用 Direction（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
+// 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多 8 班
+function groupTrains(kind, trains) {
+  const per = 8, key = t => t.t ?? t.eta ?? 9999;
+  let groups;
+  if (kind === "tra" || kind === "thsr") {
+    groups = [{ label: "南下", dir: 0, trains: [] }, { label: "北上", dir: 1, trains: [] }];
+    const other = { label: "其他", dir: null, trains: [] };
+    for (const t of trains) (t.dir === 0 || t.dir === "0" ? groups[0] : t.dir === 1 || t.dir === "1" ? groups[1] : other).trains.push(t);
+    if (other.trains.length) groups.push(other);
+  } else {
+    const m = new Map();
+    for (const t of trains) {
+      const label = "往 " + (t.dest || "?");
+      if (!m.has(label)) m.set(label, { label, line: t.line || null, trains: [] });
+      m.get(label).trains.push(t);
+    }
+    groups = [...m.values()];
+  }
+  for (const g of groups) g.trains = g.trains.slice().sort((a, b) => key(a) - key(b)).slice(0, per);
+  const first = g => g.trains.length ? key(g.trains[0]) : Infinity;
+  return kind === "metro" ? groups.sort((a, b) => first(a) - first(b)) : groups.sort((a, b) => (a.trains.length ? 0 : 1) - (b.trains.length ? 0 : 1));
 }
 
 async function railBoard(get, st) {
