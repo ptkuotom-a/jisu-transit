@@ -218,6 +218,9 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .seg button.on{background:var(--lime);color:var(--ink)}
 
 @media (prefers-reduced-motion: reduce){ .page,.sheet,.scrim{transition:none} .refresh.spin svg,.sk::after{animation:none} }
+.toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translate(-50%,-20px);opacity:0;z-index:60;background:var(--lime);color:var(--ink);font-weight:700;font-size:15px;padding:10px 18px;border-radius:999px;transition:opacity .3s,transform .3s;pointer-events:none}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+@media (prefers-reduced-motion: reduce){ .toast{transition:none} }
 </style>
 </head>
 <body>
@@ -480,7 +483,7 @@ function vSettings() {
   <div class="sec"><h2>自動更新</h2></div>
   <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+' 秒':'關閉')}</div>
   <div class="sec"><h2>關於</h2></div>
-  <div class="note">極速通勤 v1　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
+  <div class="note">極速通勤 ${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
 }
 
 /* ---------- rail ---------- */
@@ -828,7 +831,43 @@ async function boot() {
   render(); refresh();
 }
 boot();
-if ('serviceWorker' in navigator && !DEMO) navigator.serviceWorker.register('sw.js').catch(() => {});
+/* ---------- 更新：iOS 主畫面 app 只會被喚醒、不會重新載入，所以要主動檢查並自動重新整理 ---------- */
+let touching = false, pendingReload = false;
+addEventListener('touchstart', () => { touching = true; }, { passive:true, capture:true });
+addEventListener('touchend', () => { touching = false; if (pendingReload) doReload(); }, { passive:true, capture:true });
+function doReload() {
+  if (touching) { pendingReload = true; return; }
+  if (sessionStorage.getItem('jisu_reloaded') === '1') return;   // 防止重新整理迴圈
+  sessionStorage.setItem('jisu_reloaded', '1');
+  location.reload();
+}
+function askVersion() {
+  const c = navigator.serviceWorker && navigator.serviceWorker.controller;
+  if (c) c.postMessage('version');
+}
+function toast(msg) {
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => t.classList.add('show'), 30); setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 400); }, 2600);
+}
+if ('serviceWorker' in navigator && !DEMO) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache:'none' }).then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { sessionStorage.removeItem('jisu_reloaded'); reg.update().catch(() => {}); } });
+    addEventListener('pageshow', e => { if (e.persisted) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) doReload(); else askVersion(); });
+  navigator.serviceWorker.addEventListener('message', e => {
+    const v = e.data && e.data.version; if (!v) return;
+    S.version = v.replace(/^jisu-/, '');
+    const old = localStorage.getItem('jisu_ver');
+    if (old && old !== v) toast('已更新至 ' + S.version);
+    localStorage.setItem('jisu_ver', v);
+    if (S.tab === 'settings') render();
+  });
+  askVersion();
+  setTimeout(() => sessionStorage.removeItem('jisu_reloaded'), 10000);
+}
 
 /* ---------- demo data (preview only) ---------- */
 const DEMO_FAV = { bus:[], bike:[] };
