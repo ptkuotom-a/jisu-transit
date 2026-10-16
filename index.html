@@ -441,7 +441,7 @@ function natSearch(q) {
   if (DEMO) return '';
   if (!S.busIdx) {
     if (!S.busIdxLoading) { S.busIdxLoading = true; api('busIndex').then(j => { S.busIdx = j; }).catch(() => {}).finally(() => { S.busIdxLoading = false; if (S.q) render(); }); }
-    return `<div class="sec"><h2>全台路線</h2></div><div class="note">第一次搜尋，正在下載全台公車路線（約 150 KB，之後一週內免下載）…</div>`;
+    return `<div class="sec"><h2>全台路線</h2></div><div class="note">第一次搜尋，正在下載全台公車路線（約 150 KB，之後 30 天內免下載）…</div>`;
   }
   const near = new Set((S.data?.busStops || []).flatMap(s => s.routes.map(r => r.routeUID)));
   const score = n => { n = n.toLowerCase(); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : 9; };

@@ -720,8 +720,8 @@ function loadState() {
   return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
 }
 
-// 全台公車路線索引：各縣市 + 公路客運，一週更新一次；失敗的縣市下次再補
-const IDX_KEY = "jisu_bus_idx", IDX_DAYS = 7;
+// 全台公車路線索引：各縣市 + 公路客運，30 天更新一次；失敗的縣市下次再補
+const IDX_KEY = "jisu_bus_idx", IDX_DAYS = 30;
 let idxLoading = null;
 async function busIndex() {
   let c = null;
