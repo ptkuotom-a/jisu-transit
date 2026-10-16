@@ -616,8 +616,9 @@ function groupTrains(kind, trains) {
     const m = new Map();
     for (const t of trains) {
       const label = "往 " + (t.dest || "?") + (t.via ? `（${t.via}）` : "");
-      if (!m.has(label)) m.set(label, { label, line: t.line || null, trains: [] });
-      m.get(label).trains.push(t);
+      const k = (t.line || "") + "|" + label;   // 同終點不同路線（如往南港展覽館的板南線／文湖線）分開
+      if (!m.has(k)) m.set(k, { label, line: t.line || null, trains: [] });
+      m.get(k).trains.push(t);
     }
     groups = [...m.values()];
   }

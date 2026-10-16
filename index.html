@@ -201,6 +201,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .seats{flex:none;text-align:right;font-size:13px;line-height:1.5;color:var(--muted)}
 .seats b.ok{color:var(--lime)} .seats b.few{color:var(--warn)} .seats b.full{color:var(--bad)}
 .board{background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:6px 16px;margin-top:6px}
+.lsec{display:flex;align-items:center;gap:10px;margin:22px 4px 2px;font-size:19px;font-weight:800}.lsec:first-of-type{margin-top:8px}.lsec .lb{font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
 .rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
 .navbtn{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 14px;color:var(--lime);font-weight:700;font-size:14px}
@@ -550,6 +551,23 @@ function trainRow(kind, op, t) {
   const e = t.eta == null ? { t: t.label || '—', k:'off' } : t.eta <= 0 ? { t:'進站中', k:'hot' } : t.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${t.eta} 分`, k: t.eta <= 3 ? 'soon' : '' };
   return `<div class="trow"><span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div></span><span class="eta ${e.k}">${e.t}</span></div>`;
 }
+const LINE_NAME = {
+  TRTC:{BL:'板南線',R:'淡水信義線',G:'松山新店線',O:'中和新蘆線',BR:'文湖線',Y:'環狀線'},
+  NTMC:{Y:'環狀線',LB:'三鶯線'}, KRTC:{R:'紅線',O:'橘線',C:'環狀輕軌'}, KLRT:{C:'環狀輕軌'},
+  TYMC:{A:'機場線'}, TMRT:{G:'綠線'}, NTDLRT:{V:'淡海輕軌'}, NTALRT:{K:'安坑輕軌'},
+};
+// 捷運看板：先依路線分區，再列「往 X」
+function railByLine(R, D, G) {
+  const order = [...(R.lines || [])], sec = new Map();
+  for (const g of G) { const l = g.line || ''; if (!sec.has(l)) sec.set(l, []); sec.get(l).push(g); }
+  const rank = l => { const i = order.indexOf(l); return i < 0 ? 100 + l.charCodeAt(0) : i; };
+  return [...sec.entries()].sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1) || rank(a[0]) - rank(b[0])).map(([l, gs]) => {
+    const op = (LINE_COLOR[R.op] || {})[l] ? R.op : (LINE_COLOR.NTMC[l] ? 'NTMC' : R.op);
+    const name = (LINE_NAME[R.op] || {})[l] || (LINE_NAME.NTMC[l] && R.op === 'TRTC' ? LINE_NAME.NTMC[l] : '') || (l ? l + ' 線' : '其他');
+    return `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` +
+      `<div class="board">${gs.flatMap(g => g.trains).map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</div>`;
+  }).join('');
+}
 function renderRail() {
   const R = S.rail; if (!R || S.page !== 'rail') return;
   const D = S.railData;
@@ -563,7 +581,8 @@ function renderRail() {
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
     const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
-    h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
+    if (D.kind === 'metro' && G.length) h += railByLine(R, D, G);
+    else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
   }
   $('#routePage').innerHTML = h + '</div>';
 }
