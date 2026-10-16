@@ -626,7 +626,52 @@ function groupTrains(kind, trains) {
   return kind === "metro" ? groups.sort((a, b) => first(a) - first(b)) : groups.sort((a, b) => (a.trains.length ? 0 : 1) - (b.trains.length ? 0 : 1));
 }
 
+// ---------- 台中捷運：TDX 沒有即時與站別時刻表，用班距＋首末班推估 ----------
+const TMRT_KEY = "jisu_tmrt";
+async function loadTmrt(get) {
+  try { const c = JSON.parse(localStorage.getItem(TMRT_KEY)); if (c && Date.now() - c.time < 86400000 && c.freq && c.fl) return c; } catch (e) {}
+  const [freq, fl] = await Promise.all([
+    get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`),
+    get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/TMRT?%24format=JSON`),
+  ]);
+  const c = { time: Date.now(), freq, fl };
+  try { localStorage.setItem(TMRT_KEY, JSON.stringify(c)); } catch (e) {}
+  return c;
+}
+const DAY_KEYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+async function tmrtBoard(get, st) {
+  const { freq, fl } = await loadTmrt(get);
+  const d = new Date();
+  let now = nowMin(), day = d.getDay();
+  if (now < 180) { now += 1440; day = (day + 6) % 7; }             // 凌晨仍算前一個營運日
+  const dayKey = DAY_KEYS[day];
+  const plan = freq.find(f => f.ServiceDay && f.ServiceDay[dayKey]) || freq[0];
+  const bands = ((plan && plan.Headways) || []).map(h => ({ s: toMin(h.StartTime), e: h.EndTime === "24:00" ? 1440 : toMin(h.EndTime), hw: h.MinHeadwayMins || h.MaxHeadwayMins }));
+  const hwAt = t => { const x = t % 1440 < 180 ? 1439 : t; const b = bands.find(b => x >= b.s && x < b.e); return b ? b.hw : (bands.length ? bands[bands.length - 1].hw : 10); };
+  const clock = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+  const recs = fl.filter(r => st.ids.includes(r.StationID) && (!r.ServiceDay || r.ServiceDay[dayKey] !== false));
+  if (!recs.length) return { kind: "metro", live: false, trains: [], groups: [], note: "查無台中捷運首末班資料" };
+  const trains = [], lines = [];
+  let closed = true, nextFirst = null;
+  for (const r of recs) {
+    const dest = zh(r.DestinationStationName) || "?";
+    const first = toMin(r.FirstTrainTime);
+    let last = toMin(r.LastTrainTime); if (last < 180) last += 1440;
+    nextFirst = nextFirst === null ? first : Math.min(nextFirst, first);
+    const up = [];
+    for (let t = first; t <= last && up.length < 3; t += hwAt(t)) if (t >= now) up.push(t);
+    if (up.length < 3 && last >= now && !up.includes(last)) up.push(last);   // 末班車一定列入
+    if (up.length) closed = false;
+    up.forEach(t => trains.push({ time: clock(t), t, eta: t - now, dest, line: r.LineID || "G", via: null }));
+    lines.push(`往 ${dest}：${up.length ? `約每 ${hwAt(now)} 分一班，` : "今日已收班，"}首班 ${hm(r.FirstTrainTime)}、末班 ${hm(r.LastTrainTime)}`);
+  }
+  trains.sort((a, b) => a.t - b.t);
+  const note = (closed ? `今日已收班／明日首班 ${clock(nextFirst)}\n` : "預估（依班距推算，非即時）\n") + lines.join("\n");
+  return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note };
+}
+
 async function railBoard(get, st) {
+  if (st.op === "TMRT") return tmrtBoard(get, st);
   if (st.kind === "tra" || st.op === "TRA") return traBoard(get, st);
   if (st.kind === "thsr" || st.op === "THSR") return thsrBoard(get, st);
   return metroBoard(get, st);

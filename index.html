@@ -558,7 +558,7 @@ function renderRail() {
     <div class="rmeta">${S.railLoading && !D ? '讀取列車資訊中…' : S.railError ? '讀取失敗：' + esc(S.railError) : D ? (D.kind === 'metro' && D.live ? '即時到站' : D.kind === 'thsr' ? '今日班次與剩餘座位' : '即將發車（含誤點）') : ''}</div></div>`;
   if (!D) h += S.railError ? '' : skel(4);
   else {
-    if (D.note) h += `<div class="note" style="margin-bottom:10px">${esc(D.note)}</div>`;
+    if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
     const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
     h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
   }
