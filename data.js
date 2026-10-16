@@ -389,7 +389,7 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
   for (const [k, g] of Object.entries(groups)) {
     if (g.op !== "NTMC") continue;
     const t = g.ids.map(i => trtcBy[TRTC_XFER[i]]).find(Boolean);
-    if (!t) continue;
+    if (!t || t.name !== g.name) continue;
     for (const i of g.ids) if (!t.ids.includes(i)) t.ids.push(i);
     for (const l of g.lines) if (!t.lines.includes(l)) t.lines.push(l);
     if (!/新北捷運/.test(t.sys)) t.sys = t.sys + "・新北捷運";
@@ -499,7 +499,8 @@ async function thsrBoard(get, st) {
 // 北捷即時到站（經 Worker /trtc-eta，來源 Bus+）；失敗或沒資料回傳 null
 const TRTC_ROUTE = [["淡水信義", "R"], ["松山新店", "G"], ["中和新蘆", "O"], ["板南", "BL"], ["文湖", "BR"], ["環狀", "Y"], ["新北投", "R"], ["小碧潭", "G"]];
 // 北捷與環狀線的轉乘站：查詢時一併帶入另一系統的站碼
-const TRTC_XFER = { BL07: "Y16", BL08: "Y17", G04: "Y07", O02: "Y11", O17: "Y18" };
+// 只列同名轉乘站；新埔（BL08）與新埔民生（Y17）名稱不同，分開顯示
+const TRTC_XFER = { BL07: "Y16", G04: "Y07", O02: "Y11", O17: "Y18" };
 for (const [a, b] of Object.entries(TRTC_XFER)) TRTC_XFER[b] = a;
 const busPlusOK = st => st.op === "TRTC" || (st.op === "NTMC" && st.ids.some(i => /^Y\d/.test(i)));
 async function trtcLive(st) {
