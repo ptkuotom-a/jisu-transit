@@ -403,6 +403,7 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
     delete groups[k];
   }
   const all = Object.values(groups).sort((a, b) => a.dist - b.dist);
+  if (opts.all) return all;
   const count = {}, near = [];
   for (const s of all) {
     if (s.dist > walkM || near.length >= 8) break;
@@ -532,7 +533,7 @@ async function trtcLive(st) {
     if (m) sec = Math.max(0, +m[1] * 60 + +m[2] - (+it.secondsAgo || 0));
     else if (/進站|到站/.test(raw)) sec = 0;
     else label = raw || null;                                                // 暫無資料、末班車已過等
-    const t = { line, dest, eta: sec === null ? null : Math.floor(sec / 60), label };
+    const t = { line, dest, destId: destId || null, eta: sec === null ? null : Math.floor(sec / 60), label };
     const k = line + "|" + dest, o = best[k];
     if (!o || (t.eta !== null && (o.eta === null || t.eta < o.eta))) best[k] = t;
   }
@@ -543,7 +544,7 @@ async function trtcLive(st) {
 async function metroBoard(get, st) {
   if (busPlusOK(st)) {
     const trains = await trtcLive(st);
-    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: "北捷／環狀線即時到站（資料來源：Bus+ 非官方）" };
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: "北捷／環狀線即時到站（資料來源：Bus+ 非官方）" };
   }
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
@@ -554,22 +555,23 @@ async function metroBoard(get, st) {
     const trains = live.map(t => ({
       line: t.LineNO || t.LineID || lineOf(st.op, t.StationID),
       dest: zh(t.DestinationStaionName) || zh(t.DestinationStationName) || zh(t.TripHeadSign) || "?",
+      destId: t.DestinationStationID || null,
       via: (/(順行|逆行)/.exec(zh(t.TripHeadSign) || "") || [])[1] || null,   // 環狀線（高雄輕軌）起訖同站，用順／逆行區分
       eta: typeof t.EstimateTime === "number" ? (isSec ? Math.floor(t.EstimateTime / 60) : t.EstimateTime) : null,
     })).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
     // 北捷 LiveBoard 只列出「正在進站」的列車（EstimateTime 全為 0），不是完整看板：與時刻表合併
-    if (!trains.every(t => t.eta === 0)) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
+    if (!trains.every(t => t.eta === 0)) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };
     const tt = await metroTimetable(get, st, filter).catch(e => { if (isRate(e)) throw e; return []; });
     const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
     const rest = tt.filter(t => !(liveDest.has(t.dest + "|" + t.line) && t.eta <= 1));
     const all = [...trains.map(t => ({ ...t, arriving: true })), ...rest].sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", all), note: "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" };
+    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", st.ids, all), note: "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" };
   }
   let tt;
   try { tt = await metroTimetable(get, st, filter); } catch (e) { if (isRate(e)) throw e; tt = null; }
   if (tt === null) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
   const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "北捷即時來源暫時無法使用，以下為時刻表" : "這個系統沒有即時到站資料，以下為時刻表";
-  return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", tt), note };
+  return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", st.ids, tt), note };
 }
 
 // 時刻表：回傳今日接下來的班次；查無資料回傳 null
@@ -586,7 +588,7 @@ async function metroTimetable(get, st, filter) {
     const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
     const dir = r.Direction ?? null;
     const k = dest + "|" + line + "|" + dir;
-    const set = byKey[k] = byKey[k] || { dest, line, dir, times: new Set() };
+    const set = byKey[k] = byKey[k] || { dest, destId: r.DestinationStationID || null, line, dir, times: new Set() };
     for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (x) set.times.add(x); }
   }
   const trains = [];
@@ -596,7 +598,7 @@ async function metroTimetable(get, st, filter) {
   for (const g of Object.values(byKey)) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向 ${g.dir}`;
     [...g.times].map(x => ({ x, t: toMin(x) })).filter(o => o.t >= now).sort((a, b) => a.t - b.t).slice(0, 3)
-      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, line: g.line, via: g.via || null, eta: o.t - now }));
+      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, destId: g.destId, dir: g.dir, line: g.line, via: g.via || null, eta: o.t - now }));
   }
   trains.sort((a, b) => a.t - b.t);
   return trains;
@@ -604,7 +606,8 @@ async function metroTimetable(get, st, filter) {
 
 // 依方向分組：台鐵用 Direction（0 順行、1 逆行）；高鐵（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
 // 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多 8 班
-function groupTrains(kind, trains) {
+function groupTrains(kind, a, b) {
+  const ids = b === undefined ? [] : a, trains = b === undefined ? a : b;
   const per = 8, key = t => t.t ?? t.eta ?? 9999;
   let groups;
   if (kind === "tra" || kind === "thsr") {
@@ -613,18 +616,51 @@ function groupTrains(kind, trains) {
     for (const t of trains) (t.dir === 0 || t.dir === "0" ? groups[0] : t.dir === 1 || t.dir === "1" ? groups[1] : other).trains.push(t);
     if (other.trains.length) groups.push(other);
   } else {
+    // 同一條線依行車方向分組：先看 TDX Direction，否則比較終點與本站在該線的站序
     const m = new Map();
-    for (const t of trains) {
-      const label = "往 " + (t.dest || "?") + (t.via ? `（${t.via}）` : "");
-      const k = (t.line || "") + "|" + label;   // 同終點不同路線（如往南港展覽館的板南線／文湖線）分開
-      if (!m.has(k)) m.set(k, { label, line: t.line || null, trains: [] });
-      m.get(k).trains.push(t);
+    const here = new Set((ids || []).map(i => String(i).toUpperCase()));
+    for (const t of trains.slice().sort((x, y) => key(x) - key(y))) {
+      if (t.destId && here.has(String(t.destId).toUpperCase())) continue;   // 終點就是本站
+      const side = metroSide(t, ids);
+      const k = (t.line || "") + "|" + (side ?? ("x" + t.dest)) + "|" + (t.via || "");
+      if (!m.has(k)) m.set(k, { line: t.line || null, side, via: t.via || null, dests: [], trains: [] });
+      const g = m.get(k); g.trains.push(t); if (t.dest && !g.dests.includes(t.dest)) g.dests.push(t.dest);
     }
-    groups = [...m.values()];
+    groups = [...m.values()].map(g => ({ label: "往 " + (g.dests.join("／") || "?") + (g.via ? `（${g.via}）` : ""), line: g.line, side: g.side, trains: g.trains }));
   }
   for (const g of groups) g.trains = g.trains.slice().sort((a, b) => key(a) - key(b)).slice(0, per);
   const first = g => g.trains.length ? key(g.trains[0]) : Infinity;
   return kind === "metro" ? groups.sort((a, b) => first(a) - first(b)) : groups.sort((a, b) => (a.trains.length ? 0 : 1) - (b.trains.length ? 0 : 1));
+}
+
+// 站序：BL12→12、G03A→3.5、R22A→22.5；轉乘站的終點代碼可能屬於另一條線（如大安 BR09 = R05）
+const STN_ALIAS = { OT1: { O: "O15" }, BR09: { R: "R05" }, R05: { BR: "BR09" }, BR24: { BL: "BL23" }, BL23: { BR: "BR24" }, BL12: { R: "R10" }, R10: { BL: "BL12" },
+  BL11: { G: "G12" }, G12: { BL: "BL11" }, G09: { O: "O05" }, O05: { G: "G09" }, R08: { G: "G10" }, G10: { R: "R08" }, R07: { O: "O06" }, O06: { R: "R07" },
+  BL14: { O: "O07" }, O07: { BL: "BL14" }, G15: { O: "O08" }, O08: { G: "G15" }, R13: { O: "O11" }, O11: { R: "R13" }, BR11: { G: "G16" }, G16: { BR: "BR11" },
+  BL15: { BR: "BR10" }, BR10: { BL: "BL15" }, G04: { Y: "Y07" }, Y07: { G: "G04" }, O17: { Y: "Y18" }, Y18: { O: "O17" }, BL07: { Y: "Y16" }, Y16: { BL: "BL07" },
+  O02: { Y: "Y11" }, Y11: { O: "O02" }, R11: { G: "G14" }, G14: { R: "R11" } };
+const stnPre = id => (/^[A-Z]+/.exec(id || "") || [""])[0];
+const stnNum = id => { const m = /^[A-Z]+(\d+)([A-Z]?)/.exec(id || ""); return m ? +m[1] + (m[2] ? 0.5 : 0) : null; };
+function metroSide(t, ids) {
+  const byDir = (t.dir === 0 || t.dir === 1 || t.dir === "0" || t.dir === "1") ? "d" + t.dir : null;
+  let d = String(t.destId || "").toUpperCase(); if (!d) return byDir;
+  const line = t.line || stnPre(d);
+  if (stnPre(d) !== line && STN_ALIAS[d] && STN_ALIAS[d][line]) d = STN_ALIAS[d][line];
+  const pre = stnPre(d);
+  const cur = (ids || []).map(i => String(i).toUpperCase()).flatMap(i => [i, ...Object.values(STN_ALIAS[i] || {})]).find(i => stnPre(i) === pre);
+  const a = stnNum(cur), b = stnNum(d);
+  if (a == null || b == null || a === b) return byDir;
+  return b > a ? "up" : "dn";
+}
+
+// 全台車站搜尋：重用已快取 30 天的車站清單
+const normZh = x => String(x || "").replace(/臺/g, "台").toLowerCase();
+async function railSearch(p) {
+  const q = normZh(p.q).trim(); if (!q) return [];
+  const st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
+  const lat = p.lat ?? 25.0478, lon = p.lon ?? 121.517;
+  return nearestRail(st, lat, lon, { all: true }).map(s => ({ ...s, score: normZh(s.name) === q ? 0 : normZh(s.name).startsWith(q) ? 1 : 2 }))
+    .sort((a, b) => a.score - b.score || a.dist - b.dist).slice(0, 60);
 }
 
 // ---------- 台中捷運：TDX 沒有即時與站別時刻表，用班距＋首末班推估 ----------
@@ -663,12 +699,12 @@ async function tmrtBoard(get, st) {
     for (let t = first; t <= last && up.length < 3; t += hwAt(t)) if (t >= now) up.push(t);
     if (up.length < 3 && last >= now && !up.includes(last)) up.push(last);   // 末班車一定列入
     if (up.length) closed = false;
-    up.forEach(t => trains.push({ time: clock(t), t, eta: t - now, dest, line: r.LineID || "G", via: null }));
+    up.forEach(t => trains.push({ time: clock(t), t, eta: t - now, dest, destId: r.DestinationStationID || null, dir: r.Direction ?? null, line: r.LineID || "G", via: null }));
     lines.push(`往 ${dest}：${up.length ? `約每 ${hwAt(now)} 分一班，` : "今日已收班，"}首班 ${hm(r.FirstTrainTime)}、末班 ${hm(r.LastTrainTime)}`);
   }
   trains.sort((a, b) => a.t - b.t);
   const note = (closed ? `今日已收班／明日首班 ${clock(nextFirst)}\n` : "預估（依班距推算，非即時）\n") + lines.join("\n");
-  return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note };
+  return { kind: "metro", live: false, trains, groups: groupTrains("metro", st.ids, trains), note };
 }
 
 async function railBoard(get, st) {
@@ -776,6 +812,7 @@ window.dataApi = async (action, p = {}) => {
     }
     case "open": location.href = p.url; return true;
     case "busIndex": return busIndex();
+    case "railSearch": return railSearch(p || {});
     case "pushKey": return pushCall("GET", "/push/key");
     case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
     case "remindCreate": {

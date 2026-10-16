@@ -214,6 +214,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .mpin.bs{background:#3d8bff;color:#fff}.mpin.bk{background:#ffb400;color:#111;width:26px;height:26px}.mpin.rl{z-index:2}.mpin.rl{background:var(--lime);color:#111}
 .mdot{width:20px;height:20px;border-radius:50%;background:#4ea1ff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)}
 .mapcard .maplibregl-ctrl-attrib{background:rgba(0,0,0,.55)!important;color:#aaa;font-size:10px}.mapcard .maplibregl-ctrl-attrib a{color:#ccc}.mapcard .maplibregl-ctrl-attrib-button{filter:invert(1)}
+.dgrp{margin-top:6px;font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
 .rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
 .navbtn{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 14px;color:var(--lime);font-weight:700;font-size:14px}
@@ -494,6 +495,18 @@ function myCity() {
   const n = {}; for (const s of (S.data?.busStops || [])) for (const r of s.routes) { const c = UID2CITY[(r.routeUID || '').slice(0,3)]; if (c && c !== 'InterCity') n[c] = (n[c] || 0) + 1; }
   return Object.entries(n).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 }
+function railSearchHtml(q) {
+  q = q.trim(); if (!q || DEMO) return '';
+  if (S.railQ !== q) {
+    S.railQ = q; S.railHits = null;
+    api('railSearch', { q, lat:S.data?.lat, lon:S.data?.lon }).then(r => { if (S.railQ === q) { S.railHits = r; if (S.q) render(); } }).catch(() => { if (S.railQ === q) { S.railHits = []; if (S.q) render(); } });
+  }
+  const hits = S.railHits; if (!hits || !hits.length) return '';
+  const by = new Map(); for (const r of hits) { if (!by.has(r.sys)) by.set(r.sys, []); by.get(r.sys).push(r); }
+  let h = `<div class="sec"><h2>全台車站</h2></div>`;
+  for (const [sys, list] of by) h += `<div class="tgrp">${esc(sys)}<span>${list.length} 站</span></div>` + list.slice(0, 8).map(railCard).join('');
+  return h;
+}
 function natSearch(q) {
   q = q.trim().toLowerCase(); if (!q) return '';
   if (DEMO) return '';
@@ -531,6 +544,7 @@ function vSearch() {
   if (bikes.length) h += `<div class="sec"><h2>YouBike</h2></div>` + bikes.map(bikeCard).join('');
   const rails = (d.rail || []).filter(r => (r.name + r.sys).toLowerCase().includes(q));
   if (rails.length) h += `<div class="sec"><h2>車站</h2></div>` + rails.map(railCard).join('');
+  h += railSearchHtml(S.q);
   h += natSearch(S.q);
   if (!h) h = `<div class="note" style="margin-top:8px">找不到「${esc(S.q)}」。</div>`;
   return h;
@@ -676,8 +690,10 @@ function railByLine(R, D, G) {
   return [...sec.entries()].sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1) || rank(a[0]) - rank(b[0])).map(([l, gs]) => {
     const op = (LINE_COLOR[R.op] || {})[l] ? R.op : (LINE_COLOR.NTMC[l] ? 'NTMC' : R.op);
     const name = (LINE_NAME[R.op] || {})[l] || (LINE_NAME.NTMC[l] && R.op === 'TRTC' ? LINE_NAME.NTMC[l] : '') || (l ? l + ' 線' : '其他');
-    return `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` +
-      `<div class="board">${gs.flatMap(g => g.trains).map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</div>`;
+    const sk = g => g.side === 'up' || g.side === 'd0' ? 0 : g.side === 'dn' || g.side === 'd1' ? 1 : 2;
+    gs = gs.slice().sort((a, b) => sk(a) - sk(b));
+    return `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` + gs.map(g =>
+      `${gs.length > 1 || g.label.includes('／') ? `<div class="tgrp dgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</div>`).join('');
   }).join('');
 }
 function renderRail() {
