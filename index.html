@@ -214,6 +214,11 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .mpin.bs{background:#3d8bff;color:#fff}.mpin.bk{background:#ffb400;color:#111;width:26px;height:26px}.mpin.rl{z-index:2}.mpin.rl{background:var(--lime);color:#111}
 .mdot{width:20px;height:20px;border-radius:50%;background:#4ea1ff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)}
 .mapcard .maplibregl-ctrl-attrib{background:rgba(0,0,0,.55)!important;color:#aaa;font-size:10px}.mapcard .maplibregl-ctrl-attrib a{color:#ccc}.mapcard .maplibregl-ctrl-attrib-button{filter:invert(1)}
+.lnk{display:block;width:100%;text-align:left;color:inherit;font:inherit;padding:0;background:none;border:0}
+button.board.lnk{background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:6px 16px;margin-top:6px}
+button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:center}.tgrp.lnk span{display:inline-flex;align-items:center;gap:2px}.tgrp.lnk svg{width:14px;height:14px}
+.trlnk + .trlnk .trow,.trlnk .trow{width:100%}
+.st.past .sn{color:var(--dim)}
 .dgrp{margin-top:6px;font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
 .rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
@@ -693,7 +698,7 @@ function railByLine(R, D, G) {
     const sk = g => g.side === 'up' || g.side === 'd0' ? 0 : g.side === 'dn' || g.side === 'd1' ? 1 : 2;
     gs = gs.slice().sort((a, b) => sk(a) - sk(b));
     return `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` + gs.map(g =>
-      `${gs.length > 1 || g.label.includes('／') ? `<div class="tgrp dgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</div>`).join('');
+      { const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line: l, g }); return `<button class="tgrp dgrp lnk" data-act="lineOpen" data-i="${li}">${esc(g.label)}<span>${g.trains.length} 班 ${I.chev}</span></button><button class="board lnk" data-act="lineOpen" data-i="${li}">${g.trains.map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</button>`; }).join('');
   }).join('');
 }
 function renderRail() {
@@ -710,8 +715,53 @@ function renderRail() {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
     const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
     if (D.kind === 'metro' && G.length) h += railByLine(R, D, G);
-    else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
+    else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
   }
+  $('#routePage').innerHTML = h + '</div>';
+}
+
+/* ---------- 捷運路線／火車車次 停靠站頁 ---------- */
+function openLine(req) {
+  S.railScroll = $('#routePage').scrollTop;
+  S.page = 'line'; S.line = { req, data:null, err:null }; $('#routePage').scrollTop = 0;
+  renderLine(); loadLine(true);
+}
+function lineReqFromGroup(o) {
+  const g = o.g, alts = (S.railData?.groups || []).filter(x => x.line === o.line && x.trains.length);
+  return { kind:'line', op:o.op, line:o.line, ids:S.rail.ids, label:g.label, via:g.trains[0]?.via || null, curEta:g.trains[0]?.eta ?? null,
+    dests:g.trains.map(t => ({ id:t.destId || null, name:t.dest })), alts, alt: alts.indexOf(g) };
+}
+async function loadLine(scroll) {
+  const L = S.line; if (!L) return;
+  const q = L.req;
+  try {
+    L.data = q.kind === 'line' ? await api('lineView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, curEta:q.curEta, label:q.label })
+      : await api('trainView', { kind:q.kind, no:q.no, ids:q.ids }); L.err = null;
+  } catch (e) { L.err = e.message; }
+  if (S.line !== L) return;
+  renderLine();
+  if (scroll) { const el = document.querySelector('#routePage .st.here'); if (el) el.scrollIntoView({ block:'center' }); }
+}
+function renderLine() {
+  const L = S.line; if (!L || S.page !== 'line') return;
+  const q = L.req, D = L.data, R = S.rail || {};
+  const title = q.kind === 'line' ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no} 次`;
+  const sub = q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
+  const canSwap = q.kind === 'line' && q.alts && q.alts.length > 1;
+  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'line'
+    ? `${D.stops.length} 站，目前在 ${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
+    : `${D.stops.length} 站${q.kind === 'tra' ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚 ${D.delay} 分` : '；目前準點') : ''}`;
+  let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
+    <div class="rhead"><h1 style="font-size:${title.length > 4 ? 30 : 38}px">${q.kind === 'line' ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
+    ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn"><span>${esc(sub)}</span></span>` : ''}</div>
+    <div class="rmeta">${meta}</div></div>`;
+  if (!D) h += L.err ? '' : skel(5);
+  else h += `<div class="line">` + D.stops.map(s => {
+    let right = '';
+    if (q.kind === 'line') { const e = s.eta == null ? null : s.eta <= 0 ? { t:'進站中', k:'hot' } : s.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${s.eta} 分`, k: s.eta <= 3 ? 'soon' : '' }; right = e ? `<span class="eta ${e.k}">${e.t}</span>` : ''; }
+    else { const t = s.dep || s.arr; right = t ? `<span class="eta ${s.here ? 'soon' : ''}">${esc(t)}${q.kind === 'tra' && D.delay > 0 && !s.past ? `<small style="display:block;font-size:11px;color:var(--warn)">+${D.delay}</small>` : ''}</span>` : ''; }
+    return `<div class="st ${s.here ? 'here' : ''} ${s.at ? 'bus' : ''} ${s.past ? 'past' : ''}"><span class="dot">${s.at ? I.train : ''}</span><span class="sn">${esc(s.name)}${s.at ? '<small>列車目前位置</small>' : ''}</span>${right}</div>`;
+  }).join('') + `</div>`;
   $('#routePage').innerHTML = h + '</div>';
 }
 
@@ -723,7 +773,9 @@ function openRoute(r) {
   const p = $('#routePage'); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderRoute(); loadRoute(true);
 }
-function closeRoute() { S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
+function closeRoute() {
+  if (S.page === 'line' && S.rail) { S.page = 'rail'; S.line = null; renderRail(); $('#routePage').scrollTop = S.railScroll || 0; return; }
+  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
 async function loadRoute(scroll) {
   if (!S.route) return;
   const R = S.route, tok = S.routeTok = (S.routeTok || 0) + 1;   // 只採用最新一次請求的結果，避免切換路線時卡在骨架畫面
@@ -806,6 +858,9 @@ document.addEventListener('click', e => {
     case 'tab': setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
+    case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
+    case 'trainOpen': if (o && S.rail) openLine({ kind:o.kind, no:o.no, ids:S.rail.ids }); break;
+    case 'lineSwap': if (S.line?.req.alts) { const q = S.line.req, n = (q.alt + 1) % q.alts.length; S.line.data = null; openLine({ ...lineReqFromGroup({ op:q.op, line:q.line, g:q.alts[n] }) }); } break;
     case 'remindAt': if (o) openRemind(o.i); break;
     case 'remBus': S.rem.plate = el.dataset.v; openRemind(S.rem.i, true); break;
     case 'remOpt': S.rem.opt = el.dataset.v; openRemind(S.rem.i, true); break;

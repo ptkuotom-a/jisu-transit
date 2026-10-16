@@ -663,6 +663,109 @@ async function railSearch(p) {
     .sort((a, b) => a.score - b.score || a.dist - b.dist).slice(0, 60);
 }
 
+
+// ---------- 路線停靠站（捷運／輕軌）與車次停靠站（台鐵／高鐵） ----------
+const SOL_KEY = "jisu_sol";
+async function stationOfLine(get, op) {
+  let c = {}; try { c = JSON.parse(localStorage.getItem(SOL_KEY)) || {}; } catch (e) {}
+  const hit = c[op]; if (hit && Date.now() - hit.time < RAIL_STATION_DAYS * 86400000) return hit.lines;
+  const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationOfLine/${op}?%24format=JSON`);
+  const lines = (list || []).map(l => ({ line: l.LineID || l.LineNO, st: (l.Stations || []).slice().sort((a, b) => (a.Sequence ?? 0) - (b.Sequence ?? 0)).map(x => [x.StationID, zh(x.StationName) || x.StationID]) }));
+  if (lines.length) { c[op] = { time: Date.now(), lines }; try { localStorage.setItem(SOL_KEY, JSON.stringify(c)); } catch (e) {} }
+  return lines;
+}
+// 依站序串成路網：帶字尾的支線站（G03A、R22A）若前一站不是本站則接到本站；蘆洲支線 O50 接大橋頭 O12；高雄輕軌是環狀
+const LINE_BRANCH = { TRTC: { O50: "O12" } };
+function lineGraph(op, st) {
+  const adj = {}; const link = (a, b) => { (adj[a] = adj[a] || new Set()).add(b); (adj[b] = adj[b] || new Set()).add(a); };
+  st.forEach(([id]) => adj[id] = adj[id] || new Set());
+  for (let i = 1; i < st.length; i++) {
+    const a = st[i - 1][0], b = st[i][0];
+    const br = (LINE_BRANCH[op] || {})[b], m = /^([A-Z]+\d+)[A-Za-z]$/.exec(b);
+    const baseIdx = m ? st.findIndex(x => x[0] === m[1]) : -1;
+    if (br) link(br, b);
+    else if (m && a !== m[1] && baseIdx >= 0 && baseIdx < i - 1) link(m[1], b);   // 支線站列在最後（G03A 接 G03）
+    else link(a, b);
+  }
+  if (op === "KLRT" && st.length > 2) link(st[0][0], st[st.length - 1][0]);
+  return adj;
+}
+function bfs(adj, a, b) {
+  const prev = { [a]: null }, q = [a];
+  while (q.length) { const x = q.shift(); if (x === b) break; for (const y of adj[x] || []) if (!(y in prev)) { prev[y] = x; q.push(y); } }
+  if (!(b in prev)) return null;
+  const out = []; for (let x = b; x != null; x = prev[x]) out.unshift(x); return out;
+}
+const liveCache = {};
+async function lineView(get, p) {
+  const lines = await stationOfLine(get, p.op);
+  const ids = (p.ids || []).map(String);
+  const canon = (id, line) => { if (!id) return null; id = String(id).toUpperCase(); if (stnPre(id) !== line && STN_ALIAS[id] && STN_ALIAS[id][line]) return STN_ALIAS[id][line]; return id; };
+  let L = lines.find(l => l.line === p.line && l.st.some(x => ids.map(i => canon(i, l.line)).includes(x[0]))) || lines.find(l => l.st.some(x => ids.includes(x[0])));
+  if (!L) throw new Error("查無這條路線的車站資料");
+  const has = id => L.st.some(x => x[0] === id), nameOf = {}; L.st.forEach(([id, n]) => nameOf[id] = n);
+  const cur = ids.map(i => canon(i, L.line)).find(has);
+  const adj = lineGraph(p.op, L.st);
+  const dests = [...new Set((p.dests || []).map(d => { const c = canon(d.id, L.line); if (c && has(c)) return c; const n = normZh(d.name); const f = L.st.find(x => normZh(x[1]) === n || normZh(x[1]).replace(/站$/, "") === n.replace(/站$/, "")); return f ? f[0] : null; }).filter(Boolean))];
+  let order;
+  if (p.op === "KLRT") {
+    const n = L.st.length, i0 = L.st.findIndex(x => x[0] === cur), fwd = !/逆行/.test(p.via || "");
+    order = Array.from({ length: n }, (_, k) => L.st[((fwd ? i0 + k : i0 - k) % n + n) % n][0]);
+  } else {
+    let target = null, best = -1;
+    for (const d of dests) { const pa = bfs(adj, cur, d); if (pa && pa.length > best) { best = pa.length; target = d; } }
+    if (!target) { order = L.st.map(x => x[0]); }
+    else {
+      const terms = Object.keys(adj).filter(k => adj[k].size === 1 && k !== target);
+      order = bfs(adj, cur, target);
+      for (const t of terms) { const pa = bfs(adj, t, target); if (pa && pa.includes(cur) && pa.length > order.length) order = pa; }
+    }
+  }
+  // 即時：TRTC/環狀線只有本站（看板已有）；其他系統一次抓整個系統的 LiveBoard，算每站最近一班
+  const eta = {};
+  if (p.op !== "TRTC" && p.op !== "NTMC" && p.op !== "TMRT") {
+    try {
+      const k = p.op; let rows = liveCache[k] && Date.now() - liveCache[k].t < 20000 ? liveCache[k].rows : null;
+      if (!rows) { rows = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/LiveBoard/${p.op}?%24format=JSON`); liveCache[k] = { t: Date.now(), rows }; }
+      const isSec = rows.some(r => r.EstimateTime > 120), want = new Set(dests);
+      for (const r of rows) {
+        if (typeof r.EstimateTime !== "number") continue;
+        if (p.op === "KLRT") { const v = (/(順行|逆行)/.exec(zh(r.TripHeadSign) || "") || [])[1]; if (p.via && v && v !== p.via) continue; }
+        else if (want.size && !want.has(canon(r.DestinationStationID, L.line))) continue;
+        const m = isSec ? Math.floor(r.EstimateTime / 60) : r.EstimateTime, id = r.StationID;
+        if (eta[id] == null || m < eta[id]) eta[id] = m;
+      }
+    } catch (e) { if (isRate(e)) throw e; }
+  }
+  { const v = Object.values(eta); if (v.length > 4 && v.filter(x => x === 0).length > v.length / 2) for (const k in eta) delete eta[k]; }   // 收班後看板全是 0：不顯示
+  const liveAll = Object.keys(eta).length > 0;
+  if (p.curEta != null && cur && eta[cur] == null) eta[cur] = p.curEta;
+  const ci = order.indexOf(cur);
+  return { op: p.op, line: L.line, label: p.label || null, live: liveAll,
+    stops: order.map((id, i) => ({ id, name: nameOf[id] || id, here: id === cur, past: ci >= 0 && i < ci, eta: eta[id] ?? null })) };
+}
+async function trainView(get, p) {
+  const no = String(p.no), here = new Set((p.ids || []).map(String));
+  let stops = [], info = {}, delay = null, pos = null;
+  if (p.kind === "tra") {
+    const [tt, lv] = await Promise.allSettled([
+      get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`),
+      get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard/TrainNo/${encodeURIComponent(no)}?%24format=JSON`)]);
+    if (tt.status !== "fulfilled") throw tt.reason;
+    const T = (tt.value.TrainTimetables || tt.value || [])[0]; if (!T) throw new Error("查無這個車次今日的時刻");
+    info = { type: shortType(zh(T.TrainInfo.TrainTypeName)), from: zh(T.TrainInfo.StartingStationName), to: zh(T.TrainInfo.EndingStationName) };
+    stops = (T.StopTimes || []).map(x => ({ id: x.StationID, name: zh(x.StationName), arr: hm(x.ArrivalTime), dep: hm(x.DepartureTime) }));
+    if (lv.status === "fulfilled") { const b = (lv.value.TrainLiveBoards || lv.value || [])[0]; if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } }
+  } else {
+    const r = await get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`);
+    const T = (r || [])[0]; if (!T) throw new Error("查無這個車次今日的時刻");
+    info = { type: "高鐵", from: zh(T.DailyTrainInfo.StartingStationName), to: zh(T.DailyTrainInfo.EndingStationName) };
+    stops = (T.StopTimes || []).map(x => ({ id: x.StationID, name: zh(x.StationName), arr: hm(x.ArrivalTime), dep: hm(x.DepartureTime) }));
+  }
+  const ci = stops.findIndex(s => here.has(String(s.id)));
+  return { kind: p.kind, no, ...info, delay, pos, stops: stops.map((s, i) => ({ ...s, here: i === ci, at: pos && pos.id === s.id })) };
+}
+
 // ---------- 台中捷運：TDX 沒有即時與站別時刻表，用班距＋首末班推估 ----------
 const TMRT_KEY = "jisu_tmrt";
 async function loadTmrt(get) {
@@ -813,6 +916,8 @@ window.dataApi = async (action, p = {}) => {
     case "open": location.href = p.url; return true;
     case "busIndex": return busIndex();
     case "railSearch": return railSearch(p || {});
+    case "lineView": return lineView(tdx, p);
+    case "trainView": return trainView(tdx, p);
     case "pushKey": return pushCall("GET", "/push/key");
     case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
     case "remindCreate": {
