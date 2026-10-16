@@ -483,7 +483,43 @@ async function thsrBoard(get, st) {
   return { kind: "thsr", live: seats.status === "fulfilled", trains: rows, groups: groupTrains("thsr", rows), note: seats.status === "fulfilled" ? null : "座位資訊暫時讀不到" };
 }
 
+// 北捷即時到站（經 Worker /trtc-eta，來源 Bus+）；失敗或沒資料回傳 null
+const TRTC_ROUTE = [["淡水信義", "R"], ["松山新店", "G"], ["中和新蘆", "O"], ["板南", "BL"], ["文湖", "BR"], ["環狀", "Y"], ["新北投", "R"], ["小碧潭", "G"]];
+async function trtcLive(st) {
+  const proxy = getProxy(); if (!proxy) return null;
+  let j;
+  try {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 8000);
+    j = await fetch(`${proxy}/trtc-eta?ids=${encodeURIComponent(st.ids.join(","))}`, { signal: ctl.signal }).then(r => r.ok ? r.json() : null);
+    clearTimeout(tm);
+  } catch (e) { return null; }
+  if (!j || !Array.isArray(j.stations)) return null;
+  const here = new Set(st.ids), best = {};
+  for (const s of j.stations) for (const it of (s.items || [])) {
+    const destId = String(it.destinationStationId || "").toUpperCase();
+    if (here.has(destId)) continue;                                        // 終點就是本站的列車不顯示
+    const dest = (it.stationName && it.stationName.zh) || "?";
+    const rn = (it.routeName && it.routeName.zh) || "";
+    const line = (TRTC_ROUTE.find(([k]) => rn.includes(k)) || [])[1] || (/^[A-Z]+/.exec(destId) || [])[0] || null;   // 終點代碼可能是轉乘站的另一條線（如大安 BR09）
+    const raw = String(it.estimateTime ?? "").trim();
+    let sec = null, label = null;
+    const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
+    if (m) sec = Math.max(0, +m[1] * 60 + +m[2] - (+it.secondsAgo || 0));
+    else if (/進站|到站/.test(raw)) sec = 0;
+    else label = raw || null;                                                // 暫無資料、末班車已過等
+    const t = { line, dest, eta: sec === null ? null : Math.floor(sec / 60), label };
+    const k = line + "|" + dest, o = best[k];
+    if (!o || (t.eta !== null && (o.eta === null || t.eta < o.eta))) best[k] = t;
+  }
+  const trains = Object.values(best).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+  return trains.some(t => t.eta !== null) ? trains : null;
+}
+
 async function metroBoard(get, st) {
+  if (st.op === "TRTC") {
+    const trains = await trtcLive(st);
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: "北捷即時到站（資料來源：Bus+ 非官方）" };
+  }
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
   try { live = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/LiveBoard/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
@@ -502,12 +538,12 @@ async function metroBoard(get, st) {
     const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
     const rest = tt.filter(t => !(liveDest.has(t.dest + "|" + t.line) && t.eta <= 1));
     const all = [...trains.map(t => ({ ...t, arriving: true })), ...rest].sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", all), note: "北捷即時資料只提供進站中列車（0 分），其餘班次為時刻表" };
+    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", all), note: "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" };
   }
   let tt;
   try { tt = await metroTimetable(get, st, filter); } catch (e) { if (isRate(e)) throw e; tt = null; }
   if (tt === null) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
-  const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "目前沒有進站中列車，以下為時刻表" : "這個系統沒有即時到站資料，以下為時刻表";
+  const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "北捷即時來源暫時無法使用，以下為時刻表" : "這個系統沒有即時到站資料，以下為時刻表";
   return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", tt), note };
 }
 

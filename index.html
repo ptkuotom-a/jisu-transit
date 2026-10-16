@@ -546,7 +546,7 @@ function trainRow(kind, op, t) {
     ${t.seats ? `<span class="seats">標準 <b class="${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b><br>商務 <b class="${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b></span>` : ''}</div>`;
   if (t.time) return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
     <span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div><div class="tt">${t.eta != null ? `${t.eta} 分後` : ''}</div></span></div>`;
-  const e = t.eta == null ? { t:'—', k:'off' } : t.eta <= 0 ? { t:'進站中', k:'hot' } : t.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${t.eta} 分`, k: t.eta <= 3 ? 'soon' : '' };
+  const e = t.eta == null ? { t: t.label || '—', k:'off' } : t.eta <= 0 ? { t:'進站中', k:'hot' } : t.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${t.eta} 分`, k: t.eta <= 3 ? 'soon' : '' };
   return `<div class="trow"><span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div></span><span class="eta ${e.k}">${e.t}</span></div>`;
 }
 function renderRail() {
