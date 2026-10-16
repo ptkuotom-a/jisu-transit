@@ -224,6 +224,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 @media (prefers-reduced-motion: reduce){ .toast{transition:none} }
 .rbar{position:fixed;left:0;right:0;margin:0 auto;width:min(560px,calc(100% - 28px));bottom:calc(108px + env(safe-area-inset-bottom,0px));z-index:32;display:flex;align-items:center;gap:10px;
   background:rgba(32,34,33,.9);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid var(--lime);border-radius:22px;padding:10px 10px 10px 16px;font-size:15px;font-weight:600}
+.rbar[hidden]{display:none !important}
 .rbar .t{flex:1;min-width:0;line-height:1.35}.rbar .t small{display:block;color:var(--muted);font-weight:500;font-size:13px}
 .rbar button{flex:none;background:var(--surface2);border-radius:999px;padding:8px 14px;font-weight:700;color:var(--bad)}
 .page.open ~ .rbar{bottom:calc(16px + env(safe-area-inset-bottom,0px))}
@@ -904,7 +905,7 @@ async function startRemind(btn) {
 }
 function renderRemBar() {
   const b = $('#rbar'), r = S.reminder;
-  if (!r) { b.hidden = true; b.innerHTML = ''; return; }
+  if (!r || !r.id) { b.hidden = true; b.innerHTML = ''; return; }
   const inf = r.info, st = inf && inf.remain != null ? `目前在 ${inf.at || '?'}，還有 ${inf.remain} 站` : '追蹤中…';
   b.innerHTML = `<span class="t">🔔 ${esc(r.route)} → ${esc(r.destName)}（${esc(r.label)}）<small>${esc(r.plate)}・${esc(st)}</small></span><button data-act="remCancel">取消</button>`;
   b.hidden = false;
@@ -931,7 +932,8 @@ async function pushTest(btn) {
   } catch (e) { msg.className = 'kmsg bad'; msg.textContent = '失敗：' + e.message; }
   btn.disabled = false;
 }
-try { S.reminder = JSON.parse(localStorage.getItem(REM_KEY)); } catch (e) {}
+try { S.reminder = JSON.parse(localStorage.getItem(REM_KEY)); } catch (e) { S.reminder = null; }
+if (!S.reminder || !/^[0-9a-f]{64}$/.test(S.reminder.id || '')) { S.reminder = null; localStorage.removeItem(REM_KEY); }   // 舊資料或格式錯誤就清掉
 setInterval(pollRemind, 20000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollRemind(); });
 
