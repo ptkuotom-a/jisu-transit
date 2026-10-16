@@ -299,9 +299,9 @@ const isFavBike = uid => S.favs.bike.some(x => x.uid === uid);
 
 /* ---------- render ---------- */
 function renderChrome() {
-  const titles = { home:'極速通勤', bus:'公車', bike:'YouBike', rail:'軌道', settings:'設定' };
+  const titles = { home:'首頁', bus:'公車', bike:'YouBike', rail:'軌道', settings:'設定' };
   $('#title').textContent = titles[S.tab];
-  $('#titleIco').innerHTML = S.tab === 'bike' ? I.bike : S.tab === 'rail' ? I.train : S.tab === 'settings' ? '' : I.bus;
+  $('#titleIco').innerHTML = S.tab === 'home' ? I.home : S.tab === 'bike' ? I.bike : S.tab === 'rail' ? I.train : S.tab === 'settings' ? I.gear : I.busFill;
   $('#searchBar').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
@@ -346,7 +346,7 @@ const sideTag = s => s.side ? ` <span class="side-tag ${s.side === '同向' ? 's
 function stopCard(s) {
   const routes = [...new Set(s.routes.map(r => r.route))].join('、');
   return `<button class="card" data-act="stop" data-i="${reg(s)}">
-    <span class="badge">${I.walk}</span>
+    <span class="badge">${I.busFill}</span>
     <span class="body"><div class="title">${esc(s.name)}${sideTag(s)}</div><div class="desc">${esc(routes)}</div></span>
     <span class="pill">${distTxt(s.dist)}</span><span class="chev">${I.chev}</span></button>`;
 }
