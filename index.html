@@ -19,14 +19,13 @@
   --lime:#C6F135; --ink:#0E100F; --warn:#FFB03A; --bad:#FF5B4F;
   color-scheme:dark;
   box-sizing:border-box;
-  padding-top:env(safe-area-inset-top,0px);
-  padding-bottom:env(safe-area-inset-bottom,0px);
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#0E100F; } }
 :root[data-theme="dark"]{ --bg:#0E100F; }
 *,*::before,*::after{box-sizing:border-box}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
-body{margin:0;background:var(--bg);color:var(--text);
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%;min-height:100vh;min-height:100lvh}
+/* iOS 獨立 PWA：文件比螢幕短時，fixed 底部會跟著文件高度上移；讓 html/body 永遠至少滿版 */
+body{margin:0;min-height:100%;min-height:100lvh;padding-top:env(safe-area-inset-top,0px);background:var(--bg);color:var(--text);
   font-family:-apple-system,"SF Pro Text","PingFang TC","Noto Sans TC",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent;
   font-variant-numeric:tabular-nums;overscroll-behavior-y:none}

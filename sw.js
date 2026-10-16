@@ -1,5 +1,5 @@
 // 極速通勤 Service Worker：介面離線快取，即時資料一律走網路
-const VERSION = "jisu-v1.7.4";
+const VERSION = "jisu-v1.7.5";
 const SHELL = [
   "./", "./index.html", "./data.js", "./config.js", "./manifest.webmanifest",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png",
