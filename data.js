@@ -720,6 +720,31 @@ function loadState() {
   return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
 }
 
+// 全台公車路線索引：各縣市 + 公路客運，一週更新一次；失敗的縣市下次再補
+const IDX_KEY = "jisu_bus_idx", IDX_DAYS = 7;
+let idxLoading = null;
+async function busIndex() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(IDX_KEY)); } catch (e) {}
+  if (!c || Date.now() - c.time > IDX_DAYS * 86400000) c = { time: Date.now(), cities: {} };
+  const all = [...Object.values(UID_CITY), "InterCity"];
+  const todo = all.filter(x => !c.cities[x]);
+  if (todo.length && !idxLoading) {
+    idxLoading = (async () => {
+      const proxy = getProxy(); if (!proxy) return;
+      for (let i = 0; i < todo.length; i += 3) {
+        await Promise.all(todo.slice(i, i + 3).map(async city => {
+          try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) c.cities[city] = j; } } catch (e) {}
+        }));
+        await sleep(300);
+      }
+      try { localStorage.setItem(IDX_KEY, JSON.stringify(c)); } catch (e) {}
+    })().finally(() => { idxLoading = null; });
+    await idxLoading;
+  } else if (idxLoading) await idxLoading;
+  return { cities: c.cities, missing: all.filter(x => !c.cities[x]) };
+}
+
 // 推播／下車提醒（Worker 端點）
 async function pushCall(method, path, body) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
@@ -750,6 +775,7 @@ window.dataApi = async (action, p = {}) => {
       return j;
     }
     case "open": location.href = p.url; return true;
+    case "busIndex": return busIndex();
     case "pushKey": return pushCall("GET", "/push/key");
     case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
     case "remindCreate": {
