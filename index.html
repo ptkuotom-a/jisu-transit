@@ -203,6 +203,17 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .board{background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:6px 16px;margin-top:6px}
 .lsec{display:flex;align-items:center;gap:10px;margin:22px 4px 2px;font-size:19px;font-weight:800}.lsec:first-of-type{margin-top:8px}.lsec .lb{font-size:14px}
 .nrow{display:flex;width:100%;text-align:left;align-items:center;gap:10px}.nrow .chev{color:var(--dim)}
+.mapslot{margin:4px 0 6px}
+.mapcard{position:relative;height:230px;border-radius:30px;overflow:hidden;background:#1b1d1f;isolation:isolate;touch-action:none}
+.mapcard .mapbox{position:absolute!important;inset:0;background:#1b1d1f}
+.mapload{position:absolute;inset:0;display:grid;place-items:center;color:var(--dim);font-size:14px}
+.maprc{position:absolute;right:12px;top:12px;z-index:500;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:rgba(30,32,34,.85);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--lime);border:1px solid rgba(255,255,255,.1)}
+.maprc svg{width:20px;height:20px}
+.mpin{width:30px;height:30px;padding:0;border-radius:50%;display:grid;place-items:center;border:2px solid #111;box-shadow:0 2px 6px rgba(0,0,0,.5);cursor:pointer}
+.mpin svg{width:16px;height:16px}
+.mpin.bs{background:#3d8bff;color:#fff}.mpin.bk{background:#ffb400;color:#111;width:26px;height:26px}.mpin.rl{z-index:2}.mpin.rl{background:var(--lime);color:#111}
+.mdot{width:20px;height:20px;border-radius:50%;background:#4ea1ff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)}
+.mapcard .maplibregl-ctrl-attrib{background:rgba(0,0,0,.55)!important;color:#aaa;font-size:10px}.mapcard .maplibregl-ctrl-attrib a{color:#ccc}.mapcard .maplibregl-ctrl-attrib-button{filter:invert(1)}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
 .rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
 .navbtn{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 14px;color:var(--lime);font-weight:700;font-size:14px}
@@ -349,6 +360,52 @@ function render() {
   renderChrome();
   const v = { home:vHome, bus:vBus, bike:vBike, rail:vRail, settings:vSettings }[S.tab];
   $('#main').innerHTML = v();
+  mountMap();
+}
+/* ---------- 首頁地圖（MapLibre GL 自帶於 vendor/，OpenFreeMap 深色向量底圖，免金鑰） ---------- */
+let MAP = null, mapEl = null, mapMarks = [], meMark = null, mlP = null, mapKey = null, mapUserMoved = false;
+function loadMapLib() {
+  if (window.maplibregl) return Promise.resolve();
+  return mlP = mlP || new Promise((ok, bad) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'vendor/maplibre/maplibre-gl.css'; document.head.appendChild(css);
+    const js = document.createElement('script'); js.src = 'vendor/maplibre/maplibre-gl.js'; js.onload = ok; js.onerror = () => { mlP = null; bad(); }; document.head.appendChild(js);
+  });
+}
+function mountMap() {
+  const slot = $('#mapSlot'), d = S.data;
+  if (!slot || !d || !d.lat) return;
+  if (!mapEl) {
+    mapEl = document.createElement('div'); mapEl.className = 'mapcard'; mapEl.setAttribute('data-noswipe', '');
+    mapEl.innerHTML = `<div class="mapbox"></div><button class="maprc" aria-label="回到目前位置">${I.nav}</button><div class="mapload">地圖載入中…</div>`;
+    mapEl.querySelector('.maprc').addEventListener('click', e => { e.stopPropagation(); mapUserMoved = false;
+      if (MAP && S.data) MAP.easeTo({ center:[S.data.lon, S.data.lat], zoom:15.5, duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 500 }); });
+  }
+  slot.appendChild(mapEl);
+  loadMapLib().then(() => {
+    if (!MAP) {
+      MAP = new maplibregl.Map({ container: mapEl.querySelector('.mapbox'), style: 'https://tiles.openfreemap.org/styles/dark',
+        center: [d.lon, d.lat], zoom: 15.5, minZoom: 9, maxZoom: 19, attributionControl: { compact: true }, pitchWithRotate: false, dragRotate: false,
+        fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
+      MAP.touchZoomRotate.disableRotation();
+      MAP.on('dragstart', () => { mapUserMoved = true; });
+      MAP.on('load', () => { const m = mapEl.querySelector('.mapload'); if (m) m.remove(); });
+      MAP.on('error', () => {});
+    }
+    MAP.resize();
+    const D = S.data;
+    if (D === mapKey) return; mapKey = D;
+    mapMarks.forEach(m => m.remove()); mapMarks = [];
+    const add = (o, cls, svg, fn) => { if (o.lat == null) return;
+      const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name);
+      el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
+      mapMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP)); };
+    D.bikes.slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
+    D.busStops.slice(0, 40).forEach(s => add(s, 'bs', I.busFill, stopSheet));
+    (D.rail || []).filter(r => r.lat != null).slice(0, 10).forEach(r => add(r, 'rl', I.train, openRail));
+    if (!meMark) { const el = document.createElement('div'); el.className = 'mdot'; meMark = new maplibregl.Marker({ element: el }); }
+    meMark.setLngLat([D.lon, D.lat]).addTo(MAP);
+    if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat] });
+  }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
 const skel = n => Array.from({length:n}, () => '<div class="sk"></div>').join('');
 function errBox() {
@@ -380,6 +437,7 @@ function vHome() {
   if (S.q) return vSearch();
   const d = S.data;
   let h = errBox();
+  if (d && d.lat) h += `<div id="mapSlot" class="mapslot"></div>`;
   h += `<div class="sec"><h2>離你最近</h2></div>`;
   if (!d) h += S.error ? '' : skel(3);
   else {
