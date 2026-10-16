@@ -122,6 +122,7 @@ async function loadRouteDest(profile, uids) {
 const destOf = (uid, dirNum, map) => { const r = map[uid]; return r ? (dirNum === 1 ? r.dep : r.dest) || null : null; };
 
 // ---------- 附近：公車 + YouBike + 收藏 ----------
+const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
 async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
   const loc = await locate();
   const lat = loc.latitude.toFixed(6), lon = loc.longitude.toFixed(6);
@@ -151,7 +152,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
     for (const s of stops) {
       const p = s.StopPosition; if (!p) continue;
       const d = haversine(loc.latitude, loc.longitude, p.PositionLat, p.PositionLon);
-      const v = { d, lat: p.PositionLat, lon: p.PositionLon };
+      const v = { d, lat: p.PositionLat, lon: p.PositionLon, sid: s.StationID || null, bear: s.Bearing || null };
       if (s.StopUID && (!byUID[s.StopUID] || d < byUID[s.StopUID].d)) byUID[s.StopUID] = v;
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
@@ -162,9 +163,13 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
       const pos = byUID[it.StopUID] || byName[name] || null;
       const arr = groups[name] = groups[name] || [];
-      let g = pos ? arr.find(x => x.lat !== null && haversine(x.lat, x.lon, pos.lat, pos.lon) <= 20) : arr.find(x => x.lat === null);
+      // 同一 StationID 一定同一站；不同 StationID 只有在 20 公尺內且行車方位（Bearing）相同時才合併（兩側站牌可能只差 10 公尺）
+      const same = x => x.lat !== null && ((pos.sid && x.sids.has(pos.sid)) ||
+        (haversine(x.lat, x.lon, pos.lat, pos.lon) <= 20 && (!pos.bear || !x.bear || x.bear === pos.bear)));
+      let g = pos ? arr.find(same) : arr.find(x => x.lat === null);
+      if (g && pos && pos.sid) g.sids.add(pos.sid);
       if (!g) {
-        g = { name, dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, routes: {} };
+        g = { name, dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, bear: pos ? pos.bear : null, sids: new Set(pos && pos.sid ? [pos.sid] : []), routes: {} };
         arr.push(g); list.push(g);
       } else if (pos && pos.d < g.dist) { g.dist = pos.d; g.lat = pos.lat; g.lon = pos.lon; }
       const dirNum = it.Direction === 1 ? 1 : 0;
@@ -188,7 +193,8 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
       for (const r of routes) r.dest = destOf(r.routeUID, r.dirNum, destMap);
-      return { ...g, routes };
+      const { sids, ...rest } = g;
+      return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
   }
 

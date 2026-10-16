@@ -342,7 +342,7 @@ function errBox() {
   return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
 }
 
-const sideTag = s => s.side ? ` <span class="side-tag ${s.side === '同向' ? 'same' : 'opp'}">${s.side}</span>` : '';
+const sideTag = s => s.side ? ` <span class="side-tag ${s.side === '同向' ? 'same' : 'opp'}">${s.side}${s.bearTxt ? '・' + s.bearTxt : ''}</span>` : '';
 function stopCard(s) {
   const routes = [...new Set(s.routes.map(r => r.route))].join('、');
   return `<button class="card" data-act="stop" data-i="${reg(s)}">
