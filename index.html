@@ -33,10 +33,9 @@ body{margin:0;background:var(--bg);color:var(--text);
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
 button:focus-visible,input:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
 svg{display:block}
-html{overflow-x:hidden}
 html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 ::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
-.wrap{max-width:560px;margin:0 auto;padding:0 20px 130px}
+.wrap{overflow-x:clip;max-width:560px;margin:0 auto;padding:0 20px calc(130px + env(safe-area-inset-bottom,0px))}
 
 /* header */
 .top{position:sticky;top:calc(8px + env(safe-area-inset-top,0px));z-index:20;background:rgba(14,16,15,.74);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);margin:8px -10px 0;padding:10px 14px 4px;border-radius:30px;border:1px solid #2A2C2B}
@@ -125,7 +124,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 @keyframes sh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 
 /* tab bar */
-.tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));
+.tabbar{position:fixed;left:0;right:0;margin:0 auto;bottom:calc(14px + env(safe-area-inset-bottom,0px));
   width:min(560px,calc(100% - 28px));display:grid;grid-template-columns:repeat(5,1fr);gap:2px;padding:7px;
   background:rgba(32,34,33,.72);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);
   border:1px solid #2E302F;border-radius:40px;z-index:20}
@@ -733,7 +732,10 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   pg.addEventListener('touchstart', e => {
     st = 0;
     if (!pg.classList.contains('open') || e.touches.length !== 1) return;
-    const t = e.touches[0]; if (t.clientX > 28) return;
+    if (!$('#sheetWrap').hidden || e.target.closest('input,textarea,select,[data-noswipe]')) return;
+    for (let el = e.target; el && el !== pg; el = el.parentElement)
+      if (el.scrollWidth > el.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(el).overflowX)) return;   // 水平捲動區交給捲動
+    const t = e.touches[0];
     st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0;
   }, { passive:true });
   pg.addEventListener('touchmove', e => {
@@ -741,7 +743,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     const t = e.touches[0], ddx = t.clientX - x0, ddy = t.clientY - yy0;
     if (st === 1) {
       if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
-      if (ddx <= 0 || Math.abs(ddy) > Math.abs(ddx)) { st = 0; return; }   // 垂直捲動或往左：交給瀏覽器
+      if (ddx <= 0 || Math.abs(ddx) < Math.abs(ddy) * 1.3) { st = 0; return; }   // 垂直捲動或往左：交給瀏覽器
       st = 2; pg.classList.add('drag'); dim.style.transition = 'none';
     }
     e.preventDefault();
