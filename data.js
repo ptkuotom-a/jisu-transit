@@ -472,7 +472,7 @@ async function traBoard(get, st) {
   rows = rows.filter(r => r.time && !seen.has(r.no) && seen.add(r.no))
     .map(r => ({ ...r, delay: delay[r.no] ?? null, t: toMin(r.time) }))
     .filter(r => r.t + (r.delay || 0) >= now - 1)
-    .sort((a, b) => a.t - b.t).slice(0, 24);
+    .sort((a, b) => a.t - b.t);
   return { kind: "tra", live, trains: rows, groups: groupTrains("tra", rows), note: live ? null : "誤點資訊暫時讀不到，只顯示表定時間" };
 }
 
@@ -499,7 +499,7 @@ async function thsrBoard(get, st) {
   }
   const now = nowMin();
   rows = rows.filter(r => r.time).map(r => ({ ...r, t: toMin(r.time), seats: seatMap[r.no] || null }))
-    .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t).slice(0, 24);
+    .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t);
   return { kind: "thsr", live: seats.status === "fulfilled", trains: rows, groups: groupTrains("thsr", rows), note: seats.status === "fulfilled" ? null : "座位資訊暫時讀不到" };
 }
 
@@ -541,7 +541,29 @@ async function trtcLive(st) {
   return trains.some(t => t.eta !== null) ? trains : null;
 }
 
+// 時刻表只有終點站名：用車站清單把站名換成同一條線的站碼，才能和即時資料用同樣方式判斷方向
+async function destFixer(op) {
+  let list = []; try { list = await loadRailStations(); } catch (e) {}
+  const m = {};
+  for (const s of list) if (s.op === op || (op === "TRTC" && s.op === "NTMC") || (op === "NTMC" && s.op === "TRTC")) (m[normZh(s.name).replace(/站$/, "")] = m[normZh(s.name).replace(/站$/, "")] || []).push(s.id);
+  return t => {
+    if (t.destId) return t;
+    const ids = m[normZh(t.dest).replace(/站$/, "")] || [];
+    const id = ids.find(i => stnPre(i) === t.line) || null;
+    return id ? { ...t, destId: id } : t;
+  };
+}
 async function metroBoard(get, st) {
+  const filter0 = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
+  const ttP = metroTimetable(get, st, filter0, true).catch(() => null);
+  const b = await metroBoard0(get, st);
+  const tt = await ttP;
+  const fix = await destFixer(st.op);
+  b.tt = (tt || []).map(fix).map(t => ({ ...t, side: metroSide(t, st.ids) })).filter(t => !(t.destId && st.ids.includes(t.destId)));
+  b.ttKind = "official";
+  return b;
+}
+async function metroBoard0(get, st) {
   if (busPlusOK(st)) {
     const trains = await trtcLive(st);
     if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: "北捷／環狀線即時到站（資料來源：Bus+ 非官方）" };
@@ -565,7 +587,7 @@ async function metroBoard(get, st) {
     const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
     const rest = tt.filter(t => !(liveDest.has(t.dest + "|" + t.line) && t.eta <= 1));
     const all = [...trains.map(t => ({ ...t, arriving: true })), ...rest].sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", st.ids, all), note: "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" };
+    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", st.ids, all), note: st.op === "TRTC" ? "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" : "TDX 即時看板目前只有進站中列車，其餘依時刻表" };
   }
   let tt;
   try { tt = await metroTimetable(get, st, filter); } catch (e) { if (isRate(e)) throw e; tt = null; }
@@ -575,14 +597,14 @@ async function metroBoard(get, st) {
 }
 
 // 時刻表：回傳今日接下來的班次；查無資料回傳 null
-async function metroTimetable(get, st, filter) {
+async function metroTimetable(get, st, filter, all) {
   let recs = [];
   try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
   if (!recs.length) return null;
   const dayKey = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getDay()];
   let todays = recs.filter(r => r.ServiceDay && r.ServiceDay[dayKey] === true);
   if (!todays.length) todays = recs;
-  const now = nowMin(), byKey = {};
+  const now = nowMin() < 180 ? nowMin() + 1440 : nowMin(), byKey = {};
   for (const r of todays) {
     const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向 ${r.Direction ?? "?"}`;
     const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
@@ -597,7 +619,10 @@ async function metroTimetable(get, st, filter) {
   for (const g of Object.values(byKey)) (dirsOf[g.dest + "|" + g.line] = dirsOf[g.dest + "|" + g.line] || new Set()).add(g.dir);
   for (const g of Object.values(byKey)) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向 ${g.dir}`;
-    [...g.times].map(x => ({ x, t: toMin(x) })).filter(o => o.t >= now).sort((a, b) => a.t - b.t).slice(0, 3)
+    const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
+    let up = ts.filter(o => o.t >= now);
+    if (!up.length && all) up = ts.map(o => ({ x: o.x, t: o.t + 1440 }));   // 今日已收班：列出明日班次
+    up.slice(0, all ? 999 : 3)
       .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, destId: g.destId, dir: g.dir, line: g.line, via: g.via || null, eta: o.t - now }));
   }
   trains.sort((a, b) => a.t - b.t);
@@ -608,7 +633,7 @@ async function metroTimetable(get, st, filter) {
 // 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多 8 班
 function groupTrains(kind, a, b) {
   const ids = b === undefined ? [] : a, trains = b === undefined ? a : b;
-  const per = 8, key = t => t.t ?? t.eta ?? 9999;
+  const per = kind === "metro" ? 8 : 999, key = t => t.t ?? t.eta ?? 9999;
   let groups;
   if (kind === "tra" || kind === "thsr") {
     groups = kind === "tra" ? [{ label: "順行", dir: 0, trains: [] }, { label: "逆行", dir: 1, trains: [] }] : [{ label: "南下", dir: 0, trains: [] }, { label: "北上", dir: 1, trains: [] }];
@@ -806,8 +831,18 @@ async function tmrtBoard(get, st) {
     lines.push(`往 ${dest}：${up.length ? `約每 ${hwAt(now)} 分一班，` : "今日已收班，"}首班 ${hm(r.FirstTrainTime)}、末班 ${hm(r.LastTrainTime)}`);
   }
   trains.sort((a, b) => a.t - b.t);
+  const tt = [];
+  for (const r of recs) {
+    const dest = zh(r.DestinationStationName) || "?", first = toMin(r.FirstTrainTime);
+    let last = toMin(r.LastTrainTime); if (last < 180) last += 1440;
+    const base = closed ? first : first, from = closed ? -1 : now;
+    for (let t = base; t <= last; t += hwAt(t)) if (t >= from) tt.push({ time: clock(t), t, eta: t >= now ? t - now : t + 1440 - now, dest, destId: r.DestinationStationID || null, dir: r.Direction ?? null, line: r.LineID || "G", est: true });
+    if (!tt.some(x => x.dest === dest && x.t === last) && last >= from) tt.push({ time: clock(last), t: last, eta: last >= now ? last - now : last + 1440 - now, dest, destId: r.DestinationStationID || null, dir: r.Direction ?? null, line: r.LineID || "G", est: true, lastTrain: true });
+  }
+  tt.sort((a, b) => a.t - b.t);
+  { const fix = await destFixer("TMRT"); tt.forEach((t, i) => { tt[i] = fix(t); tt[i].side = metroSide(tt[i], st.ids); }); }
   const note = (closed ? `今日已收班／明日首班 ${clock(nextFirst)}\n` : "預估（依班距推算，非即時）\n") + lines.join("\n");
-  return { kind: "metro", live: false, trains, groups: groupTrains("metro", st.ids, trains), note };
+  return { kind: "metro", live: false, trains, groups: groupTrains("metro", st.ids, trains), note, tt, ttKind: "estimate", ttTomorrow: closed };
 }
 
 async function railBoard(get, st) {

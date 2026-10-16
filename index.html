@@ -221,6 +221,13 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .st.past .sn{color:var(--dim)}
 .badge.sysb{color:var(--lime)}.badge.sysb .slogo{width:30px;height:30px}
 .mpin .slogo{width:18px;height:18px}
+.seg{position:relative;display:grid;grid-template-columns:repeat(var(--n),1fr);gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:4px;margin:8px 0 4px}
+.seg i{position:absolute;top:4px;bottom:4px;left:4px;width:calc((100% - 8px) / var(--n));border-radius:999px;background:var(--lime);transform:translateX(calc(var(--i) * 100%));transition:transform .25s ease}
+.seg button,.seg span{position:relative;z-index:1;padding:9px 6px;border-radius:999px;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.seg button.on{color:var(--ink)} .seg.one{grid-template-columns:1fr} .seg.one span{color:var(--text,#fff);text-align:center}
+@media (prefers-reduced-motion: reduce){.seg i{transition:none}}
+.lstops{display:inline-flex;align-items:center;gap:2px;font-size:13px;font-weight:600;color:var(--lime)} .lstops svg{width:14px;height:14px}
+.lastt{font-size:11px;color:var(--warn);font-weight:700}
 .dgrp{margin-top:6px;font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
 .rsub{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:14px}
@@ -298,7 +305,7 @@ const I = {
 const S = {
   tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0,
   settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},
-  rail:null, railData:null, railLoading:false, railError:null, page:null,
+  railTab:{}, ttAll:{}, rail:null, railData:null, railLoading:false, railError:null, page:null,
   favs:{bus:[], bike:[]},
   route:null, routeData:null, routeLoading:false, routeError:null,
   sheet:null, proxy:{},
@@ -706,6 +713,47 @@ function railByLine(R, D, G) {
       { const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line: l, g }); return `<button class="tgrp dgrp lnk" data-act="lineOpen" data-i="${li}">${esc(g.label)}<span>${g.trains.length} 班 ${I.chev}</span></button><button class="board lnk" data-act="lineOpen" data-i="${li}">${g.trains.map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</button>`; }).join('');
   }).join('');
 }
+/* 方向分頁：每條線兩個方向用分段切換，分頁內先即時、再整天時刻表 */
+const clk = x => { const [h, m] = String(x).split(':'); return String(+h % 24).padStart(2,'0') + ':' + m; };
+const etaTxt = e => e == null ? '' : e >= 60 ? `${Math.floor(e/60)} 小時 ${e%60} 分後` : `${e} 分後`;
+function segTabs(id, tabs, sel) {
+  if (tabs.length < 2) return tabs.length ? `<div class="seg one"><span class="on">${esc(tabs[0].label)}</span></div>` : '';
+  return `<div class="seg" style="--n:${tabs.length};--i:${Math.max(0, tabs.findIndex(t => t.key === sel))}"><i></i>${tabs.map(t => `<button class="${t.key === sel ? 'on' : ''}" data-act="railTab" data-v="${esc(id + '|' + t.key)}">${esc(t.label)}</button>`).join('')}</div>`;
+}
+function moreBtn(id, n, shown) { return n > shown ? `<button class="more" data-act="ttAll" data-v="${esc(id)}">顯示全部 ${n} 班</button>` : ''; }
+function railTabsMetro(R, D, G) {
+  const order = [...(R.lines || [])], lines = new Map();
+  const put = (l, key, kind, t) => { if (!lines.has(l)) lines.set(l, new Map()); const m = lines.get(l); if (!m.has(key)) m.set(key, { key, live:[], tt:[], dests:[] }); const x = m.get(key); x[kind].push(t); if (t.dest && !x.dests.includes(t.dest)) x.dests.push(t.dest); };
+  for (const g of G) for (const t of g.trains) put(g.line || '', t.via || g.side || 'x' + t.dest, 'live', t);
+  for (const t of (D.tt || [])) put(t.line || '', t.via || t.side || 'x' + t.dest, 'tt', t);
+  const rank = l => { const i = order.indexOf(l); return i < 0 ? 100 + (l.charCodeAt(0) || 0) : i; };
+  const sk = k => /^(up|d0|逆行)/.test(k) ? 0 : /^(dn|d1|順行)/.test(k) ? 1 : 2;
+  const est = D.ttKind === 'estimate';
+  return [...lines.entries()].sort((a, b) => rank(a[0]) - rank(b[0])).map(([l, m]) => {
+    const op = (LINE_COLOR[R.op] || {})[l] ? R.op : (LINE_COLOR.NTMC[l] ? 'NTMC' : R.op);
+    const name = (LINE_NAME[R.op] || {})[l] || (LINE_NAME.NTMC[l] && R.op === 'TRTC' ? LINE_NAME.NTMC[l] : '') || (l ? l + ' 線' : '其他');
+    const tabs = [...m.values()].sort((a, b) => sk(a.key) - sk(b.key) || a.key.localeCompare(b.key)).map(x => ({ ...x, label: '往 ' + x.dests.slice(0, 3).join('／') + (/行$/.test(x.key) ? `（${x.key}）` : '') }));
+    const sel = tabs.find(t => t.key === S.railTab[R.name + l])?.key || tabs[0].key, T = tabs.find(t => t.key === sel);
+    const alts = tabs.map(t => ({ label:t.label, line:l, trains: (t.live.length ? t.live : t.tt.slice(0, 20)) }));
+    const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, g: alts[tabs.indexOf(T)], alts });
+    let h = `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span><span style="flex:1"></span><button class="lstops" data-act="lineOpen" data-i="${li}">停靠站 ${I.chev}</button></div>` + segTabs(R.name + l, tabs, sel);
+    if (T.live.length) h += `<div class="tgrp">即時到站<span>${D.note && /Bus\+/.test(D.note) ? 'Bus+' : 'TDX'}</span></div><div class="board">${T.live.slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999)).slice(0, 6).map(t => trainRow('metro', R.op, { ...t, line:null })).join('')}</div>`;
+    if (T.tt.length) {
+      const id = R.name + l + sel, all = S.ttAll[id], n = T.tt.length, show = all ? n : 12;
+      const tomorrow = D.ttTomorrow || T.tt[0].eta > 180;
+      h += `<div class="tgrp">${est ? '估算班次（依班距，非即時）' : '時刻表'}${tomorrow ? '・明日' : ''}<span>${tomorrow ? '共' : '今日剩'} ${n} 班</span></div><div class="board">` +
+        T.tt.slice(0, show).map(t => `<div class="trow"><span class="ttime">${clk(t.time)}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div><div class="tt">${est ? '約 ' : ''}${etaTxt(t.eta)}</div></span></div>`).join('') + `</div>` + moreBtn(id, n, show);
+    } else if (!T.live.length) h += `<div class="note">這個方向目前沒有班次資料。</div>`;
+    return h;
+  }).join('');
+}
+function railTabsTrain(R, D, G) {
+  const tabs = G.map(g => ({ key:g.label, label:g.label, g }));
+  const sel = tabs.find(t => t.key === S.railTab[R.name])?.key || tabs[0].key, T = tabs.find(t => t.key === sel);
+  const id = R.name + sel, all = S.ttAll[id], n = T.g.trains.length, show = all ? n : 15;
+  return segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}<span>今日剩 ${n} 班</span></div><div class="board">` +
+    T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('') + `</div>` + moreBtn(id, n, show);
+}
 function renderRail() {
   const R = S.rail; if (!R || S.page !== 'rail') return;
   const D = S.railData;
@@ -719,7 +767,8 @@ function renderRail() {
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
     const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
-    if (D.kind === 'metro' && G.length) h += railByLine(R, D, G);
+    if (D.kind === 'metro' && (G.length || (D.tt || []).length)) h += railTabsMetro(R, D, G);
+    else if ((D.kind === 'tra' || D.kind === 'thsr') && G.length) h += railTabsTrain(R, D, G);
     else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
   }
   $('#routePage').innerHTML = h + '</div>';
@@ -732,7 +781,7 @@ function openLine(req) {
   renderLine(); loadLine(true);
 }
 function lineReqFromGroup(o) {
-  const g = o.g, alts = (S.railData?.groups || []).filter(x => x.line === o.line && x.trains.length);
+  const g = o.g, alts = o.alts || (S.railData?.groups || []).filter(x => x.line === o.line && x.trains.length);
   return { kind:'line', op:o.op, line:o.line, ids:S.rail.ids, label:g.label, via:g.trains[0]?.via || null, curEta:g.trains[0]?.eta ?? null,
     dests:g.trains.map(t => ({ id:t.destId || null, name:t.dest })), alts, alt: alts.indexOf(g) };
 }
@@ -863,6 +912,8 @@ document.addEventListener('click', e => {
     case 'tab': setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
+    case 'railTab': { const v = el.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1); renderRail(); break; }
+    case 'ttAll': S.ttAll[el.dataset.v] = true; renderRail(); break;
     case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
     case 'trainOpen': if (o && S.rail) openLine({ kind:o.kind, no:o.no, ids:S.rail.ids }); break;
     case 'lineSwap': if (S.line?.req.alts) { const q = S.line.req, n = (q.alt + 1) % q.alts.length; S.line.data = null; openLine({ ...lineReqFromGroup({ op:q.op, line:q.line, g:q.alts[n] }) }); } break;
