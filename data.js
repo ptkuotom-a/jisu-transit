@@ -383,6 +383,19 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
       if (d < g.dist) Object.assign(g, { dist: d, exit: exit ? exit.name : g.exit, navLat: exit ? exit.lat : s.lat, navLon: exit ? exit.lon : s.lon });
     }
   }
+  // 北捷與環狀線轉乘站（板橋 BL07／Y16 等）合併成一張卡
+  const trtcBy = {};
+  for (const g of Object.values(groups)) if (g.op === "TRTC") for (const i of g.ids) trtcBy[i] = g;
+  for (const [k, g] of Object.entries(groups)) {
+    if (g.op !== "NTMC") continue;
+    const t = g.ids.map(i => trtcBy[TRTC_XFER[i]]).find(Boolean);
+    if (!t) continue;
+    for (const i of g.ids) if (!t.ids.includes(i)) t.ids.push(i);
+    for (const l of g.lines) if (!t.lines.includes(l)) t.lines.push(l);
+    if (!/新北捷運/.test(t.sys)) t.sys = t.sys + "・新北捷運";
+    if (g.dist < t.dist) Object.assign(t, { dist: g.dist, exit: g.exit, navLat: g.navLat, navLon: g.navLon });
+    delete groups[k];
+  }
   const all = Object.values(groups).sort((a, b) => a.dist - b.dist);
   const count = {}, near = [];
   for (const s of all) {
