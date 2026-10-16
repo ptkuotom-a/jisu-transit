@@ -485,22 +485,27 @@ async function thsrBoard(get, st) {
 
 // 北捷即時到站（經 Worker /trtc-eta，來源 Bus+）；失敗或沒資料回傳 null
 const TRTC_ROUTE = [["淡水信義", "R"], ["松山新店", "G"], ["中和新蘆", "O"], ["板南", "BL"], ["文湖", "BR"], ["環狀", "Y"], ["新北投", "R"], ["小碧潭", "G"]];
+// 北捷與環狀線的轉乘站：查詢時一併帶入另一系統的站碼
+const TRTC_XFER = { BL07: "Y16", BL08: "Y17", G04: "Y07", O02: "Y11", O17: "Y18" };
+for (const [a, b] of Object.entries(TRTC_XFER)) TRTC_XFER[b] = a;
+const busPlusOK = st => st.op === "TRTC" || (st.op === "NTMC" && st.ids.some(i => /^Y\d/.test(i)));
 async function trtcLive(st) {
   const proxy = getProxy(); if (!proxy) return null;
+  const ids = [...new Set(st.ids.flatMap(i => TRTC_XFER[i] ? [i, TRTC_XFER[i]] : [i]))].filter(i => !/^LB/.test(i));
   let j;
   try {
     const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 8000);
-    j = await fetch(`${proxy}/trtc-eta?ids=${encodeURIComponent(st.ids.join(","))}`, { signal: ctl.signal }).then(r => r.ok ? r.json() : null);
+    j = await fetch(`${proxy}/trtc-eta?ids=${encodeURIComponent(ids.join(","))}`, { signal: ctl.signal }).then(r => r.ok ? r.json() : null);
     clearTimeout(tm);
   } catch (e) { return null; }
   if (!j || !Array.isArray(j.stations)) return null;
-  const here = new Set(st.ids), best = {};
+  const here = new Set(ids), best = {};
   for (const s of j.stations) for (const it of (s.items || [])) {
     const destId = String(it.destinationStationId || "").toUpperCase();
     if (here.has(destId)) continue;                                        // 終點就是本站的列車不顯示
     const dest = (it.stationName && it.stationName.zh) || "?";
     const rn = (it.routeName && it.routeName.zh) || "";
-    const line = (TRTC_ROUTE.find(([k]) => rn.includes(k)) || [])[1] || (/^[A-Z]+/.exec(destId) || [])[0] || null;   // 終點代碼可能是轉乘站的另一條線（如大安 BR09）
+    const line = (TRTC_ROUTE.find(([k]) => rn.includes(k)) || [])[1] || (!rn ? "Y" : null) || (/^[A-Z]+/.exec(destId) || [])[0] || null;   // 環狀線沒有 routeName   // 終點代碼可能是轉乘站的另一條線（如大安 BR09）
     const raw = String(it.estimateTime ?? "").trim();
     let sec = null, label = null;
     const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
@@ -516,9 +521,9 @@ async function trtcLive(st) {
 }
 
 async function metroBoard(get, st) {
-  if (st.op === "TRTC") {
+  if (busPlusOK(st)) {
     const trains = await trtcLive(st);
-    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: "北捷即時到站（資料來源：Bus+ 非官方）" };
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: "北捷／環狀線即時到站（資料來源：Bus+ 非官方）" };
   }
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
