@@ -39,9 +39,9 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 /* header */
 .top{position:sticky;top:calc(8px + env(safe-area-inset-top,0px));z-index:20;background:rgba(14,16,15,.74);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);margin:8px -10px 0;padding:10px 14px 4px;border-radius:30px;border:1px solid #2A2C2B}
 .safe-cover{position:fixed;left:0;right:0;top:0;height:env(safe-area-inset-top,0px);z-index:35;background:rgba(14,16,15,.6);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);pointer-events:none}
-.brand{display:flex;align-items:center;gap:10px;min-height:64px}
+.brand{display:flex;align-items:center;gap:12px;min-height:64px}
 .brand h1{margin:0;font-size:46px;line-height:1;font-weight:900;letter-spacing:-1.5px;color:var(--lime)}
-.brand .ico{color:var(--lime);width:40px;height:40px}
+.brand .ico{color:var(--lime);width:40px;height:40px;flex:none;display:grid;place-items:center}.brand .ico svg{width:40px;height:40px}.brand .ico:empty{display:none}
 .meta{display:flex;align-items:center;justify-content:space-between;margin:6px 0 16px;color:var(--muted);font-size:13px}
 .meta .live{display:flex;align-items:center;gap:6px}
 .meta .live i{width:7px;height:7px;border-radius:50%;background:var(--lime);display:inline-block}
@@ -223,7 +223,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1 id="title">極速通勤</h1><span class="ico" id="titleIco"></span></div>
+    <div class="brand"><span class="ico" id="titleIco"></span><h1 id="title">極速通勤</h1></div>
     <div class="meta"><span class="live" id="status"><i></i>定位中</span><button class="refresh" id="refreshBtn" aria-label="重新整理"></button></div>
     <label class="search" id="searchBar"><span id="searchIco"></span><input id="q" type="text" enterkeyhint="search" placeholder="搜尋附近路線、站牌、YouBike" autocomplete="off"><button class="clear" id="qClear" hidden>清除</button></label>
   </header>
