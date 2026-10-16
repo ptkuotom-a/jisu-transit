@@ -36,7 +36,7 @@ svg{display:block}
 .wrap{max-width:560px;margin:0 auto;padding:0 20px 130px}
 
 /* header */
-.top{position:sticky;top:0;z-index:20;background:var(--bg);margin-top:calc(-1 * env(safe-area-inset-top,0px));padding-top:calc(10px + env(safe-area-inset-top,0px));padding-bottom:4px}
+.top{position:sticky;top:0;z-index:20;background:rgba(14,16,15,.78);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);margin:calc(-1 * env(safe-area-inset-top,0px)) -12px 0;padding:calc(10px + env(safe-area-inset-top,0px)) 12px 4px;border-radius:0 0 30px 30px;border:1px solid #2A2C2B;border-top:0}
 .brand{display:flex;align-items:center;gap:10px;min-height:64px}
 .brand h1{margin:0;font-size:46px;line-height:1;font-weight:900;letter-spacing:-1.5px;color:var(--lime)}
 .brand .ico{color:var(--lime);width:40px;height:40px}
@@ -123,7 +123,7 @@ svg{display:block}
 /* tab bar */
 .tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));
   width:min(560px,calc(100% - 28px));display:grid;grid-template-columns:repeat(5,1fr);gap:2px;padding:7px;
-  background:rgba(32,34,33,.92);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);
+  background:rgba(32,34,33,.72);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);
   border:1px solid #2E302F;border-radius:40px;z-index:20}
 .tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 8px;border-radius:32px;color:#D9DBD7;font-size:12px;font-weight:600;white-space:nowrap}
 .tab svg{width:28px;height:28px}
@@ -133,6 +133,9 @@ svg{display:block}
 .page{position:fixed;inset:0;background:var(--bg);z-index:30;overflow-y:auto;-webkit-overflow-scrolling:touch;
   padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);transform:translateX(100%);transition:transform .28s ease}
 .page.open{transform:none}
+.page.drag{transition:none;box-shadow:-12px 0 30px rgba(0,0,0,.5)}
+.sheet.drag{transition:none}
+.page-dim{position:fixed;inset:0;z-index:29;background:#000;opacity:0;pointer-events:none}
 .page .wrap{padding-bottom:60px}
 .ptop{position:sticky;top:0;z-index:2;background:var(--bg);padding:12px 0 14px}
 .back{display:flex;align-items:center;gap:4px;color:var(--lime);font-size:17px;font-weight:600;padding:6px 0}
@@ -222,7 +225,7 @@ svg{display:block}
 </div>
 
 <nav class="tabbar" id="tabbar"></nav>
-<section class="page" id="routePage" aria-hidden="true"></section>
+<div class="page-dim" id="pageDim"></div><section class="page" id="routePage" aria-hidden="true"></section>
 <div class="sheet-wrap" id="sheetWrap" hidden><div class="scrim" data-act="closeSheet"></div><div class="sheet" id="sheet"></div></div>
 
 <script src="config.js"></script>
@@ -553,10 +556,13 @@ function openRoute(r) {
 }
 function closeRoute() { S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
 async function loadRoute(scroll) {
-  if (!S.route || S.routeLoading) return;
-  S.routeLoading = true;
-  try { S.routeData = await api('route', S.route); S.routeError = null; }
-  catch (e) { S.routeError = e.message; }
+  if (!S.route) return;
+  const R = S.route, tok = S.routeTok = (S.routeTok || 0) + 1;   // 只採用最新一次請求的結果，避免切換路線時卡在骨架畫面
+  S.routeLoading = true; renderRoute();
+  let data = null, err = null;
+  try { data = await api('route', { ...R }); } catch (e) { err = e.message; }
+  if (tok !== S.routeTok || S.route !== R) return;
+  if (data) { S.routeData = data; S.routeError = null; } else S.routeError = err || '沒有資料';
   S.routeLoading = false; renderRoute();
   if (scroll) { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); }
 }
@@ -671,6 +677,73 @@ async function saveProxy() {
     S.error = null; refresh();
   } catch (e) { msg.className = 'kmsg bad'; msg.textContent = e.message; }
 }
+/* ---------- iOS 式手勢：下滑關閉 sheet、左緣右滑返回 ---------- */
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+(() => {
+  const sh = $('#sheet'), scrim = document.querySelector('#sheetWrap .scrim');
+  let y0 = 0, t0 = 0, dy = 0, on = false, armed = false;
+  sh.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    armed = sh.scrollTop <= 0; on = false; dy = 0; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive:true });
+  sh.addEventListener('touchmove', e => {
+    if (!armed) return;
+    const d = e.touches[0].clientY - y0;
+    if (!on) { if (d > 6 && sh.scrollTop <= 0) { on = true; y0 = e.touches[0].clientY; sh.classList.add('drag'); scrim.style.transition = 'none'; } else { if (d < -6) armed = false; return; } }
+    e.preventDefault();
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    sh.style.transform = `translateY(${dy}px)`;
+    scrim.style.opacity = String(Math.max(0, 1 - dy / sh.offsetHeight));
+  }, { passive:false });
+  const end = () => {
+    if (!on) { armed = false; return; }
+    on = armed = false;
+    const v = dy / Math.max(1, Date.now() - t0);
+    sh.classList.remove('drag'); scrim.style.transition = '';
+    if (dy > sh.offsetHeight * 0.3 || (v > 0.5 && dy > 30)) {
+      sh.style.transform = 'translateY(100%)'; scrim.style.opacity = '';
+      closeSheet(); setTimeout(() => { sh.style.transform = ''; }, reduceMotion() ? 0 : 260);
+    } else { sh.style.transform = ''; scrim.style.opacity = ''; }
+  };
+  sh.addEventListener('touchend', end); sh.addEventListener('touchcancel', end);
+
+  const pg = $('#routePage'), dim = $('#pageDim');
+  let x0 = 0, yy0 = 0, tt = 0, dx = 0, st = 0;   // st: 0 無 1 判斷中 2 拖曳中
+  pg.addEventListener('touchstart', e => {
+    st = 0;
+    if (!pg.classList.contains('open') || e.touches.length !== 1) return;
+    const t = e.touches[0]; if (t.clientX > 28) return;
+    st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0;
+  }, { passive:true });
+  pg.addEventListener('touchmove', e => {
+    if (!st) return;
+    const t = e.touches[0], ddx = t.clientX - x0, ddy = t.clientY - yy0;
+    if (st === 1) {
+      if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      if (ddx <= 0 || Math.abs(ddy) > Math.abs(ddx)) { st = 0; return; }   // 垂直捲動或往左：交給瀏覽器
+      st = 2; pg.classList.add('drag'); dim.style.transition = 'none';
+    }
+    e.preventDefault();
+    dx = Math.max(0, ddx);
+    pg.style.transform = `translateX(${dx}px)`;
+    dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
+  }, { passive:false });
+  const pend = () => {
+    if (st !== 2) { st = 0; return; }
+    st = 0;
+    const v = dx / Math.max(1, Date.now() - tt), dur = reduceMotion() ? 0 : 220;
+    pg.classList.remove('drag');
+    dim.style.transition = `opacity ${dur}ms ease`; dim.style.opacity = '0';
+    if (dx > innerWidth / 3 || (v > 0.5 && dx > 40)) {
+      pg.style.transition = `transform ${dur}ms ease`; pg.style.transform = 'translateX(100%)';
+      setTimeout(() => { closeRoute(); pg.style.transition = ''; pg.style.transform = ''; }, dur);
+    } else {
+      pg.style.transition = `transform ${dur}ms ease`; pg.style.transform = '';
+      setTimeout(() => { pg.style.transition = ''; }, dur);
+    }
+  };
+  pg.addEventListener('touchend', pend); pg.addEventListener('touchcancel', pend);
+})();
 function closeSheetQuiet() { if (!$('#sheetWrap').hidden) closeSheet(); }
 let favT; function refreshFavsSoon() { clearTimeout(favT); favT = setTimeout(refresh, 600); }
 $('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); });
