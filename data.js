@@ -720,6 +720,15 @@ function loadState() {
   return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
 }
 
+// 推播／下車提醒（Worker 端點）
+async function pushCall(method, path, body) {
+  const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+  const r = await fetch(proxy + path, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && r.status !== 404) throw new Error(j.message || ("錯誤 " + r.status));
+  return j;
+}
+
 window.dataApi = async (action, p = {}) => {
   switch (action) {
     case "nearby": return nearby(p);
@@ -741,6 +750,15 @@ window.dataApi = async (action, p = {}) => {
       return j;
     }
     case "open": location.href = p.url; return true;
+    case "pushKey": return pushCall("GET", "/push/key");
+    case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
+    case "remindCreate": {
+      const k = routeKind(p.routeUID);
+      if (!k) throw new Error("這條路線不支援下車提醒");
+      return pushCall("POST", "/reminder", { ...p, path: k.path });
+    }
+    case "remindStatus": return pushCall("GET", "/reminder/" + p.id);
+    case "remindCancel": return pushCall("DELETE", "/reminder/" + p.id);
   }
   throw new Error("未知動作 " + action);
 };

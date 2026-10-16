@@ -159,7 +159,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .dot{position:absolute;left:5px;top:50%;width:14px;height:14px;margin-top:-7px;border-radius:50%;background:var(--bg);border:2px solid var(--dim)}
 .st.bus .dot{width:26px;height:26px;left:-1px;margin-top:-13px;background:var(--lime);border:0;display:grid;place-items:center;color:var(--ink)}
 .st.bus .dot svg{width:16px;height:16px}
-.st .sn{flex:1;min-width:0;font-size:17px;font-weight:600}
+.st .sn{flex:1;min-width:0;font-size:17px;font-weight:600;text-align:left;padding:4px 0}
 .st .sn small{display:block;color:var(--dim);font-size:12px;font-weight:500;margin-top:2px}
 .st.here{background:var(--surface);border-radius:20px;margin:4px -10px;padding-left:44px;padding-right:10px}
 .st.here::before{left:21px} .st.here .dot{left:15px;border-color:var(--lime)} .st.here.bus .dot{left:9px}
@@ -222,6 +222,16 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translate(-50%,-20px);opacity:0;z-index:60;background:var(--lime);color:var(--ink);font-weight:700;font-size:15px;padding:10px 18px;border-radius:999px;transition:opacity .3s,transform .3s;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion: reduce){ .toast{transition:none} }
+.rbar{position:fixed;left:0;right:0;margin:0 auto;width:min(560px,calc(100% - 28px));bottom:calc(108px + env(safe-area-inset-bottom,0px));z-index:32;display:flex;align-items:center;gap:10px;
+  background:rgba(32,34,33,.9);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid var(--lime);border-radius:22px;padding:10px 10px 10px 16px;font-size:15px;font-weight:600}
+.rbar .t{flex:1;min-width:0;line-height:1.35}.rbar .t small{display:block;color:var(--muted);font-weight:500;font-size:13px}
+.rbar button{flex:none;background:var(--surface2);border-radius:999px;padding:8px 14px;font-weight:700;color:var(--bad)}
+.page.open ~ .rbar{bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.ropt{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0}
+.ropt button,.rbus button{background:var(--surface2);border-radius:16px;padding:12px 0;font-weight:700;font-size:15px;border:2px solid transparent}
+.ropt button.on,.rbus button.on{border-color:var(--lime);color:var(--lime)}
+.rbus{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.rbus button{padding:10px 14px}
+.rlab{color:var(--muted);font-size:14px;margin-top:14px}
 </style>
 </head>
 <body>
@@ -236,7 +246,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 
 <div class="safe-cover"></div><nav class="tabbar" id="tabbar"></nav>
 <div class="page-dim" id="pageDim"></div><section class="page" id="routePage" aria-hidden="true"></section>
-<div class="sheet-wrap" id="sheetWrap" hidden><div class="scrim" data-act="closeSheet"></div><div class="sheet" id="sheet"></div></div>
+<div class="rbar" id="rbar" hidden></div><div class="sheet-wrap" id="sheetWrap" hidden><div class="scrim" data-act="closeSheet"></div><div class="sheet" id="sheet"></div></div>
 
 <script src="config.js"></script>
 <script src="data.js"></script>
@@ -483,6 +493,9 @@ function vSettings() {
     <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
   <div class="sec"><h2>自動更新</h2></div>
   <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+' 秒':'關閉')}</div>
+  <div class="sec"><h2>通知</h2></div>
+  <div class="set"><p>下車提醒用推播通知。iPhone 需 iOS 16.4 以上，並從主畫面圖示開啟。目前權限：${'Notification' in window ? ({granted:'已允許',denied:'已拒絕（到 iPhone 設定 › 通知 › 極速通勤 開啟）',default:'尚未詢問'})[Notification.permission] : '這個環境不支援'}</p>
+    <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
   <div class="sec"><h2>關於</h2></div>
   <div class="note">極速通勤 ${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
 }
@@ -615,14 +628,14 @@ function renderRoute() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1>${esc(R.route)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="swapDir">${I.swap}<span>${esc(dest ? '往 ' + dest : '切換方向')}</span></button>` : (dest ? `<span class="dirbtn"><span>往 ${esc(dest)}</span></span>` : '')}</div>
-    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length} 站，點星號收藏站牌` : ''}</div></div>`;
+    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length} 站，點站名設下車提醒、點星號收藏` : ''}</div></div>`;
   if (!D) h += skel(5);
   else {
-    h += `<div class="line">` + D.stops.map(s => {
+    h += `<div class="line">` + D.stops.map((s, i) => {
       const f = { routeUID:D.routeUID, route:R.route, dirNum:R.dirNum, stopUID:s.uid, stopName:s.name, dest };
       const on = isFavBus(f);
       return `<div class="st ${s.here?'here':''} ${s.bus?'bus':''}"><span class="dot">${s.bus ? I.busFill : ''}</span>
-        <span class="sn">${esc(s.name)}${s.bus && s.plate ? `<small>${esc(s.plate)}</small>` : ''}</span>${etaPill(s)}
+        <button class="sn" data-act="remindAt" data-i="${reg({ i })}">${esc(s.name)}${s.bus && s.plate ? `<small>${esc(s.plate)}</small>` : ''}</button>${etaPill(s)}
         <button class="fav ${on?'on':''}" data-act="favBus" data-i="${reg(f)}" aria-label="${on?'取消收藏':'收藏'}">${on ? I.star : I.starO}</button></div>`;
     }).join('') + `</div>`;
   }
@@ -678,6 +691,12 @@ document.addEventListener('click', e => {
     case 'tab': setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
+    case 'remindAt': if (o) openRemind(o.i); break;
+    case 'remBus': S.rem.plate = el.dataset.v; openRemind(S.rem.i, true); break;
+    case 'remOpt': S.rem.opt = el.dataset.v; openRemind(S.rem.i, true); break;
+    case 'remStart': startRemind(el); break;
+    case 'remCancel': cancelRemind(); break;
+    case 'pushTest': pushTest(el); break;
     case 'rail': closeSheetQuiet(); if (o) openRail(o); break;
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
     case 'stop': if (o) stopSheet(o); break;
@@ -830,6 +849,92 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   };
   area.addEventListener('touchend', end); area.addEventListener('touchcancel', end);
 })();
+/* ---------- 下車提醒 ---------- */
+const REM_KEY = 'jisu_reminder';
+const REM_OPTS = [['s1','提前 1 站'],['s2','提前 2 站'],['s3','提前 3 站'],['m2','約 2 分鐘'],['m3','約 3 分鐘'],['m5','約 5 分鐘']];
+const remLabel = opt => (REM_OPTS.find(x => x[0] === opt) || [,''])[1];
+function openRemind(i, keep) {
+  const D = S.routeData, R = S.route; if (!D || !R) return;
+  const dest = D.stops[i];
+  const buses = D.stops.slice(0, i + 1).map((s, j) => ({ j, plate: s.plate })).filter(b => b.plate).reverse();   // 由近到遠
+  if (!keep || !S.rem || S.rem.i !== i) S.rem = { i, plate: buses[0] ? buses[0].plate : null, opt: (S.rem && S.rem.opt) || 's2' };
+  if (S.rem.plate && !buses.some(b => b.plate === S.rem.plate)) S.rem.plate = buses[0] ? buses[0].plate : null;
+  if (!S.pushKey) api('pushKey').then(j => { S.pushKey = j.key; }).catch(() => {});
+  const html = `<h2>在「${esc(dest.name)}」下車提醒</h2><div class="addr">${esc(R.route)} 往 ${esc(D.dest?.[R.dirNum] ?? R.dest ?? '')}</div>
+    <div class="rlab">搭乘的車（由近到遠）</div>
+    ${buses.length ? `<div class="rbus">${buses.map(b => `<button class="${b.plate === S.rem.plate ? 'on' : ''}" data-act="remBus" data-v="${esc(b.plate)}">${esc(b.plate)}<span style="color:var(--muted);font-weight:500">　${i - b.j === 0 ? '在本站' : `還有 ${i - b.j} 站`}</span></button>`).join('')}</div>`
+      : `<div class="note">目前看不到開往這站、有車牌資料的公車。稍後重新整理再試。</div>`}
+    <div class="rlab">什麼時候提醒</div>
+    <div class="ropt">${REM_OPTS.map(([k, l]) => `<button class="${S.rem.opt === k ? 'on' : ''}" data-act="remOpt" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="remStart" ${buses.length ? '' : 'disabled style="opacity:.4"'}>開始提醒</button></div>
+    <div class="kmsg" id="remMsg">提醒會在背景透過推播送出，關掉 app 也能收到。</div>`;
+  if (keep && !$('#sheetWrap').hidden) $('#sheet').innerHTML = '<div class="grab"></div>' + html; else openSheet(html);
+}
+const b64uToBytes = s => { const b = atob(s.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+async function getPushSub(msgEl) {
+  const say = t => { if (msgEl) { msgEl.className = 'kmsg bad'; msgEl.textContent = t; } };
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { say('這裡不能推播：請在 iPhone 用 Safari 把極速通勤「加入主畫面」，再從主畫面圖示開啟（iOS 16.4 以上）。'); return null; }
+  let perm = Notification.permission;
+  if (perm === 'default') perm = await Notification.requestPermission();   // 必須在點擊當下呼叫
+  if (perm !== 'granted') { say('沒有通知權限：到 iPhone 設定 › 通知 › 極速通勤，開啟「允許通知」。'); return null; }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    const key = S.pushKey || (S.pushKey = (await api('pushKey')).key);
+    if (!key) { say('Worker 尚未設定推播金鑰。'); return null; }
+    sub = await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: b64uToBytes(key) });
+  }
+  return sub.toJSON();
+}
+async function startRemind(btn) {
+  const msg = $('#remMsg'), D = S.routeData, R = S.route, rem = S.rem;
+  if (!D || !R || !rem || !rem.plate) return;
+  btn.disabled = true; msg.className = 'kmsg'; msg.textContent = '設定中…';
+  try {
+    const sub = await getPushSub(msg); if (!sub) { btn.disabled = false; return; }
+    const dest = D.stops[rem.i];
+    const j = await api('remindCreate', { sub, routeUID: D.routeUID, route: R.route, dirNum: R.dirNum, plate: rem.plate,
+      stops: D.stops.map(s => s.uid), seqs: D.stops.map(s => s.seq), destIdx: rem.i, destName: dest.name,
+      mode: rem.opt[0] === 'm' ? 'min' : 'stops', n: +rem.opt.slice(1) });
+    S.reminder = { id: j.id, route: R.route, destName: dest.name, plate: rem.plate, label: remLabel(rem.opt), info: null };
+    localStorage.setItem(REM_KEY, JSON.stringify(S.reminder));
+    closeSheet(); renderRemBar(); toast('已設定下車提醒');
+    setTimeout(pollRemind, 5000);
+  } catch (e) { msg.className = 'kmsg bad'; msg.textContent = '設定失敗：' + e.message; btn.disabled = false; }
+}
+function renderRemBar() {
+  const b = $('#rbar'), r = S.reminder;
+  if (!r) { b.hidden = true; b.innerHTML = ''; return; }
+  const inf = r.info, st = inf && inf.remain != null ? `目前在 ${inf.at || '?'}，還有 ${inf.remain} 站` : '追蹤中…';
+  b.innerHTML = `<span class="t">🔔 ${esc(r.route)} → ${esc(r.destName)}（${esc(r.label)}）<small>${esc(r.plate)}・${esc(st)}</small></span><button data-act="remCancel">取消</button>`;
+  b.hidden = false;
+}
+async function pollRemind() {
+  const r = S.reminder; if (!r || DEMO) return;
+  try {
+    const j = await api('remindStatus', { id: r.id });
+    if (j.status === 'active') { r.info = j.info; renderRemBar(); return; }
+    const msg = { done:'下車提醒已送出', cancelled:'下車提醒已取消', lost:'找不到車輛，下車提醒已停止', passed:'公車已過站，下車提醒結束', expired:'下車提醒已逾時結束', gone:'下車提醒已結束' }[j.status] || '下車提醒已結束';
+    S.reminder = null; localStorage.removeItem(REM_KEY); renderRemBar(); toast(msg);
+  } catch (e) {}
+}
+async function cancelRemind() {
+  const r = S.reminder; if (!r) return;
+  try { await api('remindCancel', { id: r.id }); } catch (e) {}
+  S.reminder = null; localStorage.removeItem(REM_KEY); renderRemBar(); toast('已取消下車提醒');
+}
+async function pushTest(btn) {
+  const msg = $('#pushMsg'); btn.disabled = true; msg.className = 'kmsg'; msg.textContent = '傳送中…';
+  try {
+    const sub = await getPushSub(msg);
+    if (sub) { const j = await api('pushTest', { sub }); msg.className = 'kmsg ok'; msg.textContent = `已送出（${j.status}），幾秒內應該會收到通知。`; }
+  } catch (e) { msg.className = 'kmsg bad'; msg.textContent = '失敗：' + e.message; }
+  btn.disabled = false;
+}
+try { S.reminder = JSON.parse(localStorage.getItem(REM_KEY)); } catch (e) {}
+setInterval(pollRemind, 20000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollRemind(); });
+
 function closeSheetQuiet() { if (!$('#sheetWrap').hidden) closeSheet(); }
 let favT; function refreshFavsSoon() { clearTimeout(favT); favT = setTimeout(refresh, 600); }
 $('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); });
@@ -847,7 +952,7 @@ async function boot() {
   render();
   try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
-  render(); refresh();
+  render(); refresh(); renderRemBar(); pollRemind();
 }
 boot();
 /* ---------- 更新：iOS 主畫面 app 只會被喚醒、不會重新載入，所以要主動檢查並自動重新整理 ---------- */
