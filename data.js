@@ -496,11 +496,26 @@ async function metroBoard(get, st) {
       via: (/(順行|逆行)/.exec(zh(t.TripHeadSign) || "") || [])[1] || null,   // 環狀線（高雄輕軌）起訖同站，用順／逆行區分
       eta: typeof t.EstimateTime === "number" ? (isSec ? Math.floor(t.EstimateTime / 60) : t.EstimateTime) : null,
     })).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
+    // 北捷 LiveBoard 只列出「正在進站」的列車（EstimateTime 全為 0），不是完整看板：與時刻表合併
+    if (!trains.every(t => t.eta === 0)) return { kind: "metro", live: true, trains, groups: groupTrains("metro", trains), note: null };
+    const tt = await metroTimetable(get, st, filter).catch(e => { if (isRate(e)) throw e; return []; });
+    const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
+    const rest = tt.filter(t => !(liveDest.has(t.dest + "|" + t.line) && t.eta <= 1));
+    const all = [...trains.map(t => ({ ...t, arriving: true })), ...rest].sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", all), note: "北捷即時資料只提供進站中列車（0 分），其餘班次為時刻表" };
   }
+  let tt;
+  try { tt = await metroTimetable(get, st, filter); } catch (e) { if (isRate(e)) throw e; tt = null; }
+  if (tt === null) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
+  const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "目前沒有進站中列車，以下為時刻表" : "這個系統沒有即時到站資料，以下為時刻表";
+  return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", tt), note };
+}
+
+// 時刻表：回傳今日接下來的班次；查無資料回傳 null
+async function metroTimetable(get, st, filter) {
   let recs = [];
   try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
-  if (!recs.length) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
+  if (!recs.length) return null;
   const dayKey = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getDay()];
   let todays = recs.filter(r => r.ServiceDay && r.ServiceDay[dayKey] === true);
   if (!todays.length) todays = recs;
@@ -523,7 +538,7 @@ async function metroBoard(get, st) {
       .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, line: g.line, via: g.via || null, eta: o.t - now }));
   }
   trains.sort((a, b) => a.t - b.t);
-  return { kind: "metro", live: false, trains, groups: groupTrains("metro", trains), note: trains.length ? "這個系統沒有即時到站資料，以下為時刻表" : "今日班次已結束" };
+  return trains;
 }
 
 // 依方向分組：台鐵用 Direction（0 順行、1 逆行）；高鐵（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
