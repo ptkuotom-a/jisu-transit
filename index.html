@@ -240,7 +240,15 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .lastt{font-size:11px;color:var(--warn);font-weight:700}
 .dgrp{margin-top:6px;font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
-.sttd{display:flex;gap:8px;align-items:center;margin-top:12px}.sttd .chip{padding:9px 15px;font-size:15px}.sttd input{flex:1;min-width:0;height:42px;margin:0;color-scheme:dark;font-size:15px}
+/* 車站頁共用標題（v2.23.1）：所有系統、車站頁與時刻表頁都用同一個結構 */
+.shd .shd-name{margin:6px 0 0;font-size:40px;line-height:1.12;font-weight:900;letter-spacing:-1px;color:var(--lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shd .shd-name.long{font-size:32px}
+.shd-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;min-height:22px}
+.shd-row .sys,.shd-row .lb{margin:0;vertical-align:0}
+.shd-info{color:var(--muted);font-size:14px;margin-top:6px;min-height:20px}
+.shd-acts{display:flex;gap:8px;margin-top:10px}
+.navbtn.on{background:var(--lime);color:var(--ink);border-color:var(--lime)}
+.sttd{display:flex;gap:8px;align-items:center;margin:2px 0 0}.sttd .chip{padding:9px 15px;font-size:15px}.sttd input{flex:1;min-width:0;height:42px;margin:0;color-scheme:dark;font-size:15px}
 .sttf{margin:12px 2px 0}.sttf .chips{gap:8px}.sttf .chip{padding:7px 13px;font-size:14px}.sttf select{height:44px;margin:10px 0 0;font-size:15px;color-scheme:dark}
 .sttrow.past{opacity:.38}.sttrow .ttime small{display:block;font-size:11px;font-weight:600;color:var(--muted)}
 .sttarr{flex:none;text-align:right;font-size:17px;font-weight:800}.sttarr small{display:block;font-size:12px;font-weight:500;color:var(--muted)}
@@ -1144,16 +1152,21 @@ function selectRailTab(btn, fromSwipe) {
   pagerMove(blk, g, -dir * (blk.clientWidth + PG_GAP), 240);
   setTimeout(go, 250);
 }
+function stationHead(R, cur) {
+  const codes = (R.ids || []).filter(i => /^[A-Z]/i.test(i));
+  const info = [codes.join('・'), R.dist != null ? distTxt(R.dist) : '', R.exit ? (R.dist != null ? '最近出口 ' : '出口 ') + R.exit : ''].filter(Boolean).map(esc).join('　');
+  return `<div class="ptop shd"><button class="back" data-act="closeRoute">${I.back}返回</button>
+    <h1 class="shd-name ${[...R.name].length > 7 ? 'long' : ''}">${esc(R.name)}</h1>
+    <div class="shd-row"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}</div>
+    <div class="shd-info">${info || '&nbsp;'}</div>
+    <div class="shd-acts"><button class="navbtn ${cur === 'sttt' ? 'on' : ''}" ${cur === 'sttt' ? 'aria-current="page"' : 'data-act="stttOpen"'}>${I.clock}時刻表</button><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div></div>`;
+}
 function renderRail() { if (S.rail && S.page === 'rail') $('#routePage').innerHTML = railHtml(); }
 function railHtml() {
   const R = S.rail; if (!R) return '';
   const D = S.railData;
-  const big = R.name.length > 6 ? 'font-size:38px' : '';
-  let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
-    <div class="rhead"><h1 style="${big}">${esc(R.name)}</h1></div>
-    <div class="rsub"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}<span>${distTxt(R.dist)}${R.exit ? `（${esc(R.exit)}）` : ''}</span>
-      <span style="flex:1"></span><button class="navbtn" data-act="stttOpen">${I.clock}時刻表</button><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div>
-    ${S.railLoading && !D ? '<div class="rmeta">讀取列車資訊中…</div>' : S.railError ? `<div class="rmeta">讀取失敗：${esc(S.railError)}</div>` : ''}</div>`;
+  let h = `<div class="wrap">${stationHead(R, 'rail')}
+    ${S.railLoading && !D ? '<div class="rmeta" style="margin:0 4px 8px">讀取列車資訊中…</div>' : S.railError ? `<div class="rmeta" style="margin:0 4px 8px">讀取失敗：${esc(S.railError)}</div>` : ''}`;
   if (!D) h += S.railError ? '' : skel(4);
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
@@ -1173,7 +1186,7 @@ function railUnder() {
 }
 function openSttt() {
   S.railScroll = $('#routePage').scrollTop;
-  pushAnim(() => { S.page = 'sttt'; S.sttt = { date: svcIso(0), line: '', grp: '', dir: '', dest: '', type: '', data: null, err: null }; $('#routePage').scrollTop = 0; renderSttt(); });
+  pushAnim(() => { S.page = 'sttt'; S.sttt = { date: svcIso(0), line: '', grp: '', dir: '', dest: '', type: '', data: null, err: null, t0: Date.now() }; $('#routePage').scrollTop = 0; renderSttt(); });
   loadSttt();
 }
 function stttDate(iso) { if (!S.sttt) return; S.sttt.date = iso; S.sttt.data = null; S.sttt.err = null; renderSttt(); loadSttt(); }
@@ -1183,7 +1196,10 @@ async function loadSttt() {
   try { const d = await api('stationTT', { op:R.op, ids:R.ids, date:want }); if (S.sttt !== T || T.date !== want) return; T.data = d; T.err = null; }
   catch (e) { if (S.sttt !== T || T.date !== want) return; T.err = e.message; }
   if (T.data && T.data.kind === 'metro' && !T.line) { const ls = stttLines(T.data); T.line = ls[0] || ''; }
-  renderSttt(true);
+  const wait = NAV_MS + 40 - (Date.now() - (T.t0 || 0));   // 滑入動畫還沒結束就先等它，避免換頁途中跳動捲動位置
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  if (S.sttt !== T || T.date !== want) return;
+  renderSttt(S.page === 'sttt');
 }
 function stttLines(D) { const ls = []; for (const x of [...(D.groups || []), ...(D.hw || [])]) if (x.line && !ls.includes(x.line)) ls.push(x.line); return ls; }
 function renderSttt(scroll) {
@@ -1195,12 +1211,10 @@ const fchip = (k, v, on, txt) => `<button class="chip ${on ? 'chip-on' : ''}" da
 function stttHtml() {
   const R = S.rail, T = S.sttt; if (!R || !T) return '';
   const D = T.data, d0 = svcIso(0), d1 = svcIso(1);
-  let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
-    <div class="rhead"><h1 style="${R.name.length > 6 ? 'font-size:34px' : ''}">${esc(R.name)}</h1></div>
-    <div class="rsub"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}<span>時刻表</span></div>
+  let h = `<div class="wrap">${stationHead(R, 'sttt')}
     <div class="sttd">${[[0, '今天', d0], [1, '明天', d1]].map(([o, t, x]) => `<button class="chip ${T.date === x ? 'chip-on' : ''}" data-act="stttDay" data-v="${o}">${t}</button>`).join('')}
       <input id="stttDate" class="inp" type="date" value="${esc(T.date)}" min="${d0}" max="${svcIso(90)}"></div>
-    <div class="rmeta">${D ? `${+T.date.slice(5, 7)}/${+T.date.slice(8)} ${esc(D.dayLabel)}・${D.kind === 'train' ? (D.src === 'day' ? '當天實際時刻表（含加班、停駛）' : D.none ? '' : '七天班表') : D.trains.length ? '官方站別時刻表' : '班距與首末班'}` : T.err ? '讀取失敗：' + esc(T.err) : '讀取時刻表中…'}${new Date().getHours() < 3 && T.date === d0 ? '<br>凌晨 3 點前算前一天的營運日（「今天」是昨天的班表）' : ''}</div></div>`;
+    <div class="rmeta" style="margin:8px 4px 0">${D ? `${+T.date.slice(5, 7)}/${+T.date.slice(8)} ${esc(D.dayLabel)}・${D.kind === 'train' ? (D.src === 'day' ? '當天實際時刻表（含加班、停駛）' : D.none ? '' : '七天班表') : D.trains.length ? '官方站別時刻表' : '班距與首末班'}` : T.err ? '讀取失敗：' + esc(T.err) : '讀取時刻表中…'}${new Date().getHours() < 3 && T.date === d0 ? '<br>凌晨 3 點前算前一天的營運日（「今天」是昨天的班表）' : ''}</div>`;
   if (!D) return h + (T.err ? '' : skel(5)) + '</div>';
   if (D.none) return h + `<div class="note">${D.kind === 'train' ? '這一天沒有可用的時刻表（雲端還沒有涵蓋這天的班表）。' : D.hwMissing ? '雲端還沒有這條線的班距資料，請到設定更新時刻表。' : '查無這一站這天的時刻表。'}</div></div>`;
   return h + (D.kind === 'train' ? stttTrain(R, T, D) : stttMetro(R, T, D)) + '</div>';
