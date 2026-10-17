@@ -313,7 +313,10 @@ html.locked,html.locked body{overflow:hidden}
 .rhead.pdh h1{font-size:clamp(30px,10vw,44px);white-space:nowrap}
 /* 路線規劃（v2.13.0） */
 .srow{display:flex;align-items:center;gap:10px;margin-bottom:22px}.srow[hidden]{display:none}.srow .search{flex:1;min-width:0;margin-bottom:0}
-.planbtn{flex:none;width:64px;height:64px;border-radius:50%;background:var(--lime);color:var(--ink);display:grid;place-items:center}.planbtn[hidden]{display:none}.planbtn svg{width:30px;height:30px}.planbtn:active{transform:scale(.96)}
+.planbar{display:flex;align-items:center;gap:14px;width:100%;margin:8px 0 2px;padding:12px 14px;border-radius:22px;background:var(--surface);border:1px solid var(--line);color:var(--text);text-align:left;transition:transform .12s}.planbar[hidden]{display:none}.planbar:active{transform:scale(.98)}
+.planbar .pbi{flex:none;width:44px;height:44px;border-radius:14px;background:var(--lime);color:var(--ink);display:grid;place-items:center}.planbar .pbi svg{width:24px;height:24px}
+.planbar .pbt{flex:1;min-width:0;font-size:18px;font-weight:800;line-height:1.25}.planbar .pbt small{display:block;font-size:13px;font-weight:500;color:var(--muted)}
+.planbar .pbc{flex:none;color:var(--lime);display:grid;place-items:center}.planbar .pbc svg{width:22px;height:22px}
 .pbox{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:4px 10px 4px 18px;margin-top:4px}
 .pfield{display:flex;align-items:center;gap:14px;width:100%;text-align:left;padding:12px 0;min-height:62px}.pfield + .pfield{border-top:1px solid var(--line)}
 .pdot{flex:none;width:14px;height:14px;border-radius:50%;border:3px solid var(--lime)}.pdot.d{background:var(--lime);border-radius:4px}
@@ -367,8 +370,9 @@ html.locked,html.locked body{overflow:hidden}
 <div class="wrap">
   <header class="top">
     <div class="brand"><span class="ico" id="titleIco"></span><h1 id="title">極速通勤</h1></div>
+    <button class="planbar" id="planBtn" data-act="planNew" hidden><span class="pbi" id="planIco"></span><span class="pbt">路線規劃<small>輸入起點和終點，找出最快的走法</small></span><span class="pbc" id="planChev"></span></button>
     <div class="meta"><span class="live" id="status"><i></i>定位中</span><button class="refresh" id="refreshBtn" aria-label="重新整理"></button></div>
-    <div class="srow" id="searchRow"><label class="search" id="searchBar"><span id="searchIco"></span><input id="q" type="text" enterkeyhint="search" placeholder="搜尋公車路線、站牌、YouBike、車站" autocomplete="off"><button class="clear" id="qClear" hidden>清除</button></label><button class="planbtn" id="planBtn" data-act="planNew" aria-label="路線規劃" hidden></button></div>
+    <div class="srow" id="searchRow"><label class="search" id="searchBar"><span id="searchIco"></span><input id="q" type="text" enterkeyhint="search" placeholder="搜尋公車路線、站牌、YouBike、車站" autocomplete="off"><button class="clear" id="qClear" hidden>清除</button></label></div>
   </header>
   <main id="main"></main>
 </div>
@@ -468,7 +472,7 @@ function renderChrome() {
   if (!brandLock) showBrand(S.tab);
   $('#searchRow').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
-  const pb = $('#planBtn'); pb.hidden = S.tab !== 'home'; if (!pb.innerHTML) pb.innerHTML = I.route;
+  const pb = $('#planBtn'); pb.hidden = S.tab !== 'home'; if (!$('#planIco').innerHTML) { $('#planIco').innerHTML = I.route; $('#planChev').innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>'; }
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
   // 功能列只建一次，之後只切換 on 與移動膠囊（重建會讓動畫中的膠囊被換掉而跳一下）
   const tb = $('#tabbar');
@@ -1301,16 +1305,17 @@ function bikeSheet(b) {
     <button class="btn sec2 ${on?'on':''}" data-act="favBike" data-i="${reg(b)}">${on ? I.star : I.starO}${on ? '已收藏' : '收藏'}</button></div>`);
 }
 
-/* ---------- 路線規劃（v2.13.0）：首頁搜尋列旁的按鈕 → 規劃頁（推進頁面堆疊，右滑返回） ---------- */
+/* ---------- 路線規劃（v2.13.0）：首頁標題下方的「路線規劃」橫條（v2.15.0） → 規劃頁（推進頁面堆疊，右滑返回） ---------- */
 // 頁面堆疊：規劃頁 → 選地點頁／路線詳情 → 車站頁／公車路線頁；S.back 記錄底下的頁面，返回時依序回去
 const PLAN_PREF_KEY = 'jisu_plan_pref', PLAN_RECENT_KEY = 'jisu_plan_recent';
 const PLAN_MODES = [['bus','公車',5],['mrt','捷運',6],['lrt','輕軌',7],['tra','台鐵',4],['thsr','高鐵',3]];
 function planInit() {
   if (S.plan) return S.plan;
   let pref = {}; try { pref = JSON.parse(localStorage.getItem(PLAN_PREF_KEY)) || {}; } catch (e) {}
-  return S.plan = { o:null, d:null, when:'now', time:null, modes: pref.modes || { bus:1, mrt:1, lrt:1, tra:1, thsr:1, bike:0 }, pref: pref.pref || 'fast', res:null, loading:false, err:null, live:{}, sel:null };
+  if (pref.pref !== undefined) { delete pref.pref; try { localStorage.setItem(PLAN_PREF_KEY, JSON.stringify(pref)); } catch (e) {} }   // v2.15.0 起拿掉「最快／最便宜」，一律最快
+  return S.plan = { o:null, d:null, when:'now', time:null, modes: pref.modes || { bus:1, mrt:1, lrt:1, tra:1, thsr:1, bike:0 }, res:null, loading:false, err:null, live:{}, sel:null };
 }
-function planSavePref() { try { localStorage.setItem(PLAN_PREF_KEY, JSON.stringify({ modes:S.plan.modes, pref:S.plan.pref })); } catch (e) {} }
+function planSavePref() { try { localStorage.setItem(PLAN_PREF_KEY, JSON.stringify({ modes:S.plan.modes })); } catch (e) {} }
 const hereName = () => '目前位置';
 function planHere() { const d = S.data; return d && d.lat ? { name:hereName(), lat:d.lat, lon:d.lon, here:true } : null; }
 function openPlan() {
@@ -1368,8 +1373,6 @@ function planHtml() {
     ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
     <div class="plab">交通工具<span>步行一定會用到</span></div>
     <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button></div>
-    <div class="plab">偏好</div>
-    <div class="sseg pseg">${[['fast','最快'],['cheap','最便宜']].map(([k, l]) => `<button class="${P.pref === k ? 'on' : ''}" data-act="planPref" data-v="${k}">${l}</button>`).join('')}</div>
     <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>`;
   if (P.loading && !P.res) h += skel(3);
   else if (P.err) h += `<div class="note" style="margin-top:14px">${esc(P.err)}</div>`;
@@ -1382,7 +1385,6 @@ function planHtml() {
 }
 const minTxt = m => m >= 60 ? `${Math.floor(m / 60)}小時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
 const hmOf = ms => { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
-const fareTxt = r => r.fare ? `$${r.fare}${r.farePartial ? '起' : ''}` : '';
 const hexLum = c => { const m = /^#?([0-9a-f]{6})$/i.exec(c || ''); if (!m) return 0; const n = parseInt(m[1], 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; };
 const NAME2LINE = (() => { const m = {}; for (const [op, o] of Object.entries(LINE_NAME)) for (const [code, n] of Object.entries(o)) if (!m[n]) m[n] = [op, code]; return m; })();
 function legColor(l) {
@@ -1411,9 +1413,9 @@ function planCard(r, i) {
   const tr = r.legs.filter(l => l.kind === 'transit'), walk = Math.round(r.legs.filter(l => l.kind === 'walk').reduce((a, l) => a + l.dur, 0) / 60);
   const first = tr[0];
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
-    <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span>${fareTxt(r) ? `<span class="pill">${fareTxt(r)}</span>` : ''}</div>
+    <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span><span>步行${walk}分</span>${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.official ? `<div class="sub pnote">依官方時刻表${r.tag ? '・' + esc(r.tag) : ''}${r.next ? '・下一班' : ''}${r.est ? '・接駁時間為估計' : ''}</div>` : ''}${r.fixed ? `<div class="sub pnote">台鐵／高鐵段已依官方時刻表改搭較早的班次</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">原本的第一班已開走，已改成搭下一班（時間為估計）</div>` : ''}</button>`;
+    ${segBar(r)}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">原本的第一班已開走，已改成搭下一班（時間為估計）</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -1430,7 +1432,7 @@ async function planGo() {
   if (P.d.here) { const h = planHere(); if (h) P.d = h; }
   P.loading = true; P.err = null; renderPage();
   const tok = P.tok = (P.tok || 0) + 1;
-  try { const res = await api('planRoutes', { o:P.o, d:P.d, modes, gc: P.pref === 'fast', yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))) }); if (tok === P.tok) { P.res = res; P.err = null; } }
+  try { const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))) }); if (tok === P.tok) { P.res = res; P.err = null; } }
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
   if (tok !== P.tok) return;
   P.loading = false; if (S.page === 'plan') { renderPage(); if (P.res && P.res.length) planScrollRes(); }
@@ -1568,7 +1570,7 @@ function detailHtml() {
   if (!r) return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button></div></div>`;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead pdh"><h1>${minTxt(r.dur)}</h1><span class="dirbtn"><span>${hmOf(r.start)}–${hmOf(r.end)}</span></span></div>
-    <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${fareTxt(r) ? '・' + fareTxt(r) : ''}${P.liveLoading ? '・讀取即時資料中…' : ''}</div></div>
+    <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${P.liveLoading ? '・讀取即時資料中…' : ''}</div></div>
     <div id="planMapSlot" class="mapslot"></div>${segBar(r)}<div class="tl">`;
   const node = (time, name, sub, cls = '', style = '') => `<div class="tn ${cls}"><span class="tt0">${time ? hmOf(time) : ''}</span><i class="nd" style="${style}"></i><span class="nm">${esc(name || '')}${sub ? `<small>${sub}</small>` : ''}</span></div>`;
   const legs = r.legs;
@@ -1585,7 +1587,7 @@ function detailHtml() {
     const c = legColor(l), L = (P.live || {})[i], open = L && L.open;
     const stops = l.stops || [], open2 = P.open[i];
     const label = esc(legLabel(l));
-    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : ''}${l.fixed ? '（依時刻表改搭）' : ''}`, 'on', `border-color:${c}`);
+    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : ''}`, 'on', `border-color:${c}`);
     h += `<div class="tsg tr" style="--c:${c}"><span class="tt0"></span><span class="ln"><i></i></span><span class="bd">
       <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">往 ${esc(l.headsign || l.to.name || '')}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
       <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站'}</span>` : ''}</button>
@@ -1594,7 +1596,7 @@ function detailHtml() {
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
   h += node(r.end, P.d?.name || '終點', '', 'end');
-  return h + `</div><div class="sub" style="margin-top:14px">${r.official ? '這條是依台鐵／高鐵官方時刻表自己規劃的（含即時誤點）；到火車站的接駁沿用 TDX 規劃或步行估算。' : r.fixed ? '台鐵／高鐵段已依官方時刻表改搭較早的班次。' : ''}時刻為 TDX 規劃結果；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
+  return h + `</div><div class="sub" style="margin-top:14px">時刻為 TDX 規劃結果；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
@@ -1679,7 +1681,6 @@ document.addEventListener('click', e => {
     case 'planSwap': { const P = S.plan; [P.o, P.d] = [P.d, P.o]; P.res = null; P.err = null; renderPage(); if (P.o && P.d) planGo(); break; }
     case 'planWhen': S.plan.when = el.dataset.v; if (el.dataset.v !== 'now' && !S.plan.time) S.plan.time = localIso(new Date(Date.now() + 15 * 60000)); planChanged(); break;
     case 'planMode': S.plan.modes[el.dataset.v] = S.plan.modes[el.dataset.v] ? 0 : 1; planSavePref(); planChanged(); break;
-    case 'planPref': S.plan.pref = el.dataset.v; planSavePref(); planChanged(); break;
     case 'planGo': planGo(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
