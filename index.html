@@ -131,7 +131,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .tab svg{width:28px;height:28px}
 .tab{position:relative;z-index:1;transition:color .2s}
 .tab.on{color:var(--lime)}
-.tab-ind{position:absolute;top:7px;bottom:7px;left:0;border-radius:32px;background:#121413;z-index:0;transition:transform .32s cubic-bezier(.3,1.25,.5,1),width .32s}
+.tab-ind{position:absolute;top:7px;bottom:7px;left:0;border-radius:32px;background:#121413;z-index:0;transition:transform .3s cubic-bezier(.25,.8,.3,1),width .3s cubic-bezier(.25,.8,.3,1)}
 #main.swipe{will-change:transform}
 @media (prefers-reduced-motion: reduce){ .tab-ind{transition:none} }
 
@@ -228,7 +228,7 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .seg{position:relative;display:grid;grid-template-columns:repeat(var(--n),1fr);gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:4px;margin:8px 0 4px}
 .seg i{position:absolute;top:4px;bottom:4px;left:4px;width:calc((100% - 8px) / var(--n));border-radius:999px;background:var(--lime);transform:translateX(calc(var(--i) * 100%));transition:transform .25s ease}
 .seg button,.seg span{position:relative;z-index:1;padding:8px 8px;border-radius:999px;font-weight:700;font-size:13.5px;line-height:1.25;white-space:normal;word-break:keep-all;overflow-wrap:anywhere;color:var(--muted)}
-.seg button.on{color:var(--ink)} .seg.one{grid-template-columns:1fr} .seg.one span{color:var(--text,#fff);text-align:center}
+.seg button{transition:color .2s} .seg button.on{color:var(--ink);background:none} .seg.one{grid-template-columns:1fr} .seg.one span{color:var(--text,#fff);text-align:center}
 @media (prefers-reduced-motion: reduce){.seg i{transition:none}}
 .lstops{display:inline-flex;align-items:center;gap:2px;font-size:13px;font-weight:600;color:var(--lime)} .lstops svg{width:14px;height:14px}
 .ltag{display:block;font-size:10px;font-weight:600;opacity:.75;margin-top:1px}
@@ -246,9 +246,9 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .inp{width:100%;height:50px;border-radius:16px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:16px;padding:0 14px;margin-bottom:8px;outline:none}
 .inp:focus{border-color:var(--lime)}
 .kmsg{margin-top:10px;font-size:14px;color:var(--muted)} .kmsg.ok{color:var(--lime)} .kmsg.bad{color:var(--bad)}
-.seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;background:var(--bg);border-radius:999px;padding:5px}
-.seg button{padding:10px 0;border-radius:999px;font-weight:700;font-size:15px;color:var(--muted)}
-.seg button.on{background:var(--lime);color:var(--ink)}
+.sseg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;background:var(--bg);border-radius:999px;padding:5px}
+.sseg button{padding:10px 0;border-radius:999px;font-weight:700;font-size:15px;color:var(--muted)}
+.sseg button.on{background:var(--lime);color:var(--ink)}
 .ttrow{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--line)}
 .ttrow:first-of-type{border-top:0}
 .ttrow .ck{flex:none;width:24px;height:24px;border-radius:8px;border:2px solid var(--line);margin-top:2px;display:grid;place-items:center;color:var(--ink);font-weight:800;font-size:15px}
@@ -360,20 +360,22 @@ function renderChrome() {
   $('#searchBar').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
-  const tb = $('#tabbar'), prev = tb.querySelector('.tab-ind')?.style.transform || '';
-  tb.innerHTML = `<span class="tab-ind"></span>` + tabs.map(([k,l,ic]) => `<button class="tab ${S.tab===k?'on':''}" data-act="tab" data-v="${k}" aria-label="${l}">${ic}<span>${l}</span></button>`).join('');
-  moveInd(prev);
+  // 功能列只建一次，之後只切換 on 與移動膠囊（重建會讓動畫中的膠囊被換掉而跳一下）
+  const tb = $('#tabbar');
+  if (!tb.querySelector('.tab-ind')) tb.innerHTML = `<span class="tab-ind"></span>` + tabs.map(([k,l,ic]) => `<button class="tab" data-act="tab" data-v="${k}" aria-label="${l}">${ic}<span>${l}</span></button>`).join('');
+  for (const b of tb.querySelectorAll('.tab')) b.classList.toggle('on', b.dataset.v === S.tab);
+  moveInd();
   renderStatus();
 }
 // 分頁指示膠囊：從舊位置滑到新位置
-function moveInd(prev) {
+function moveInd(instant) {
   const tb = $('#tabbar'), ind = tb.querySelector('.tab-ind'), on = tb.querySelector('.tab.on'); if (!ind || !on) return;
-  ind.style.width = on.offsetWidth + 'px';
-  const to = `translateX(${on.offsetLeft}px)`;
-  if (prev && prev !== to) { ind.style.transition = 'none'; ind.style.transform = prev; ind.offsetWidth; ind.style.transition = ''; }
-  ind.style.transform = to;
+  const to = `translateX(${on.offsetLeft}px)`, w = on.offsetWidth + 'px';
+  if (!ind.style.transform || instant) { ind.style.transition = 'none'; ind.style.width = w; ind.style.transform = to; ind.offsetWidth; ind.style.transition = ''; return; }
+  if (ind.style.transform !== to) ind.style.transform = to;   // 值相同就不動，不打斷進行中的動畫
+  if (ind.style.width !== w) ind.style.width = w;
 }
-addEventListener('resize', () => moveInd(''));
+addEventListener('resize', () => moveInd(true));
 // 膠囊跟手：依滑動進度 p（0～1）在兩個按鈕之間內插位置與寬度
 // 方向分頁的膠囊（.seg i）用 CSS 的等分寬度；底部功能列用按鈕實際位置
 function pillGeo(pill, btn) {
@@ -388,7 +390,7 @@ function pillTrack(pill, a, b, p) {
 function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕；方向分頁的膠囊結束後交回 CSS
   if (!pill || !to) return;
   const G = pillGeo(pill, to);
-  pill.offsetWidth; pill.style.transition = reduceMotion() ? 'none' : `transform ${ms}ms ease, width ${ms}ms ease`;
+  pill.offsetWidth; pill.style.transition = reduceMotion() ? 'none' : pill.tagName === 'I' ? `transform ${ms}ms ease, width ${ms}ms ease` : '';   // 功能列用 CSS 的曲線，之後點按也一致
   pill.style.width = G.w + 'px'; pill.style.transform = `translateX(${G.x}px)`;
   if (pill.tagName === 'I') setTimeout(() => { if (pill.isConnected) { pill.style.transition = 'none'; pill.style.width = ''; pill.style.transform = ''; pill.offsetWidth; pill.style.transition = ''; } }, ms + 30);
 }
@@ -633,7 +635,7 @@ function vBike() {
   }).join('');
 }
 function seg(key, opts, fmt) {
-  return `<div class="seg">${opts.map(o => `<button class="${S.settings[key]===o?'on':''}" data-act="set" data-k="${key}" data-v="${o}">${fmt(o)}</button>`).join('')}</div>`;
+  return `<div class="sseg">${opts.map(o => `<button class="${S.settings[key]===o?'on':''}" data-act="set" data-k="${key}" data-v="${o}">${fmt(o)}</button>`).join('')}</div>`;
 }
 function vSettings() {
   const px = S.proxy || {};
@@ -874,7 +876,7 @@ function selectRailTab(btn, fromSwipe) {
   const v = btn.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1);
   const op = blk.querySelector('.seg i'), oon = btns.find(b => b.classList.contains('on'));
   let pos = null;   // 舊膠囊目前位置（可能是拖曳中的位置）
-  if (op && oon) { const sr = op.parentElement.getBoundingClientRect(), r = op.getBoundingClientRect(); pos = { x: r.left - sr.left - 4, w: r.width }; }
+  if (op && oon) { const sr = op.parentElement.getBoundingClientRect(), r = op.getBoundingClientRect(); pos = { x: r.left - sr.left - op.parentElement.clientLeft - 4, w: r.width }; }
   if (!fromSwipe && op) pillSettle(op, btn, 160);
   const go = () => {
     renderRail();
@@ -1188,7 +1190,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       }
     }
     e.preventDefault();
-    if (mode === 'tab') { dx = ddx; pillTrack(blk.querySelector('.seg i'), tabBtns[tabIdx], tabBtns[tabIdx + (dx < 0 ? 1 : -1)], Math.min(1, Math.abs(dx) / innerWidth)); for (const el of tabBody(blk)) { el.style.transition = 'none'; el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / innerWidth)); } return; }
+    if (mode === 'tab') { dx = ddx; { const pr = Math.abs(dx) / innerWidth, nb = tabBtns[tabIdx + (dx < 0 ? 1 : -1)]; for (const b of tabBtns) b.style.color = ''; if (pr > 0.12 && nb) { tabBtns[tabIdx].style.color = 'var(--muted)'; nb.style.color = 'var(--ink)'; } } pillTrack(blk.querySelector('.seg i'), tabBtns[tabIdx], tabBtns[tabIdx + (dx < 0 ? 1 : -1)], Math.min(1, Math.abs(dx) / innerWidth)); for (const el of tabBody(blk)) { el.style.transition = 'none'; el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / innerWidth)); } return; }
     dx = Math.max(0, ddx);
     pg.style.transform = `translateX(${dx}px)`;
     dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
@@ -1207,7 +1209,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
         for (const el of els) { el.style.transition = `transform ${d2}ms ease, opacity ${d2}ms ease`; el.style.transform = `translateX(${dx < 0 ? -innerWidth : innerWidth}px)`; el.style.opacity = '0'; }
         setTimeout(() => selectRailTab(btn, true), d2);
         pillSettle(blk.querySelector('.seg i'), btn, d2);
-      } else { for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; } pillSettle(blk.querySelector('.seg i'), tabBtns[tabIdx], dur); }
+      } else { for (const b of tabBtns) b.style.color = ''; for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; } pillSettle(blk.querySelector('.seg i'), tabBtns[tabIdx], dur); }
       return;
     }
     swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
