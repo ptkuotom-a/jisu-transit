@@ -402,7 +402,7 @@ async function liveFavs(favs) {
 }
 
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
-const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence })) }));
+const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence, ...(x.StopPosition && x.StopPosition.PositionLat ? { P: [+x.StopPosition.PositionLat.toFixed(5), +x.StopPosition.PositionLon.toFixed(5)] } : {}) })) }));
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
@@ -1734,6 +1734,173 @@ async function pushCall(method, path, body) {
 }
 
 // ---------- 登入（帳號存在 Worker；裝置只存 session token，登出前不必再登入） ----------
+// ---------- 路線規劃（v2.13.0）：TDX MaaS routing（經 Worker /plan）＋ OpenStreetMap 地點搜尋（經 Worker /geo） ----------
+// MaaS 回傳的路段沒有任何代碼（RouteUID／StationID），所以用「名稱＋座標」對回 App 自己的車站清單與公車路線清單，才能顯示即時到站、點進車站頁／路線頁
+async function authedGet(path) {
+  const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+  const s = getSession();
+  let r, j = null;
+  try { r = await fetch(proxy + path, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }
+  catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  if (!r.ok) { const m = j && (j.message || j.Message); throw new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); }
+  return j;
+}
+const PLAN_MODE = s => { const m = ((s.transport || {}).mode || "") + " " + ((s.transport || {}).category || "");
+  return /bus/i.test(m) ? "bus" : /lrt|light/i.test(m) ? "lrt" : /thsr|hsr|high/i.test(m) ? "thsr" : /mrt|metro|subway/i.test(m) ? "mrt" : /tra|rail|train/i.test(m) ? "tra" : "bus"; };
+const pPlace = (p, time) => { const pl = (p && p.place) || {}, loc = pl.location || {}; return { name: pl.name || null, type: pl.type || null, lat: loc.lat ?? null, lon: loc.lng ?? null, time: (p && p.time) || null }; };
+const tms = s => s ? Date.parse(s + "+08:00") : null;
+// 整理成前端好用的格式；計程車／開車路段一律換成步行（標「約」），沒開 YouBike 時騎車路段也換成步行
+function planClean(routes, yb) {
+  const out = [];
+  for (const r of routes || []) {
+    const legs = []; let approx = false;
+    for (const s of r.sections || []) {
+      const from = pPlace(s.departure), to = pPlace(s.arrival), dur = (s.travelSummary && s.travelSummary.duration) || Math.max(0, (tms(to.time) - tms(from.time)) / 1000) || 0;
+      const len = (s.travelSummary && s.travelSummary.length) || 0;
+      let kind = s.type === "transit" ? "transit" : s.type === "waiting" ? "wait" : s.type === "cycle" && yb ? "bike" : "walk";
+      const fake = s.type === "drive" || (s.type === "cycle" && !yb);
+      if (kind === "walk" || kind === "bike") {
+        const d = fake || !len ? (from.lat != null && to.lat != null ? haversine(from.lat, from.lon, to.lat, to.lon) * 1.3 : len) : len;
+        const leg = { kind, from, to, dur: fake ? Math.round(d / 1.2) : dur, len: Math.round(d), approx: fake };
+        if (fake) approx = true;
+        const prev = legs[legs.length - 1];
+        if (kind === "walk" && prev && prev.kind === "walk") {   // 走到出入口＋進站合成一段，記下出入口名稱
+          if (/entrance|exit/.test(prev.to.type || "") && prev.to.name) prev.gate = prev.to.name;
+          prev.to = to; prev.dur += leg.dur; prev.len += leg.len; prev.approx = prev.approx || fake; continue;
+        }
+        if (kind === "walk" && /entrance|exit/.test(to.type || "") && to.name && legs.length && legs[legs.length - 1].kind === "transit") leg.gate = to.name;
+        legs.push(leg); continue;
+      }
+      if (kind === "wait") { legs.push({ kind, from, to, dur }); continue; }
+      const t = s.transport || {}, fare = typeof t.fareTW === "number" ? t.fareTW : typeof t.fare === "number" ? t.fare : null;
+      legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: t.headsign || "", color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
+        number: t.number || "", agency: (s.agency && s.agency.agency_id) || "", agencyName: (s.agency && s.agency.name) || "", fare, from, to, dur,
+        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)) });
+    }
+    // 換成步行的頭尾段：依公共運輸的時刻往前／往後推，算出新的出發／抵達時間
+    const tr = legs.filter(l => l.kind === "transit");
+    let start = tms(r.start_time), end = tms(r.end_time);
+    if (tr.length) {
+      const i0 = legs.indexOf(tr[0]), i1 = legs.indexOf(tr[tr.length - 1]);
+      if (legs.slice(0, i0).some(l => l.approx)) start = tms(tr[0].from.time) - legs.slice(0, i0).reduce((a, l) => a + l.dur * 1000, 0);
+      if (legs.slice(i1 + 1).some(l => l.approx)) end = tms(tr[tr.length - 1].to.time) + legs.slice(i1 + 1).reduce((a, l) => a + l.dur * 1000, 0);
+    } else if (approx) end = start + legs.reduce((a, l) => a + l.dur * 1000, 0);
+    const fares = tr.map(l => l.fare), sum = typeof r.total_price === "number" && r.total_price > 0 ? r.total_price : fares.reduce((a, f) => a + (f > 0 ? f : 0), 0);
+    const sig = legs.map(l => l.kind === "transit" ? l.name + "@" + l.from.name + ">" + l.to.name + "@" + l.from.time : l.kind).join("|");
+    if (out.some(o => o.sig === sig)) continue;   // 同一班車、只差頭尾接駁方式的重複結果
+    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), fare: sum > 0 ? sum : null, farePartial: sum > 0 && fares.some(f => !(f > 0)), approx, legs });
+  }
+  return out.filter(r => !r.approx).concat(out.filter(r => r.approx));
+}
+async function planRoutes({ o, d, modes, gc, yb, when, time }) {
+  const q = new URLSearchParams({ o: `${o.lat},${o.lon}`, d: `${d.lat},${d.lon}`, t: modes.join(","), gc: gc ? "1" : "0", yb: yb ? "1" : "0" });
+  if (when === "dep" && time) q.set("dep", time); if (when === "arr" && time) q.set("arr", time);
+  const j = await authedGet("/plan?" + q.toString());
+  if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
+  const out = planClean(j.data && j.data.routes, yb);
+  // 最快：先到的排前面（指定抵達則是最晚出發的排前面）；最便宜維持 TDX 的順序
+  if (gc) out.sort((a, b) => (a.approx - b.approx) || (when === "arr" ? b.start - a.start : a.end - b.end) || a.dur - b.dur);
+  return out;
+}
+const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`);
+const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
+
+// ---------- 對回 App 的資料：車站（名稱＋座標）、公車路線（名稱＋營運縣市＋站序） ----------
+const pn = x => normZh(x).replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
+const nameHit = (a, b) => { a = pn(a); b = pn(b); return !!a && !!b && (a === b || a.includes(b) || b.includes(a)); };
+const AG_OP = { TRTC: ["TRTC", "NTMC"], NTMC: ["NTMC", "TRTC"], KRTC: ["KRTC", "KLRT"], KLRT: ["KLRT", "KRTC"], TYMC: ["TYMC"], TMRT: ["TMRT"], NTDLRT: ["NTDLRT", "NTMC"], NTALRT: ["NTALRT", "NTMC"], THSR: ["THSR"], TRA: ["TRA"] };
+async function planRailStation(leg, end) {
+  const p = leg[end]; if (p.lat == null) return null;
+  const all = await loadRailStations();
+  const kindOk = g => leg.mode === "tra" ? g.op === "TRA" : leg.mode === "thsr" ? g.op === "THSR" : g.kind === "metro";
+  const groups = nearestRail(all, p.lat, p.lon, { all: true }).filter(g => g.dist <= 800 && kindOk(g));
+  const pref = AG_OP[(leg.agency || "").toUpperCase()] || [];
+  const score = g => (nameHit(g.name, p.name) ? 0 : 2) + (pref.length && !pref.includes(g.op) ? 1 : 0) + g.dist / 1000;
+  const best = groups.filter(g => nameHit(g.name, p.name) || g.dist <= 200).sort((a, b) => score(a) - score(b))[0];
+  return best || null;
+}
+const UIDC = Object.fromEntries(Object.entries(UID_CITY).map(([k, v]) => [k, v]));
+async function busCity(city) {   // 只下載需要的縣市路線清單（存進同一份 busidx）
+  let c = idxMem || await IDB.get("busidx"); if (!c || !c.cities) c = { time: Date.now(), cities: {} };
+  c.ct = c.ct || {}; c.ign = c.ign || {}; idxMem = c;
+  if (c.cities[city]) return c.cities[city];
+  const proxy = getProxy(); if (!proxy) return [];
+  try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
+  return [];
+}
+async function sorOf(k, route) {
+  const key = `${k.path}|${route}`, sc = await IDB.get("sor|" + key);
+  if (sc) return sc.d;
+  const l = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${k.path}/${enc(route)}?%24top=600&%24format=JSON`);
+  const d = sorPack(l); IDB.set("sor|" + key, { t: Date.now(), d }).catch(() => {}); return d;
+}
+async function planBusMatch(leg) {
+  const ag = (leg.agency || "").slice(0, 3).toUpperCase(), c0 = UIDC[ag];
+  const order = [...new Set([c0, "InterCity", c0 === "Taipei" ? "NewTaipei" : c0 === "NewTaipei" ? "Taipei" : null].filter(Boolean))];
+  for (const city of order) {
+    const list = await busCity(city);
+    const cands = list.filter(r => pn(r[1]) === pn(leg.name));
+    for (const r of cands) {
+      const k = routeKind(r[0]); if (!k) continue;
+      let sor; try { sor = await sorOf(k, r[1]); } catch (e) { if (isRate(e)) throw e; continue; }
+      let best = null;
+      for (const dir of sor.filter(x => x.RouteUID === r[0])) {
+        const st = dir.Stops || [], nm = x => (x.StopName && x.StopName.Zh_tw) || "";
+        // 先比站名；對不到（例如「國光客運臺北車站」vs「臺北車站(東三門)」）再用座標找250m內最近的站
+        const at = (p, from) => { let i = st.findIndex((x, j) => j >= from && pn(nm(x)) === pn(p.name)); if (i >= 0 || p.lat == null) return i; let bd = 250; st.forEach((x, j) => { const q = x.P; if (j < from || !q) return; const dd = haversine(p.lat, p.lon, q[0], q[1]); if (dd < bd) { bd = dd; i = j; } }); return i; };
+        const bi = at(leg.from, 0), ai = bi >= 0 ? at(leg.to, bi + 1) : -1;
+        const sc = bi < 0 ? 9 : ai > bi ? 0 : 1;
+        if (sc < 9 && (!best || sc < best.sc)) best = { sc, dirNum: dir.Direction === 1 ? 1 : 0, stopUID: st[bi].StopUID, stopName: nm(st[bi]), alightUID: ai > 0 ? st[ai].StopUID : null };
+      }
+      if (best) return { routeUID: r[0], route: r[1], dirNum: best.dirNum, stopUID: best.stopUID, stopName: best.stopName, dest: best.dirNum === 1 ? r[2] : r[3], path: k.path, exact: best.sc === 0 };
+    }
+  }
+  return null;
+}
+// 每段公共運輸：對到的車站／路線＋即時（或表定）到站。只有90分鐘內要搭的才查即時
+async function planLive({ legs }) {
+  const now = Date.now(), nowM = nowMin(), out = {};
+  await Promise.all((legs || []).map(async (leg, i) => {
+    if (leg.kind !== "transit") return;
+    const m0 = Math.round((tms(leg.from.time) - now) / 60000), wantLive = m0 > -3 && m0 <= 90;
+    try {
+      if (leg.mode === "bus") {
+        const b = await planBusMatch(leg); if (!b) { out[i] = { miss: true }; return; }
+        const o = { open: { type: "route", r: { routeUID: b.routeUID, route: b.route, dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact };
+        if (wantLive) {
+          const etas = await tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}/${enc(b.route)}?%24top=600&%24format=JSON`);
+          // 同一站可能有好幾條支線（例如 1815A～G），挑最有用的那筆：有預估秒數的最近一班 > 有下一班時間的 > 其他
+          const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
+          const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && (t.Direction === 1 ? 1 : 0) === b.dirNum).sort((x, y) => rank(x) - rank(y))[0];
+          if (e) o.bus = { sec: typeof e.EstimateTime === "number" ? e.EstimateTime : null, status: e.StopStatus ?? 0, next: e.NextBusTime || null };
+        }
+        out[i] = o; return;
+      }
+      const g = await planRailStation(leg, "from"); if (!g) { out[i] = { miss: true }; return; }
+      const g2 = await planRailStation(leg, "to").catch(() => null);
+      const o = { open: { type: "rail", r: g }, to: g2 ? { op: g2.op, ids: g2.ids, name: g2.name } : null };
+      if (wantLive) {
+        const B = await railBoard(tdx, g);
+        if (B.kind === "tra" || B.kind === "thsr") {
+          const hm0 = (leg.from.time || "").slice(11, 16);
+          const row = (B.trains || []).find(t => (leg.number && String(t.no) === String(leg.number)) || t.time === hm0);
+          if (row) { const m = row.t + (row.delay || 0) - nowM; o.pill = { min: m < -600 ? m + 1440 : m, tag: row.delay == null ? "表定" : row.delay > 0 ? `即時・晚${row.delay}` : "即時・準點", live: row.delay != null, late: row.delay > 0, no: row.no }; }
+        } else {
+          const head = leg.headsign;
+          const lv = B.live ? (B.trains || []).filter(t => t.eta != null && nameHit(t.dest, head) && t.eta >= m0 - 1).sort((a, b) => a.eta - b.eta)[0] : null;
+          if (lv) o.pill = { min: lv.eta, tag: "即時", live: true };
+          else {
+            const tt = (B.tt || []).filter(t => t.eta != null && nameHit(t.dest, head) && t.eta >= m0 - 1).sort((a, b) => a.eta - b.eta)[0];
+            if (tt) o.pill = { min: tt.eta, tag: tt.est ? "估算" : "表定", live: false };
+          }
+        }
+      }
+      out[i] = o;
+    } catch (e) { out[i] = { err: String(e.message || e) }; }
+  }));
+  return out;
+}
+
 const SESS_KEY = "jisu_session";
 function getSession() { try { const s = JSON.parse(localStorage.getItem(SESS_KEY)); return s && s.token ? s : null; } catch (e) { return null; } }
 async function authLogin({ account, password }) {
@@ -1791,6 +1958,11 @@ window.dataApi = async (action, p = {}) => {
     case "open": location.href = p.url; return true;
     case "busIndex": return busIndex();
     case "busHeal": return busHeal(p.uids, p.cities);
+    case "planRoutes": return planRoutes(p);
+    case "planLive": return planLive(p);
+    case "geoSearch": return geoSearch(p);
+    case "geoReverse": return geoReverse(p);
+    case "locate": return locate();
     case "placeIndex": return placeIndex(p || {});
     case "stopAt": return stopAt(p || {});
     case "bikeAt": return bikeAt(p || {});
