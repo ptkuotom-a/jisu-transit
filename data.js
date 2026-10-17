@@ -121,21 +121,56 @@ async function loadRouteDest(profile, uids) {
 }
 const destOf = (uid, dirNum, map) => { const r = map[uid]; return r ? (dirNum === 1 ? r.dep : r.dest) || null : null; };
 
+// ---------- 省額度：短期記憶、30 天的站牌／站點／站序快取 ----------
+// memoTdx：同一網址在 ms 毫秒內重用上次結果（YouBike 車位 90 秒、高鐵座位 60 秒）
+const memoMap = new Map();
+async function memoTdx(profile, url, ms) {
+  const h = memoMap.get(url); if (h && Date.now() - h.t < ms) return h.v;
+  const v = await tdx(profile, url); memoMap.set(url, { t: Date.now(), v });
+  if (memoMap.size > 60) memoMap.delete(memoMap.keys().next().value);
+  return v;
+}
+// 附近站牌、YouBike 站點：以約 100 公尺的格子（座標取到小數第 3 位）存 30 天
+const GEO_KEY = "jisu_geo", LONG_DAYS = 30, DAY_MS = 86400000;
+function lsGet(key, k) { try { const c = JSON.parse(localStorage.getItem(key) || "{}"); const e = c[k]; if (e && Date.now() - e.t < LONG_DAYS * DAY_MS) return e; } catch (e) {} return null; }
+function lsSet(key, k, d, max) {
+  let c = {}; try { c = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) {}
+  c[k] = { t: Date.now(), d };
+  for (const x of Object.keys(c).sort((a, b) => c[b].t - c[a].t).slice(max)) delete c[x];
+  try { localStorage.setItem(key, JSON.stringify(c)); } catch (e) { try { localStorage.setItem(key, JSON.stringify({ [k]: c[k] })); } catch (e2) {} }
+}
+const stopPack = s => [s.StopUID || "", (s.StopName && s.StopName.Zh_tw) || "", s.StopPosition ? s.StopPosition.PositionLat : null, s.StopPosition ? s.StopPosition.PositionLon : null, s.StationID || "", s.Bearing || ""];
+const stopUnpack = a => ({ StopUID: a[0] || null, StopName: { Zh_tw: a[1] }, StopPosition: a[2] == null ? null : { PositionLat: a[2], PositionLon: a[3] }, StationID: a[4] || null, Bearing: a[5] || null });
+const bikePack = s => [s.StationUID, (s.StationName && s.StationName.Zh_tw) || "", (s.StationAddress && s.StationAddress.Zh_tw) || "", s.BikesCapacity ?? null, s.ServiceType ?? null, s.StationPosition ? s.StationPosition.PositionLat : null, s.StationPosition ? s.StationPosition.PositionLon : null];
+const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, StationAddress: { Zh_tw: a[2] || null }, BikesCapacity: a[3], ServiceType: a[4], StationPosition: a[5] == null ? null : { PositionLat: a[5], PositionLon: a[6] } });
+// 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
+async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
+  const c = lsGet(GEO_KEY, key);
+  const fresh = async () => { const l = await tdx(profile, url); lsSet(GEO_KEY, key, l.map(pack), 40); return l; };
+  if (!c) return fresh();
+  const list = c.d.map(unpack);
+  if (liveUIDs && Date.now() - c.t > DAY_MS) {
+    const have = new Set(list.map(x => x.StopUID || x.StationUID));
+    if ((await liveUIDs).some(u => u && !have.has(u))) return fresh().catch(() => list);
+  }
+  return list;
+}
+
 // ---------- 附近：公車 + YouBike + 收藏 ----------
 const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
 async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
   const loc = await locate();
-  const lat = loc.latitude.toFixed(6), lon = loc.longitude.toFixed(6);
+  // 查詢座標取到小數第 3 位（約 100 公尺格子），半徑多加 100 公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
+  const lat = loc.latitude.toFixed(3), lon = loc.longitude.toFixed(3);
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
+  const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
-  const busP = Promise.all([
-    tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, busR)}&%24top=400&%24format=JSON`),
-    tdx("main", `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, Math.min(busR + 100, 1000))}&%24top=400&%24format=JSON`),
-  ]);
-  const bikeP = Promise.all([
-    tdx("route", `${BASE}/advanced/v2/Bike/Station/NearBy${nearbyQ(lat, lon, bikeR)}&%24top=150&%24format=JSON`),
-    tdx("route", `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, bikeR)}&%24top=150&%24format=JSON`),
-  ]);
+  const etaP = tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`);
+  const busP = Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
+    "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
+  const avP = memoTdx("route", `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, 90000);
+  const bikeP = Promise.all([geoList("bike", `b|${lat},${lon},${qBike}`, `${BASE}/advanced/v2/Bike/Station/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`,
+    "route", bikePack, bikeUnpack, avP.then(l => l.map(a => a.StationUID)).catch(() => [])), avP]);
   const favP = liveFavs(favs).catch(() => ({ bus: {}, bike: {} }));
   const railP = Promise.all([loadRailStations(), loadRailExits().catch(() => ({}))])
     .then(([st, ex]) => nearestRail(st, loc.latitude, loc.longitude,
@@ -162,6 +197,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
       const pos = byUID[it.StopUID] || byName[name] || null;
+      if (pos && pos.d > busR) continue;                    // 查詢範圍比設定大一點，超出設定距離的不列
       const arr = groups[name] = groups[name] || [];
       // 同一 StationID 一定同一站；不同 StationID 只有在 20 公尺內且行車方位（Bearing）相同時才合併（兩側站牌可能只差 10 公尺）
       const same = x => x.lat !== null && ((pos.sid && x.sids.has(pos.sid)) ||
@@ -205,6 +241,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
     const am = {}; for (const a of av) if (a.StationUID) am[a.StationUID] = a;
     for (const s of st) {
       const p = s.StationPosition; if (!p) continue;
+      if (haversine(loc.latitude, loc.longitude, p.PositionLat, p.PositionLon) > bikeR) continue;
       const a = am[s.StationUID] || {};
       const det = a.AvailableRentBikesDetail || null;
       bikes.push({
@@ -259,7 +296,7 @@ async function liveFavs(favs) {
   for (const f of (favs.bike || []).slice(0, 30)) { const c = UID_CITY[(f.uid || "").slice(0, 3)]; if (c) (kg[c] = kg[c] || []).push(f.uid); }
   for (const [city, uids] of Object.entries(kg)) {
     const filter = uids.map(u => `StationUID eq '${u}'`).join(" or ");
-    jobs.push(tdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`).then(list => {
+    jobs.push(memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, 90000).then(list => {
       for (const a of list) {
         const det = a.AvailableRentBikesDetail || null;
         out.bike[a.StationUID] = {
@@ -275,16 +312,26 @@ async function liveFavs(favs) {
 }
 
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
+const SOR_KEY = "jisu_sor";
+const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence })) }));
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
   const name = enc(route);
   const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
-  const [sor, etas, near] = await Promise.all([
-    tdx("route", u("StopOfRoute")),
+  // 站序存 30 天（jisu_sor）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
+  const sorKey = `${k.path}|${route}`, sc = lsGet(SOR_KEY, sorKey);
+  const sorFresh = async () => { const l = await tdx("route", u("StopOfRoute")); lsSet(SOR_KEY, sorKey, sorPack(l), 30); return l; };
+  let [sor, etas, near] = await Promise.all([
+    sc ? sc.d : sorFresh(),
     tdx("route", u("EstimatedTimeOfArrival")),
     tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
+  if (sc) {
+    const have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
+    const stale = !have.size || (Date.now() - sc.t > DAY_MS && etas.some(t => t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID)));
+    if (stale) sor = await sorFresh().catch(() => sor);
+  }
   const mine = sor.filter(r => r.RouteUID === routeUID);
   const dirs = [...new Set((mine.length ? mine : sor).map(r => r.Direction === 1 ? 1 : 0))].sort();
   let cand = mine.filter(r => (r.Direction === 1 ? 1 : 0) === dirNum);
@@ -441,18 +488,18 @@ async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
   const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
-  const [tt, tlive, slive] = await Promise.allSettled([
+  // 只查本站的 StationLiveBoard（不再抓全台列車位置）
+  const [tt, slive] = await Promise.allSettled([
     storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
       .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
-    get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
   ]);
   const delay = {};
-  for (const r of [tlive, slive]) {
+  for (const r of [slive]) {
     if (r.status !== "fulfilled") continue;
     for (const t of r.value) if (t.TrainNo != null && typeof t.DelayTime === "number") delay[String(t.TrainNo)] = t.DelayTime;
   }
-  const live = tlive.status === "fulfilled" || slive.status === "fulfilled";
+  const live = slive.status === "fulfilled";
   let rows = [];
   if (storedRows && storedRows.length) rows = storedRows;
   else if (tt.status === "fulfilled" && tt.value.length) {
@@ -483,7 +530,7 @@ async function thsrBoard(get, st) {
   const storedRows = await ttTrainRows("THSR", id, await dayInfo(svcDate(0))).catch(() => null);
   const [tt, seats] = await Promise.allSettled([
     storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
-    get("rail", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`),
+    memoTdx("rail", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`, 60000),
   ]);
   const seatMap = {};
   let seatList = [];

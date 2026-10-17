@@ -375,7 +375,7 @@ function setTab(k) { S.tab = k; window.scrollTo(0,0); render(); }
 function renderStatus() {
   const st = $('#status');
   st.className = 'live' + (S.error ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.error ? '更新失敗' : S.lastFetch ? `${hhmm(S.lastFetch)} 更新` : '') + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.error ? '更新失敗' : S.lastFetch ? `${hhmm(S.lastFetch)} 更新${window.idlePaused ? '・已暫停，點螢幕繼續' : ''}` : '') + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -1278,8 +1278,15 @@ $('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadR
 $('#q').addEventListener('input', e => { S.q = e.target.value; $('#qClear').hidden = !S.q; $('#main').innerHTML = ({home:vHome,bus:vBus,bike:vBike,rail:vRail,settings:vSettings})[S.tab](); });
 $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#q').value = ''; $('#qClear').hidden = true; render(); });
 
+// 自動更新暫停：在「設定」分頁（沒開路線／車站頁時）、或 10 分鐘沒碰螢幕，直到下次觸碰
+const IDLE_MS = 10 * 60 * 1000;
+var lastTouch = Date.now(), idlePaused = false;
+const markTouch = () => { lastTouch = Date.now(); if (idlePaused) { idlePaused = false; renderStatus(); } };
+for (const ev of ['touchstart','pointerdown','keydown','wheel']) addEventListener(ev, markTouch, { passive:true, capture:true });
 setInterval(() => {
   if (!S.settings.auto || document.hidden) return;
+  if (S.tab === 'settings' && !S.route && !S.rail && !S.line) return;
+  if (Date.now() - lastTouch > IDLE_MS) { if (!idlePaused) { idlePaused = true; renderStatus(); } return; }
   const due = Date.now() - S.lastFetch > S.settings.auto * 1000;
   if (due && !S.loading) { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); }
 }, 2000);
