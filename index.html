@@ -1414,7 +1414,7 @@ function planCard(r, i) {
   const first = tr[0];
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
-    <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span><span>步行${walk}分</span>${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
+    <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
     ${segBar(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
@@ -1574,7 +1574,7 @@ function detailHtml() {
     <div id="planMapSlot" class="mapslot"></div>${segBar(r)}<div class="tl">`;
   const node = (time, name, sub, cls = '', style = '') => `<div class="tn ${cls}"><span class="tt0">${time ? hmOf(time) : ''}</span><i class="nd" style="${style}"></i><span class="nm">${esc(name || '')}${sub ? `<small>${sub}</small>` : ''}</span></div>`;
   const legs = r.legs;
-  h += node(r.start, P.o?.name || '起點', '', 'end');
+  if (r.legs[0]?.kind !== 'transit') h += node(r.start, P.o?.name || '起點', '', 'end');   // 起點就是上車的車站：不另列起點
   legs.forEach((l, i) => {
     const m = Math.max(1, Math.round(l.dur / 60));
     if (l.kind === 'walk' || l.kind === 'bike' || l.kind === 'wait') {
@@ -1595,7 +1595,7 @@ function detailHtml() {
       </span></div>`;
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
-  h += node(r.end, P.d?.name || '終點', '', 'end');
+  if (r.legs[r.legs.length - 1]?.kind !== 'transit') h += node(r.end, P.d?.name || '終點', '', 'end');
   return h + `</div><div class="sub" style="margin-top:14px">時刻為 TDX 規劃結果；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {

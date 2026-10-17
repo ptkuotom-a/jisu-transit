@@ -1810,6 +1810,18 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
     // TDX 找不到路線（404／result: fail）：回傳空清單，畫面顯示「找不到可行的路線」；登入、次數限制等其他錯誤照常顯示
     if (/登入|頻繁|次數|太多|連線|TDX 5\d\d/.test(e.message) || !/找不到|no route|40001|spec params|fail|規劃失敗|404/i.test(e.message + " " + (e.status || ""))) throw e;
   }
+  // 起訖點本身就是車站（從車站清單選的）：在這一站上車／下車的路線，不算進出站的步行，直接從上車時間算起、到下車時間為止
+  const sysOk = (p, l) => /台鐵/.test(p.sub || "") ? l.mode === "tra" : /高鐵/.test(p.sub || "") ? l.mode === "thsr" : l.mode === "mrt" || l.mode === "lrt";
+  const sameSt = (p, pl, l) => sysOk(p, l) && (nameHit(pl.name || "", p.name || "") || (pl.lat != null && haversine(pl.lat, pl.lon, p.lat, p.lon) <= 300));
+  out = out.map(r => {
+    const tr = r.legs.filter(l => l.kind === "transit"); if (!tr.length) return r;
+    const f = tr[0], l = tr[tr.length - 1], i0 = r.legs.indexOf(f), i1 = r.legs.indexOf(l);
+    const cutO = !so && planIsStation(o) && i0 > 0 && sameSt(o, f.from, f), cutD = !sd && planIsStation(d) && i1 < r.legs.length - 1 && sameSt(d, l.to, l);
+    if (!cutO && !cutD) return r;
+    const legs = r.legs.slice(cutO ? i0 : 0, cutD ? i1 + 1 : r.legs.length);
+    const start = cutO ? tms(f.from.time) : r.start, end = cutD ? tms(l.to.time) : r.end;
+    return { ...r, legs, start, end, dur: Math.round((end - start) / 60000), trimmed: true };
+  });
   // 「現在出發」時 TDX 偶爾會給已經開走的班次；「指定出發」時 TDX 也常給比指定時間更早出門的走法（例如指定18:12卻17:54出發）：
   // 同樣路線還有較晚一班的就不列；班次密的第一段改搭下一班；其餘「現在出發」保留但標示，「指定出發」直接拿掉
   const ref = when === "now" ? Date.now() : when === "dep" && time ? tms(time) : null;
