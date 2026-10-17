@@ -1153,7 +1153,7 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const o = el.dataset.i ? REG.get(+el.dataset.i) : null;
   switch (el.dataset.act) {
-    case 'tab': setTab(el.dataset.v); break;
+    case 'tab': window.tabPager ? tabPager(el.dataset.v) : setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
     case 'railTab': selectRailTab(el); break;
@@ -1355,7 +1355,26 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     try { S.tab = TAB_ORDER[j]; html = VIEWS()[S.tab](); } catch (e) {} finally { S.tab = keep; }
     const g = document.createElement('div'); g.className = 'mghost'; g.innerHTML = html;
     g.style.left = (d * innerWidth) + 'px'; g.style.top = scrollY + 'px';   // 換頁後會捲回頂端：ghost 對齊到換頁後的位置
+    // 首頁地圖：把現有的地圖元素直接搬進 ghost，滑動途中就看得到（換頁後 mountMap 會再搬回正式位置）
+    const slot = g.querySelector('#mapSlot');
+    if (slot) { slot.removeAttribute('id'); if (mapEl && S.data && S.data.lat) slot.appendChild(mapEl); }
     main.appendChild(g); return g;
+  };
+  // 點底部功能列：一樣用翻頁動畫（依分頁順序決定方向；不相鄰也直接滑到目標）
+  let busy = false;
+  window.tabPager = k => {
+    const i = TAB_ORDER.indexOf(S.tab), j = TAB_ORDER.indexOf(k);
+    if (i === j || j < 0) { setTab(k); return; }
+    if (busy || st === 2 || reduceMotion()) { setTab(k); return; }
+    busy = true;
+    const d = j > i ? 1 : -1, w = innerWidth, ms = 300;
+    const ind = document.querySelector('#tabbar .tab-ind'), tbs = [...document.querySelectorAll('#tabbar .tab')];
+    for (const b of tbs) b.classList.toggle('on', b.dataset.v === k);
+    pillSettle(ind, tbs[j], ms);
+    dropGhost(); ghost = mkGhost(j, d); gDir = d;
+    main.classList.add('swipe'); main.style.transition = 'none'; main.style.transform = ''; main.offsetWidth;
+    main.style.transition = `transform ${ms}ms cubic-bezier(.25,.8,.3,1)`; main.style.transform = `translateX(${-d * w}px)`;
+    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; main.classList.remove('swipe'); setTab(k); main.offsetWidth; main.style.transition = ''; busy = false; }, ms);
   };
   const dropGhost = () => { if (ghost) { ghost.remove(); ghost = null; gDir = 0; } };
   const blocked = el => el.closest('input,textarea,select,.tabbar,[data-noswipe]') || [...(function*(){ for (let e = el; e && e !== area; e = e.parentElement) yield e; })()].some(e => e.scrollWidth > e.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(e).overflowX));
