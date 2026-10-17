@@ -839,18 +839,53 @@ async function ttLoad(op) {
   })();
 }
 // 台鐵定期時刻表涵蓋的日期（EffectiveDate ≤ 日期 < ExpireDate，皆取台北日期）；沒有效期資料就當作不涵蓋
-const ttCovers = (tt, ds) => { ds = String(ds).replace(/-/g, "").slice(0, 8); return !!(tt && tt.trains && tt.eff && tt.exp && tt.eff.slice(0, 10).replace(/-/g, "") <= ds && ds < tt.exp.slice(0, 10).replace(/-/g, "")); };
+// 七天時刻表（v2.20，取自平常週的實際時刻表）的 exp 可以是空的＝一直用到下次手動更新
+const ttCovers = (tt, ds) => { ds = String(ds).replace(/-/g, "").slice(0, 8); return !!(tt && tt.trains && tt.eff && (tt.exp || tt.src7) && tt.eff.slice(0, 10).replace(/-/g, "") <= ds && (!tt.exp || ds < tt.exp.slice(0, 10).replace(/-/g, ""))); };
 const ttHasHol = tt => !!(tt && tt.trains && tt.trains.some(t => (t[5] || "")[7] === "1"));
 // 台鐵／高鐵的雲端時刻表分成星期一～日 7 份（TRA_MON…TRA_SUN），每份只有那天有開的車（v2.19）；
 // 每班車仍保留自己的行駛日旗標（一～日＋國定假日）。7 份還沒建好時退回整份定期表（同樣依旗標篩）
 const DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 async function ttDow(op, day) {
-  const t = await ttLoad(op + "_" + DOW[day.getDay()]).catch(() => null);
+  const bu = (await dayInfo(day)).name === "補班";   // 週末補行上班：用星期一那份
+  const t = await ttLoad(op + "_" + (bu ? "MON" : DOW[day.getDay()])).catch(() => null);
   if (t && t.trains) return t;
   return ttLoad(op).catch(() => null);
 }
 const dowSplit = out => DOW.map((d, i) => { const ix = (i + 6) % 7;   // 旗標順序是 一…日
   return [d, { ...out, dow: d, trains: out.trains.filter(t => (t[5] || "")[ix] === "1") }]; });
+// ---------- 國定假日／連假規則（v2.20） ----------
+// 連假＝含國定假日（或補假）的連續放假日（國定假日＋相連的週末），前一天＝連假第一天的前一天。
+// 台鐵／高鐵只有這些日期才抓那一天的實際時刻表（/tt/day）；平常的平日和週末一律用七天那份。Worker 也照同一套規則擋。
+const isoAdd = (iso, k) => new Date(Date.parse(iso + "T00:00:00Z") + k * 86400000).toISOString().slice(0, 10);
+function holRel(dates, iso) {
+  dates = dates || {};
+  const off = x => { const n = dates[x]; if (n === "補班") return false; if (n) return true; const w = new Date(x + "T00:00:00Z").getUTCDay(); return w === 0 || w === 6; };
+  const run = x => { if (!off(x)) return null; let a = x, b = x, hol = !!dates[x]; for (let i = 0; i < 20 && off(isoAdd(a, -1)); i++) { a = isoAdd(a, -1); if (dates[a]) hol = true; }
+    for (let i = 0; i < 20 && off(isoAdd(b, 1)); i++) { b = isoAdd(b, 1); if (dates[b]) hol = true; } return hol ? [a, b] : null; };
+  const r = run(iso); if (r) return { kind: "holiday", run: r };
+  const n = isoAdd(iso, 1), rn = run(n); if (rn && rn[0] === n) return { kind: "eve", run: rn };
+  return null;
+}
+// 七天時刻表要取自哪 7 天：從今天起找最近的一整個平常週（星期一～日都不是國定假日、連假或其前一天）；
+// 找不到（9 週內）就每個星期幾各自挑最近的平常日。回傳 [一,二,三,四,五,六,日] 的日期
+function clean7(dates, todayIso) {
+  const ok = x => !holRel(dates, x), w0 = new Date(todayIso + "T00:00:00Z").getUTCDay();
+  let mon = isoAdd(todayIso, (8 - w0) % 7);   // 今天以後（含今天）的第一個星期一
+  for (let k = 0; k < 9; k++, mon = isoAdd(mon, 7)) { const wk = [0, 1, 2, 3, 4, 5, 6].map(i => isoAdd(mon, i)); if (wk.every(ok)) return wk; }
+  return [1, 2, 3, 4, 5, 6, 0].map(wd => { for (let i = 0; i < 63; i++) { const x = isoAdd(todayIso, i); if (new Date(x + "T00:00:00Z").getUTCDay() === wd && ok(x)) return x; } return null; });
+}
+// 把 7 天的實際時刻表（TDX DailyTimetable）做成 TRA_MON…TRA_SUN；每班車的行駛日旗標只標那個星期幾
+function rail7Build(op, dailyList, src7, gen) {
+  const hm4 = x => (x || "").slice(0, 5).replace(":", "");
+  const stops = L => (L || []).filter(x => x.SuspendedFlag !== 1).map(x => [x.StationID, hm4(x.ArrivalTime), hm4(x.DepartureTime)].join(",")).join(";");
+  const exp = gen && gen.exp && src7.every(d => d < gen.exp.slice(0, 10)) ? gen.exp : null;   // 取的日期都在定期表有效期內才沿用它的到期日
+  return src7.map((ds, i) => {   // i：0＝星期一 … 6＝星期日
+    const mask = "00000000".split("").map((c, k) => k === i ? "1" : "0").join(""), j = dailyList[i];
+    const list = op === "TRA" ? ((j && j.TrainTimetables) || []).map(x => { const t = x.TrainInfo || {}; return [String(t.TrainNo), shortType(zh(t.TrainTypeName)), t.Direction ?? "", zh(t.StartingStationName) || "", zh(t.EndingStationName) || "", mask, stops(x.StopTimes)]; })
+      : (Array.isArray(j) ? j : []).map(x => { const t = x.DailyTrainInfo || {}; return [String(t.TrainNo), "高鐵", t.Direction ?? "", zh(t.StartingStationName) || "", zh(t.EndingStationName) || "", mask, stops(x.StopTimes)]; });
+    return [DOW[(i + 1) % 7], { v: 1, op, kind: op.toLowerCase(), dow: DOW[(i + 1) % 7], src: ds, src7, trains: list, eff: (gen && gen.eff) || null, exp }];
+  });
+}
 // 今天（或指定日期）屬於哪一種營運日：國定假日 → NationalHolidays（系統沒有假日表就用週日）；補班日 → 平日
 async function dayInfo(date) {
   const h = await ttLoad("HOLIDAY").catch(() => null);
@@ -955,12 +990,25 @@ async function ttRefresh(op, pass, onStep) {
   const r = await fetch(`${proxy}/tt/data/${op}`, { method: "PUT", headers: { "x-session": pass, "content-type": "application/json", "x-tt-calls": String(calls), "x-tt-version": version, "x-tt-count": String(count), ...vh }, body });
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || "上傳失敗 " + r.status);
   ttMetaP = null;
-  // 台鐵／高鐵：再拆成星期一～日 7 份存到雲端（不用再呼叫 TDX）
-  let days = null;
+  // 台鐵／高鐵（v2.20）：七天時刻表取自最近一整個平常週（不含國定假日、連假和其前一天，含平常的週六日）的實際時刻表，
+  // 星期一～日各抓一天（7 次呼叫）存成 TRA_MON…TRA_SUN；記下取自哪 7 天
+  let days = null, src7 = null;
   if (out.kind === "tra" || out.kind === "thsr") {
+    const hol = await ttLoad("HOLIDAY").catch(() => null);
+    if (!hol || !hol.dates) throw new Error("先更新國定假日曆，才能挑出平常週");
+    src7 = clean7(hol.dates, isoDay(new Date()));
+    if (src7.some(x => !x)) throw new Error("9 週內找不到平常日");
+    const dl = [];
+    for (const ds of src7) {
+      dl.push(op === "TRA" ? await get(`${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/TrainDate/${ds}?%24format=JSON`, true) : await get(`${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/TrainDate/${ds}?%24format=JSON`));
+      await sleep(700);
+    }
+    const sets = rail7Build(op, dl, src7, { eff: out.eff || null, exp: out.exp || null });
+    if (sets.some(([, p]) => !p.trains.length)) throw new Error("TDX 還沒有其中某天的時刻表：" + src7.filter((d, i) => !sets[i][1].trains.length).join("、"));
     days = [];
-    for (const [d, part] of dowSplit(out)) {
-      const r3 = await fetch(`${proxy}/tt/data/${op}_${d}`, { method: "PUT", headers: { "x-session": pass, "content-type": "application/json", "x-tt-calls": "0", "x-tt-version": version, "x-tt-count": String(part.trains.length), ...vh }, body: JSON.stringify(part) });
+    for (const [d, part] of sets) {
+      const h7 = { "x-tt-src": part.src, "x-tt-src7": src7.join(","), ...(part.eff ? { "x-tt-eff": part.eff, "x-tt-exp": part.exp || "" } : {}) };
+      const r3 = await fetch(`${proxy}/tt/data/${op}_${d}`, { method: "PUT", headers: { "x-session": pass, "content-type": "application/json", "x-tt-calls": String(d === "MON" ? calls : 0), "x-tt-version": version, "x-tt-count": String(part.trains.length), ...h7 }, body: JSON.stringify(part) });
       if (!r3.ok) throw new Error(`${d} 上傳失敗 ${r3.status}`);
       days.push(part.trains.length);
     }
@@ -976,7 +1024,7 @@ async function ttRefresh(op, pass, onStep) {
       trips = r2.ok ? { count: T.trips.length, rates } : { error: "車次上傳失敗 " + r2.status };
     } catch (e) { trips = { error: String(e.message || e) }; }
   }
-  return { calls, bytes: body.length, count, version, trips, days, ...j };
+  return { calls, bytes: body.length, count, version, trips, days, src7, ...j };
 }
 // ---------- 由各站時刻表串出每一班車的官方時刻（更新時刻表時在瀏覽器計算，存到 KV 的 TRIPS_系統） ----------
 // 方法：同一線、同方向、同終點、同日別的各站發車時間，依站序把第 i 站的每個發車接到第 i+1站「時間差≈站間行駛時間」的那一班（不超車、貪婪配對）。
@@ -2040,8 +2088,9 @@ const railDayMem = {}, railParsedMem = {};
 async function railDayTt(op, day) {
   const iso = isoDay(day), k = op + "|" + iso; if (railDayMem[k]) return railDayMem[k];
   return railDayMem[k] = (async () => {
-    // ① 那一天的實際時刻表（TDX DailyTimetable，經 Worker 存在 KV；含國定假日、疏運加班、停駛）
-    try { const j = await authedGet(`/tt/day/${op}/${iso}`); if (j && j.trains && j.trains.length) return { tt: j, daily: true }; } catch (e) {}
+    // ① 國定假日、連假或其前一天：那一天的實際時刻表（TDX DailyTimetable，經 Worker 存在 KV；含疏運加班、停駛）。平常日不抓（v2.20）
+    const h = await ttLoad("HOLIDAY").catch(() => null);
+    if (holRel(h && h.dates, iso)) { try { const j = await authedGet(`/tt/day/${op}/${iso}`); if (j && j.trains && j.trains.length) return { tt: j, daily: true }; } catch (e) {} }
     // ② 那個星期幾的那份定期表；定期表沒有國定假日欄，國定假日不用；台鐵還要在定期表自己的有效期間內
     const stored = await ttDow(op, day);
     if (!stored || !stored.trains || ((await dayInfo(day)).hol && !ttHasHol(stored))) return null;
