@@ -374,6 +374,24 @@ function moveInd(prev) {
   ind.style.transform = to;
 }
 addEventListener('resize', () => moveInd(''));
+// 膠囊跟手：依滑動進度 p（0～1）在兩個按鈕之間內插位置與寬度
+// 方向分頁的膠囊（.seg i）用 CSS 的等分寬度；底部功能列用按鈕實際位置
+function pillGeo(pill, btn) {
+  if (pill.tagName === 'I') { const seg = pill.parentElement, bs = [...seg.querySelectorAll('button')], w = (seg.clientWidth - 8) / bs.length; return { x: bs.indexOf(btn) * w, w }; }
+  return { x: btn.offsetLeft, w: btn.offsetWidth };
+}
+function pillTrack(pill, a, b, p) {
+  if (!pill || !a) return;
+  const A = pillGeo(pill, a), B = b ? pillGeo(pill, b) : A;
+  pill.style.transition = 'none'; pill.style.width = (A.w + (B.w - A.w) * p) + 'px'; pill.style.transform = `translateX(${A.x + (B.x - A.x) * p}px)`;
+}
+function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕；方向分頁的膠囊結束後交回 CSS
+  if (!pill || !to) return;
+  const G = pillGeo(pill, to);
+  pill.offsetWidth; pill.style.transition = reduceMotion() ? 'none' : `transform ${ms}ms ease, width ${ms}ms ease`;
+  pill.style.width = G.w + 'px'; pill.style.transform = `translateX(${G.x}px)`;
+  if (pill.tagName === 'I') setTimeout(() => { if (pill.isConnected) { pill.style.transition = 'none'; pill.style.width = ''; pill.style.transform = ''; pill.offsetWidth; pill.style.transition = ''; } }, ms + 30);
+}
 const TAB_ORDER = ['home','bus','bike','rail','settings'];
 function setTab(k) { S.tab = k; window.scrollTo(0,0); render(); }
 function renderStatus() {
@@ -854,9 +872,15 @@ function selectRailTab(btn, fromSwipe) {
   const blk = btn.closest('.lblk'), bi = [...document.querySelectorAll('#routePage .lblk')].indexOf(blk);
   const btns = [...btn.parentElement.querySelectorAll('button')], dir = btns.indexOf(btn) > btns.findIndex(b => b.classList.contains('on')) ? 1 : -1;
   const v = btn.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1);
+  const op = blk.querySelector('.seg i'), oon = btns.find(b => b.classList.contains('on'));
+  let pos = null;   // 舊膠囊目前位置（可能是拖曳中的位置）
+  if (op && oon) { const sr = op.parentElement.getBoundingClientRect(), r = op.getBoundingClientRect(); pos = { x: r.left - sr.left - 4, w: r.width }; }
+  if (!fromSwipe && op) pillSettle(op, btn, 160);
   const go = () => {
     renderRail();
     const nb = document.querySelectorAll('#routePage .lblk')[bi], els = tabBody(nb), w = innerWidth;
+    const np = nb && nb.querySelector('.seg i'), non = nb && nb.querySelector('.seg button.on');
+    if (np && non && pos && fromSwipe) { np.style.transition = 'none'; np.style.width = pos.w + 'px'; np.style.transform = `translateX(${pos.x}px)`; pillSettle(np, non, 200); }
     if (reduceMotion() || !els.length) return;
     for (const e of els) { e.style.transition = 'none'; e.style.transform = `translateX(${dir * w * 0.35}px)`; e.style.opacity = '0.2'; }
     nb.offsetWidth;
@@ -1164,7 +1188,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       }
     }
     e.preventDefault();
-    if (mode === 'tab') { dx = ddx; for (const el of tabBody(blk)) { el.style.transition = 'none'; el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / innerWidth)); } return; }
+    if (mode === 'tab') { dx = ddx; pillTrack(blk.querySelector('.seg i'), tabBtns[tabIdx], tabBtns[tabIdx + (dx < 0 ? 1 : -1)], Math.min(1, Math.abs(dx) / innerWidth)); for (const el of tabBody(blk)) { el.style.transition = 'none'; el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / innerWidth)); } return; }
     dx = Math.max(0, ddx);
     pg.style.transform = `translateX(${dx}px)`;
     dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
@@ -1182,7 +1206,8 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
         const d2 = reduceMotion() ? 0 : 160;
         for (const el of els) { el.style.transition = `transform ${d2}ms ease, opacity ${d2}ms ease`; el.style.transform = `translateX(${dx < 0 ? -innerWidth : innerWidth}px)`; el.style.opacity = '0'; }
         setTimeout(() => selectRailTab(btn, true), d2);
-      } else for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; }
+        pillSettle(blk.querySelector('.seg i'), btn, d2);
+      } else { for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; } pillSettle(blk.querySelector('.seg i'), tabBtns[tabIdx], dur); }
       return;
     }
     swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
@@ -1227,6 +1252,8 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     const i = TAB_ORDER.indexOf(S.tab), edge = (ddx > 0 && i === 0) || (ddx < 0 && i === TAB_ORDER.length - 1);
     dx = edge ? ddx / 3 : ddx;
     main.style.transform = `translateX(${dx}px)`;
+    const tbs = [...document.querySelectorAll('#tabbar .tab')];
+    if (!edge) pillTrack(document.querySelector('#tabbar .tab-ind'), tbs[i], tbs[i + (dx < 0 ? 1 : -1)], Math.min(1, Math.abs(dx) / innerWidth));
   }, { passive:false });
   const end = () => {
     if (st !== 2) { st = 0; return; }
@@ -1235,7 +1262,9 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     const j = (Math.abs(dx) > w * 0.25 || (v > 0.4 && Math.abs(dx) > 30)) ? i + (dx < 0 ? 1 : -1) : i;
     const dur = reduceMotion() ? 0 : 200;
     const done = () => { main.style.transition = ''; main.style.transform = ''; main.classList.remove('swipe'); };
-    if (j === i || j < 0 || j >= TAB_ORDER.length) { main.style.transition = `transform ${dur}ms ease`; main.style.transform = ''; setTimeout(done, dur); return; }
+    const ind = document.querySelector('#tabbar .tab-ind'), tbs = [...document.querySelectorAll('#tabbar .tab')];
+    if (j === i || j < 0 || j >= TAB_ORDER.length) { main.style.transition = `transform ${dur}ms ease`; main.style.transform = ''; pillSettle(ind, tbs[i], dur); setTimeout(done, dur); return; }
+    pillSettle(ind, tbs[j], dur);
     const dir = dx < 0 ? -1 : 1;
     main.style.transition = `transform ${dur}ms ease`; main.style.transform = `translateX(${dir * w}px)`;
     setTimeout(() => {
