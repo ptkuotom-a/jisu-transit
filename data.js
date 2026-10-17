@@ -561,6 +561,9 @@ async function metroBoard(get, st) {
   const fix = await destFixer(st.op);
   b.tt = (tt || []).map(fix).map(t => ({ ...t, side: metroSide(t, st.ids) })).filter(t => !(t.destId && st.ids.includes(t.destId)));
   b.ttKind = "official";
+  if (!b.live) b.groups = [];          // 沒有即時資料時，看板只用時刻表（避免同方向出現兩個分頁）
+  else { b.groups = b.groups.map(g => ({ ...g, trains: g.trains.map(fix) })); }
+  if (b.tt.length && !b.live) b.note = null;
   return b;
 }
 async function metroBoard0(get, st) {
@@ -659,7 +662,7 @@ function groupTrains(kind, a, b) {
 }
 
 // 站序：BL12→12、G03A→3.5、R22A→22.5；轉乘站的終點代碼可能屬於另一條線（如大安 BR09 = R05）
-const STN_ALIAS = { OT1: { O: "O15" }, BR09: { R: "R05" }, R05: { BR: "BR09" }, BR24: { BL: "BL23" }, BL23: { BR: "BR24" }, BL12: { R: "R10" }, R10: { BL: "BL12" },
+const STN_ALIAS = { OT1: { O: "O15" }, RK1: { R: "R25" }, BR09: { R: "R05" }, R05: { BR: "BR09" }, BR24: { BL: "BL23" }, BL23: { BR: "BR24" }, BL12: { R: "R10" }, R10: { BL: "BL12" },
   BL11: { G: "G12" }, G12: { BL: "BL11" }, G09: { O: "O05" }, O05: { G: "G09" }, R08: { G: "G10" }, G10: { R: "R08" }, R07: { O: "O06" }, O06: { R: "R07" },
   BL14: { O: "O07" }, O07: { BL: "BL14" }, G15: { O: "O08" }, O08: { G: "G15" }, R13: { O: "O11" }, O11: { R: "R13" }, BR11: { G: "G16" }, G16: { BR: "BR11" },
   BL15: { BR: "BR10" }, BR10: { BL: "BL15" }, G04: { Y: "Y07" }, Y07: { G: "G04" }, O17: { Y: "Y18" }, Y18: { O: "O17" }, BL07: { Y: "Y16" }, Y16: { BL: "BL07" },
@@ -748,7 +751,7 @@ async function lineView(get, p) {
   }
   // 即時：TRTC/環狀線只有本站（看板已有）；其他系統一次抓整個系統的 LiveBoard，算每站最近一班
   const eta = {};
-  if (p.op !== "TRTC" && p.op !== "NTMC" && p.op !== "TMRT") {
+  if (!p.noLive && p.op !== "TRTC" && p.op !== "NTMC" && p.op !== "TMRT") {
     try {
       const k = p.op; let rows = liveCache[k] && Date.now() - liveCache[k].t < 20000 ? liveCache[k].rows : null;
       if (!rows) { rows = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/LiveBoard/${p.op}?%24format=JSON`); liveCache[k] = { t: Date.now(), rows }; }
@@ -768,6 +771,35 @@ async function lineView(get, p) {
   const ci = order.indexOf(cur);
   return { op: p.op, line: L.line, label: p.label || null, live: liveAll,
     stops: order.map((id, i) => ({ id, name: nameOf[id] || id, here: id === cur, past: ci >= 0 && i < ci, eta: eta[id] ?? null })) };
+}
+const S2S_KEY = "jisu_s2s";
+async function s2sEdges(get, op) {
+  let c = {}; try { c = JSON.parse(localStorage.getItem(S2S_KEY)) || {}; } catch (e) {}
+  const hit = c[op]; if (hit && Date.now() - hit.time < (Object.keys(hit.e).length ? RAIL_STATION_DAYS : 1) * 86400000) return hit.e;
+  const e = {};
+  try {
+    const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/S2STravelTime/${op}?%24format=JSON`);
+    for (const r of Array.isArray(list) ? list : []) for (const x of (r.TravelTimes || [])) {
+      const sec = (x.RunTime || 0) + (x.StopTime || 0); if (!sec) continue;
+      for (const k of [x.FromStationID + "|" + x.ToStationID, x.ToStationID + "|" + x.FromStationID]) if (!e[k]) e[k] = sec;
+    }
+  } catch (err) { if (isRate(err)) throw err; }
+  c[op] = { time: Date.now(), e }; try { localStorage.setItem(S2S_KEY, JSON.stringify(c)); } catch (err) {}
+  return e;
+}
+// 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約 2 分推估
+async function tripView(get, p) {
+  const lv = await lineView(get, { ...p, noLive: true });
+  const E = await s2sEdges(get, p.op);
+  const st = lv.stops, ci = Math.max(0, st.findIndex(x => x.here));
+  const T = new Array(st.length); T[ci] = p.t + (p.delay || 0);
+  let miss = 0;
+  const gap = (a, b) => { const v = E[a + "|" + b]; if (v) return v / 60; miss++; return 2; };
+  for (let i = ci + 1; i < st.length; i++) T[i] = T[i - 1] + gap(st[i - 1].id, st[i].id);
+  for (let i = ci - 1; i >= 0; i--) T[i] = T[i + 1] - gap(st[i].id, st[i + 1].id);
+  const clock = m => { m = Math.round(m); m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); };
+  return { op: p.op, line: lv.line, approx: miss > 0, noS2S: !Object.keys(E).length, delay: p.delay || 0,
+    stops: st.map((x, i) => ({ ...x, time: clock(T[i]) })) };
 }
 async function trainView(get, p) {
   const no = String(p.no), here = new Set((p.ids || []).map(String));
@@ -953,6 +985,7 @@ window.dataApi = async (action, p = {}) => {
     case "railSearch": return railSearch(p || {});
     case "lineView": return lineView(tdx, p);
     case "trainView": return trainView(tdx, p);
+    case "tripView": return tripView(tdx, p);
     case "pushKey": return pushCall("GET", "/push/key");
     case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
     case "remindCreate": {

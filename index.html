@@ -223,10 +223,11 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .mpin .slogo{width:18px;height:18px}
 .seg{position:relative;display:grid;grid-template-columns:repeat(var(--n),1fr);gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:4px;margin:8px 0 4px}
 .seg i{position:absolute;top:4px;bottom:4px;left:4px;width:calc((100% - 8px) / var(--n));border-radius:999px;background:var(--lime);transform:translateX(calc(var(--i) * 100%));transition:transform .25s ease}
-.seg button,.seg span{position:relative;z-index:1;padding:9px 6px;border-radius:999px;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.seg button,.seg span{position:relative;z-index:1;padding:8px 8px;border-radius:999px;font-weight:700;font-size:13.5px;line-height:1.25;white-space:normal;word-break:keep-all;overflow-wrap:anywhere;color:var(--muted)}
 .seg button.on{color:var(--ink)} .seg.one{grid-template-columns:1fr} .seg.one span{color:var(--text,#fff);text-align:center}
 @media (prefers-reduced-motion: reduce){.seg i{transition:none}}
 .lstops{display:inline-flex;align-items:center;gap:2px;font-size:13px;font-weight:600;color:var(--lime)} .lstops svg{width:14px;height:14px}
+.ltag{display:block;font-size:10px;font-weight:600;opacity:.75;margin-top:1px}
 .lastt{font-size:11px;color:var(--warn);font-weight:700}
 .dgrp{margin-top:6px;font-size:14px}
 .tgrp{display:flex;align-items:baseline;justify-content:space-between;margin:14px 6px 0;font-size:15px;font-weight:700}.tgrp span{font-size:13px;font-weight:500;color:var(--muted)}
@@ -724,8 +725,12 @@ function moreBtn(id, n, shown) { return n > shown ? `<button class="more" data-a
 function railTabsMetro(R, D, G) {
   const order = [...(R.lines || [])], lines = new Map();
   const put = (l, key, kind, t) => { if (!lines.has(l)) lines.set(l, new Map()); const m = lines.get(l); if (!m.has(key)) m.set(key, { key, live:[], tt:[], dests:[] }); const x = m.get(key); x[kind].push(t); if (t.dest && !x.dests.includes(t.dest)) x.dests.push(t.dest); };
-  for (const g of G) for (const t of g.trains) put(g.line || '', t.via || g.side || 'x' + t.dest, 'live', t);
   for (const t of (D.tt || [])) put(t.line || '', t.via || t.side || 'x' + t.dest, 'tt', t);
+  if (D.live) for (const g of G) for (const t of g.trains) {   // 即時列車放進同終點（同順逆行）的時刻表分頁
+    const l = g.line || '', m = lines.get(l);
+    const hit = m && [...m.values()].find(x => x.tt.some(y => y.dest === t.dest && (y.via || null) === (t.via || null)));
+    put(l, hit ? hit.key : (t.via || g.side || 'x' + t.dest), 'live', t);
+  }
   const rank = l => { const i = order.indexOf(l); return i < 0 ? 100 + (l.charCodeAt(0) || 0) : i; };
   const sk = k => /^(up|d0|逆行)/.test(k) ? 0 : /^(dn|d1|順行)/.test(k) ? 1 : 2;
   const est = D.ttKind === 'estimate';
@@ -737,13 +742,33 @@ function railTabsMetro(R, D, G) {
     const alts = tabs.map(t => ({ label:t.label, line:l, trains: (t.live.length ? t.live : t.tt.slice(0, 20)) }));
     const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, g: alts[tabs.indexOf(T)], alts });
     let h = `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span><span style="flex:1"></span><button class="lstops" data-act="lineOpen" data-i="${li}">停靠站 ${I.chev}</button></div>` + segTabs(R.name + l, tabs, sel);
-    if (T.live.length) h += `<div class="tgrp">即時到站<span>${D.note && /Bus\+/.test(D.note) ? 'Bus+' : 'TDX'}</span></div><div class="board">${T.live.slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999)).slice(0, 6).map(t => trainRow('metro', R.op, { ...t, line:null })).join('')}</div>`;
-    if (T.tt.length) {
-      const id = R.name + l + sel, all = S.ttAll[id], n = T.tt.length, show = all ? n : 12;
-      const tomorrow = D.ttTomorrow || T.tt[0].eta > 180;
-      h += `<div class="tgrp">${est ? '估算班次（依班距，非即時）' : '時刻表'}${tomorrow ? '・明日' : ''}<span>${tomorrow ? '共' : '今日剩'} ${n} 班</span></div><div class="board">` +
-        T.tt.slice(0, show).map(t => `<div class="trow"><span class="ttime">${clk(t.time)}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div><div class="tt">${est ? '約 ' : ''}${etaTxt(t.eta)}</div></span></div>`).join('') + `</div>` + moreBtn(id, n, show);
-    } else if (!T.live.length) h += `<div class="note">這個方向目前沒有班次資料。</div>`;
+    // 即時併入時刻表：每班即時列車對應到同終點、時間最接近的表定班次
+    const rows = T.tt.map(t => ({ ...t })), used = new Set();
+    for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
+      if (lv.eta == null) continue;
+      let bi = -1, bd = 1e9;
+      rows.forEach((r, i) => { if (used.has(i) || r.dest !== lv.dest || r.eta == null) return; const d = Math.abs(r.eta - lv.eta); if (d < bd) { bd = d; bi = i; } });
+      if (bi >= 0 && bd <= 8) { used.add(bi); rows[bi].live = lv.eta; }
+      else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true });
+    }
+    rows.sort((x, y) => (x.live ?? x.eta ?? 9999) - (y.live ?? y.eta ?? 9999));
+    const firstLive = rows.findIndex(r => r.live != null);
+    const vis = rows.filter((r, i) => !(r.live == null && firstLive >= 0 && i < firstLive && r.eta < (rows[firstLive].live ?? 0) - 3));   // 已被即時列車超過的表定班次不再列
+    if (vis.length) {
+      const id = R.name + l + sel, all = S.ttAll[id], n = vis.length, show = all ? n : 12;
+      const tomorrow = D.ttTomorrow || (T.tt[0] && T.tt[0].eta > 180 && !T.live.length);
+      const nowM = new Date().getHours() * 60 + new Date().getMinutes();
+      h += `<div class="tgrp">${est ? '估算班次（依班距，非即時）' : T.live.length ? '時刻表＋即時到站' : '時刻表'}${tomorrow ? '・明日' : ''}<span>${tomorrow ? '共' : '今日剩'} ${n} 班</span></div><div class="board">` +
+        vis.slice(0, show).map(t => {
+          const tm = t.time ? clk(t.time) : clk(`${Math.floor((nowM + t.live) / 60)}:${String((nowM + t.live) % 60).padStart(2,'0')}`);
+          const e = t.live == null ? null : t.live <= 0 ? { t:'進站中', k:'hot' } : t.live <= 1 ? { t:'將到站', k:'hot' } : { t:`${t.live} 分`, k: t.live <= 3 ? 'soon' : '' };
+          const right = e ? `<span class="eta ${e.k}">${e.t}<small class="ltag">即時</small></span>` : '';
+          const sub = e ? (t.time && t.eta != null && t.live - t.eta >= 2 ? `表定 ${clk(t.time)}・晚約 ${t.live - t.eta} 分` : t.time ? `表定 ${clk(t.time)}` : '即時到站') : `${est ? '約 ' : ''}${etaTxt(t.eta)}`;
+          const tt0 = t.t ?? (nowM + (t.live || 0));
+          const ri = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, destId:t.destId || null, dest:t.dest, via:t.via || null, t: (t.live != null && t.t == null) ? nowM + t.live : tt0, delay: (t.live != null && t.eta != null && t.t != null) ? Math.max(0, t.live - t.eta) : 0, time: tm, est, live: t.live != null });
+          return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div><div class="tt">${sub}</div></span>${right}</div></button>`;
+        }).join('') + `</div>` + moreBtn(id, n, show);
+    } else h += `<div class="note">這個方向目前沒有班次資料。</div>`;
     return h;
   }).join('');
 }
@@ -762,7 +787,7 @@ function renderRail() {
     <div class="rhead"><h1 style="${big}">${esc(R.name)}</h1></div>
     <div class="rsub"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}<span>${distTxt(R.dist)}${R.exit ? `（${esc(R.exit)}）` : ''}</span>
       <span style="flex:1"></span><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div>
-    <div class="rmeta">${S.railLoading && !D ? '讀取列車資訊中…' : S.railError ? '讀取失敗：' + esc(S.railError) : D ? (D.kind === 'metro' && D.live ? '即時到站' : D.kind === 'thsr' ? '今日班次與剩餘座位' : '即將發車（含誤點）') : ''}</div></div>`;
+    <div class="rmeta">${S.railLoading && !D ? '讀取列車資訊中…' : S.railError ? '讀取失敗：' + esc(S.railError) : D ? (D.kind === 'metro' ? (D.live ? '時刻表＋即時到站' : D.ttKind === 'estimate' ? '估算班次' : '時刻表') : D.kind === 'thsr' ? '今日班次與剩餘座位' : '時刻表＋即時誤點') : ''}</div></div>`;
   if (!D) h += S.railError ? '' : skel(4);
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
@@ -789,7 +814,8 @@ async function loadLine(scroll) {
   const L = S.line; if (!L) return;
   const q = L.req;
   try {
-    L.data = q.kind === 'line' ? await api('lineView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, curEta:q.curEta, label:q.label })
+    L.data = q.kind === 'trip' ? await api('tripView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, t:q.t, delay:q.delay })
+      : q.kind === 'line' ? await api('lineView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, curEta:q.curEta, label:q.label })
       : await api('trainView', { kind:q.kind, no:q.no, ids:q.ids }); L.err = null;
   } catch (e) { L.err = e.message; }
   if (S.line !== L) return;
@@ -799,20 +825,24 @@ async function loadLine(scroll) {
 function renderLine() {
   const L = S.line; if (!L || S.page !== 'line') return;
   const q = L.req, D = L.data, R = S.rail || {};
-  const title = q.kind === 'line' ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no} 次`;
-  const sub = q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
+  const isLine = q.kind === 'line' || q.kind === 'trip';
+  const title = isLine ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no} 次`;
+  const sub = q.kind === 'trip' ? `${q.label}・${R.name || ''} ${q.time}` : q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
   const canSwap = q.kind === 'line' && q.alts && q.alts.length > 1;
-  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'line'
+  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'trip'
+    ? `${D.stops.length} 站；${q.est ? '依班距估算發車時間，' : ''}各站時間${D.noS2S ? '以每站約 2 分鐘估算' : '依 TDX 站間行駛時間推算'}${D.delay ? `，已含即時晚約 ${D.delay} 分` : q.live ? '，本站為即時到站' : ''}`
+    : q.kind === 'line'
     ? `${D.stops.length} 站，目前在 ${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
     : `${D.stops.length} 站${q.kind === 'tra' ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚 ${D.delay} 分` : '；目前準點') : ''}`;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
-    <div class="rhead"><h1 style="font-size:${title.length > 4 ? 30 : 38}px">${q.kind === 'line' ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
+    <div class="rhead"><h1 style="font-size:${q.kind === 'trip' ? 28 : title.length > 4 ? 30 : 38}px">${isLine ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn"><span>${esc(sub)}</span></span>` : ''}</div>
     <div class="rmeta">${meta}</div></div>`;
   if (!D) h += L.err ? '' : skel(5);
   else h += `<div class="line">` + D.stops.map(s => {
     let right = '';
-    if (q.kind === 'line') { const e = s.eta == null ? null : s.eta <= 0 ? { t:'進站中', k:'hot' } : s.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${s.eta} 分`, k: s.eta <= 3 ? 'soon' : '' }; right = e ? `<span class="eta ${e.k}">${e.t}</span>` : ''; }
+    if (q.kind === 'trip') right = `<span class="eta ${s.here ? 'soon' : ''}">${esc(s.time)}</span>`;
+    else if (q.kind === 'line') { const e = s.eta == null ? null : s.eta <= 0 ? { t:'進站中', k:'hot' } : s.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${s.eta} 分`, k: s.eta <= 3 ? 'soon' : '' }; right = e ? `<span class="eta ${e.k}">${e.t}</span>` : ''; }
     else { const t = s.dep || s.arr; right = t ? `<span class="eta ${s.here ? 'soon' : ''}">${esc(t)}${q.kind === 'tra' && D.delay > 0 && !s.past ? `<small style="display:block;font-size:11px;color:var(--warn)">+${D.delay}</small>` : ''}</span>` : ''; }
     return `<div class="st ${s.here ? 'here' : ''} ${s.at ? 'bus' : ''} ${s.past ? 'past' : ''}"><span class="dot">${s.at ? I.train : ''}</span><span class="sn">${esc(s.name)}${s.at ? '<small>列車目前位置</small>' : ''}</span>${right}</div>`;
   }).join('') + `</div>`;
@@ -914,6 +944,7 @@ document.addEventListener('click', e => {
     case 'closeRoute': closeRoute(); break;
     case 'railTab': { const v = el.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1); renderRail(); break; }
     case 'ttAll': S.ttAll[el.dataset.v] = true; renderRail(); break;
+    case 'tripOpen': if (o && S.rail) openLine({ kind:'trip', ...o, ids:S.rail.ids, dests:[{ id:o.destId, name:o.dest }], label:'往 ' + o.dest }); break;
     case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
     case 'trainOpen': if (o && S.rail) openLine({ kind:o.kind, no:o.no, ids:S.rail.ids }); break;
     case 'lineSwap': if (S.line?.req.alts) { const q = S.line.req, n = (q.alt + 1) % q.alts.length; S.line.data = null; openLine({ ...lineReqFromGroup({ op:q.op, line:q.line, g:q.alts[n] }) }); } break;
@@ -1019,7 +1050,8 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   }, { passive:false });
   const pend = () => {
     if (st !== 2) { st = 0; return; }
-    st = 0;
+    st = 0; swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
+
     const v = dx / Math.max(1, Date.now() - tt), dur = reduceMotion() ? 0 : 220;
     pg.classList.remove('drag');
     dim.style.transition = `opacity ${dur}ms ease`; dim.style.opacity = '0';
@@ -1033,6 +1065,8 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   };
   pg.addEventListener('touchend', pend); pg.addEventListener('touchcancel', pend);
 })();
+let swallowClick = 0;
+document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
 /* ---------- 主畫面左右滑動切換分頁 ---------- */
 (() => {
   const area = $('.wrap'), main = $('#main');
@@ -1058,7 +1092,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   }, { passive:false });
   const end = () => {
     if (st !== 2) { st = 0; return; }
-    st = 0;
+    st = 0; swallowClick = Date.now() + 500;
     const i = TAB_ORDER.indexOf(S.tab), v = Math.abs(dx) / Math.max(1, Date.now() - t0), w = innerWidth;
     const j = (Math.abs(dx) > w * 0.25 || (v > 0.4 && Math.abs(dx) > 30)) ? i + (dx < 0 ? 1 : -1) : i;
     const dur = reduceMotion() ? 0 : 200;
