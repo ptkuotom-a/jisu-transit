@@ -1902,7 +1902,7 @@ function planClean(routes, yb) {
     } else if (approx) end = start + legs.reduce((a, l) => a + l.dur * 1000, 0);
     const sig = legs.map(l => l.kind === "transit" ? l.name + "@" + l.from.name + ">" + l.to.name + "@" + l.from.time : l.kind).join("|");
     if (out.some(o => o.sig === sig)) continue;   // 同一班車、只差頭尾接駁方式的重複結果
-    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}) });
+    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : r.source === "timetable" ? "tt" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}) });
   }
   return out.filter(r => !r.approx).concat(out.filter(r => r.approx));
 }
@@ -1923,7 +1923,7 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
     if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
     out = planClean(j.data && j.data.routes, yb);
     // Google 備援的結果是用原本的起訖點查的：不套用「換成相鄰站」的註記，車站頭尾的步行也照常剪掉
-    if (j.source === "google") { so = null; sd = null; }
+    if (j.source === "google" || j.source === "timetable") { so = null; sd = null; }   // Worker 用原本的起訖點查（Google 備援、深夜直達車）
   } catch (e) {
     // TDX 找不到路線（404／result: fail）：回傳空清單，畫面顯示「找不到可行的路線」；登入、次數限制等其他錯誤照常顯示
     if (/登入|頻繁|次數|太多|連線|TDX 5\d\d/.test(e.message) || !/找不到|no route|40001|spec params|fail|規劃失敗|404/i.test(e.message + " " + (e.status || ""))) throw e;
@@ -2224,6 +2224,7 @@ async function planTtFix(routes, opt = {}) {
   const out = [];
   for (const r of routes) {
     if (!r.legs.some(l => l.kind === "transit" && (l.mode === "lrt" || l.mode === "mrt" || l.mode === "tra" || l.mode === "thsr"))) { out.push(r); continue; }
+    if (r.src === "tt") { out.push(r); continue; }   // 深夜直達車（v2.21）：本來就取自官方時刻表
     if (r.src === "google" && !r.legs.some(l => l.kind === "transit" && l.mode === "lrt")) { out.push(r); continue; }   // Google 的時刻本來就跟時刻表一致
     if (r.src === "google") {   // Google 的時刻本來就跟時刻表一致：不改時間，只把高雄輕軌的終點（籬仔內）換成順行／逆行
       const legs = [];

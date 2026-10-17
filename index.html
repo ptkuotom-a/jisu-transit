@@ -827,7 +827,7 @@ function vSettings() {
     <dt>高鐵</dt><dd>七天班表（同台鐵規則）與剩餘座位（每分鐘更新）</dd>
     <dt>估算班次</dt><dd>台中捷運、北捷文湖線沒有站別時刻表，依 TDX 班距與首末班推算，列上標「估算」</dd>
     <dt>列車停靠站時間</dt><dd>由各站官方時刻表串成每一班車；串不起來的站依 TDX 站間行駛時間推估（標 ≈）</dd>
-    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
+    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
   </dl></div>
@@ -875,6 +875,7 @@ function vTimetable() {
       <li><b>台鐵、高鐵</b>：存成星期一～日 7 份（七天班表），取自同一個平常週的實際時刻表；這一週不含國定假日、連假或連假前一天，週六、週日也是平常的週末。下方會列出取自哪幾天。</li>
       <li>只有查<b>國定假日、連假的每一天、或連假前一天</b>，才會抓那一天的實際時刻表（含疏運加班、停駛，每個日期只抓一次）；平常的平日和週末一律用七天班表。連假＝國定假日（含補假）加上相連的週末；依人事總處辦公日曆表判斷。</li>
       <li><b>捷運、輕軌</b>：依各系統的平日／假日班表（國定假日用假日班表）。</li>
+      <li><b>深夜直達車</b>：深夜（23:00～05:00，或下一班要 3 小時以後）TDX 查不到路線、起訖點都在台鐵／高鐵車站 300 公尺內時，用上面的時刻表列出接下來最多 6 班不用轉車的直達車（標「路線資料：官方時刻表」）；要轉車或不在車站旁的照舊改問 Google。</li>
       <li>所有時刻表都存在雲端，只有按「更新」才會更新，沒有排程；每個系統一小時最多更新一次。有效期間取自時刻表本身；台鐵、高鐵的七天班表一直用到下次更新（不再看舊定期表的到期日），行程規劃判斷要不要改問 Google 也用同一個有效期間。</li>
     </ul>`;
   if (!TT.sys) h += `<div class="ts">讀取中…</div>`;
@@ -1395,8 +1396,8 @@ function planHtml() {
     h += P.res.length ? P.res.map((r, i) => planCard(r, i)).join('') : `<div class="note">找不到可行的路線。試著打開更多交通工具，或換個時間。</div>`;
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
-  const gsrc = P.res && P.res.some(r => r.src === 'google');
-  return h + `<div class="sub" style="margin-top:18px">路線來源：${gsrc ? 'Google 地圖（TDX 查不到或明顯較慢時改用）' : '交通部 TDX 公共運輸旅運規劃'}；地點搜尋：© OpenStreetMap 貢獻者</div></div>`;
+  const gsrc = P.res && P.res.some(r => r.src === 'google'), tsrc = P.res && P.res.some(r => r.src === 'tt');
+  return h + `<div class="sub" style="margin-top:18px">路線來源：${gsrc ? 'Google 地圖（TDX 查不到或明顯較慢時改用）' : tsrc ? '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）' : '交通部 TDX 公共運輸旅運規劃'}；地點搜尋：© OpenStreetMap 貢獻者</div></div>`;
 }
 const minTxt = m => m >= 60 ? `${Math.floor(m / 60)}小時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
 const hmOf = ms => { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
@@ -1430,7 +1431,7 @@ function planCard(r, i) {
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
+    ${segBar(r)}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : r.src === 'tt' ? `<div class="sub pnote">路線資料：官方時刻表</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -1611,7 +1612,7 @@ function detailHtml() {
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
   if (r.legs[r.legs.length - 1]?.kind !== 'transit') h += node(r.end, P.d?.name || '終點', '', 'end');
-  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
+  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
