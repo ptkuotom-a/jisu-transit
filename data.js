@@ -1951,22 +1951,56 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
   const ref0 = when === "now" ? Date.now() : when === "dep" && time ? tms(time) : null, arrBy = when === "arr" && time ? tms(time) : null;
   const sysOk = (p, l) => /台鐵/.test(p.sub || "") ? l.mode === "tra" : /高鐵/.test(p.sub || "") ? l.mode === "thsr" : l.mode === "mrt" || l.mode === "lrt";
   const sameSt = (p, pl, l) => sysOk(p, l) && (nameHit(pl.name || "", p.name || "") || (pl.lat != null && haversine(pl.lat, pl.lon, p.lat, p.lon) <= 300));
+  // v2.23.3：起訖點是車站時，路線「經過」那一站就在那裡上／下車（TDX 常常坐火車到了屏東站、又下車轉公車繞到屏東站旁邊）：
+  // 終點：第一段到達或沿途停靠終點站的同系統軌道車，就在終點站下車，後面的轉乘、步行都拿掉；起點：最後一段從起點站開出（或沿途停靠起點站）的同系統軌道車，
+  // 從起點站上車，前面的都拿掉。中途的站要「同名或 300 公尺內」（不用包含比對，免得「北新竹」被當成「新竹」）；最後一段車照舊（原本的頭尾步行剪掉）
+  const stHit = (p, pl, l) => sysOk(p, l) && !!pl && ((pl.name && pn(pl.name) === pn(p.name || "")) || (pl.lat != null && haversine(pl.lat, pl.lon, p.lat, p.lon) <= 300));
   const trim = (list, so, sd) => list.map(r => {
-    const tr = r.legs.filter(l => l.kind === "transit"); if (!tr.length) return r;
-    const f = tr[0], l = tr[tr.length - 1], i0 = r.legs.indexOf(f), i1 = r.legs.indexOf(l);
-    const cutO = !so && planIsStation(o) && i0 > 0 && sameSt(o, f.from, f), cutD = !sd && planIsStation(d) && i1 < r.legs.length - 1 && sameSt(d, l.to, l);
-    if (!cutO && !cutD) return r;
-    const legs = r.legs.slice(cutO ? i0 : 0, cutD ? i1 + 1 : r.legs.length);
-    const start = cutO ? tms(f.from.time) : r.start, end = cutD ? tms(l.to.time) : r.end;
-    return { ...r, legs, start, end, dur: Math.round((end - start) / 60000), trimmed: true };
+    let legs = r.legs, start = r.start, end = r.end, cut = false;
+    const tr = () => legs.filter(l => l.kind === "transit");
+    if (!sd && planIsStation(d) && tr().length) {
+      const lastT = tr()[tr().length - 1];
+      for (let k = 0; k < legs.length; k++) {
+        const l = legs[k]; if (l.kind !== "transit" || !sysOk(d, l)) continue;
+        if (l === lastT ? sameSt(d, l.to, l) : stHit(d, l.to, l)) { if (k < legs.length - 1) { legs = legs.slice(0, k + 1); end = tms(l.to.time); cut = true; } break; }
+        const si = (l.stops || []).findIndex(x => x.time && stHit(d, x, l));
+        if (si >= 0) { const x = l.stops[si]; legs = [...legs.slice(0, k), { ...l, to: { ...x, type: "station" }, stops: l.stops.slice(0, si), stopCount: si + 1, dur: Math.round((tms(x.time) - tms(l.from.time)) / 1000) }]; end = tms(x.time); cut = true; break; }
+      }
+    }
+    if (!so && planIsStation(o) && tr().length) {
+      const firstT = tr()[0];
+      for (let k = legs.length - 1; k >= 0; k--) {
+        const l = legs[k]; if (l.kind !== "transit" || !sysOk(o, l)) continue;
+        if (l === firstT ? sameSt(o, l.from, l) : stHit(o, l.from, l)) { if (k > 0) { legs = legs.slice(k); start = tms(l.from.time); cut = true; } break; }
+        const st = l.stops || []; let si = -1; for (let q = st.length - 1; q >= 0; q--) if (st[q].time && stHit(o, st[q], l)) { si = q; break; }
+        if (si >= 0) { const x = st[si]; legs = [{ ...l, from: { ...x, type: "station" }, stops: st.slice(si + 1), stopCount: st.length - si, dur: Math.round((tms(l.to.time) - tms(x.time)) / 1000) }, ...legs.slice(k + 1)]; start = tms(x.time); cut = true; break; }
+      }
+    }
+    if (!cut) return r;
+    const n = legs.filter(l => l.kind === "transit").length;
+    return { ...r, legs, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, n - 1), trimmed: true };
   });
   // 先對官方時刻表（v2.18：捷運／台鐵／高鐵／輕軌的第一班車直接改搭「指定時間以後」的真實班次；v2.22 起 Google 的路線也一樣校正）
   const fix = list => planTtFix(list, { when, ref: ref0 || (when === "now" ? Date.now() : null), arrBy });
+  // v2.23.3：校正後接不上後面沒有時刻表的車（公車、沒有時刻表的捷運等）的路線不成立，一律不列（r.broken）；
+  // 全部都不成立時：Worker 比較過兩組就改用另一組，否則再問一次 Worker 的備援（fb=1：起訖都是車站時的官方時刻表直達車＋Google），校正後一樣要成立
+  const okOf = l => l.filter(r => !r.broken);
   if (cand) {
-    const [T, G] = await Promise.all([fix(trim(cand.T, so, sd)), fix(trim(cand.G, null, null))]);
-    const useG = planPickG(T, G, cand.rule, { when, ref: ref0 || Date.now(), arrBy });
+    let [T, G] = await Promise.all([fix(trim(cand.T, so, sd)), fix(trim(cand.G, null, null))]);
+    const T1 = okOf(T), G1 = okOf(G);
+    const useG = !T1.length && G1.length ? true : !G1.length && T1.length ? false : planPickG(T1.length ? T1 : T, G1.length ? G1 : G, cand.rule, { when, ref: ref0 || Date.now(), arrBy });
     out = useG ? G : T; if (useG) { so = null; sd = null; }
   } else out = await fix(trim(out, so, sd));
+  if (out.length && !okOf(out).length) {
+    let fb = [];
+    try {
+      q.set("fb", "1"); if (so) q.set("o", `${o.lat},${o.lon}`); if (sd) q.set("d", `${d.lat},${d.lon}`); q.delete("go"); q.delete("gd");
+      const j = await authedGet("/plan?" + q.toString());
+      if (j && j.result === "success") fb = okOf(await fix(trim(planClean(j.data && j.data.routes, yb), null, null)));
+    } catch (e) { console.warn("plan fb", e); }
+    if (fb.length) { so = null; sd = null; }
+    out = fb;
+  } else out = okOf(out);
   // 「現在出發」時 TDX 偶爾會給已經開走的班次；「指定出發」時 TDX 也常給比指定時間更早出門的走法（例如指定18:12卻17:54出發）：
   // 同樣路線還有較晚一班的就不列；班次密的第一段改搭下一班；其餘「現在出發」保留但標示，「指定出發」直接拿掉
   const ref = ref0;
@@ -2007,6 +2041,12 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
   // 去重：①同一種走法、同時出發又同時抵達 ②每段車都同時刻 ③同一班火車同時抵達 ④主要那段車（最久的一段）同一班、同時抵達，只是前面接駁不同（例如兩條都搭同一班1839）；最多列8條
   const seen = new Set(), real = new Set(out.filter(r => !r.shifted).map(r => planShape(r) + "|" + r.end));
   const tsig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + "@" + (l.from.time || "").slice(0, 16) + ">" + (l.to.time || "").slice(0, 16)).join("|");
+  // v2.23.3：多繞的路線不列：另一條路線搭的車（同一班、同一段）是這條的一部分，這條只是前後多接了幾段車，卻沒有比較晚出發、也沒有比較早到
+  // （例如 1839 到屏東轉運站，另一條同一班 1839 再轉 8218 坐一站到真耶穌教會、反而更晚到）
+  const legSig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + l.name + "@" + l.from.name + ">" + l.to.name + "@" + (l.from.time || "").slice(0, 16));
+  const within = (a, b) => { for (let i = 0; i + a.length <= b.length; i++) if (a.every((x, k) => x === b[i + k])) return true; return false; };
+  const sigs = out.map(legSig);
+  out = out.filter((r, i) => !out.some((y, j) => j !== i && !y.missed && !y.approx && sigs[j].length && sigs[j].length < sigs[i].length && within(sigs[j], sigs[i]) && r.end >= y.end && r.start <= y.start));
   return out.filter(r => !(r.shifted && real.has(planShape(r) + "|" + r.end))).filter(r => {
     const k1 = planShape(r) + "|" + r.start + "|" + r.end, k2 = "t|" + tsig(r);
     const rl = r.legs.filter(l => l.kind === "transit" && (l.mode === "tra" || l.mode === "thsr") && l.number), k3 = rl.length ? "r|" + rl[rl.length - 1].mode + rl[rl.length - 1].number + "|" + Math.round(r.end / 120000) : k1;
@@ -2319,6 +2359,8 @@ async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid }
   const near = all.filter(c => Math.abs(c.dep - p0) <= 180000);
   const m = near.filter(c => Math.abs(c.arr - a0) <= 180000).sort((a, b) => (Math.abs(a.dep - p0) + Math.abs(a.arr - a0)) / 60000 - stopHit(a) - ((Math.abs(b.dep - p0) + Math.abs(b.arr - a0)) / 60000 - stopHit(b)))[0] || null;
   if (m && okR(m)) {
+    // v2.23.3：跟高鐵一樣，TDX 給的那班之外、趕得上又早到 3 分鐘以上的台鐵（例如 0207 到左營後 TDX 給 10:13 區間快 10:54 到屏東，漏了 10:20 自強號 10:43 到）就改搭
+    if (limit == null) { const e = earliest(rides, readyX != null ? readyX : ready); if (e && e.no !== m.no && e.arr <= m.arr - 3 * 60000) return { c: e, sys, note: `TDX 沒列出更早到的${trainLab(e)}：${hmTpe(e.dep)} 開、${hmTpe(e.arr)} 到${nmB}（原${trainLab(m)} ${hmTpe(m.arr)} 到）` }; }
     const ch = Math.abs(m.dep - p0) >= 60000 || Math.abs(m.arr - a0) >= 60000;
     return { c: m, sys, note: ch ? `${trainLab(m)}實際 ${hmTpe(m.dep)} 開、${hmTpe(m.arr)} 到（TDX 估 ${hmTpe(p0)}–${hmTpe(a0)}）` : null };
   }
@@ -2373,7 +2415,7 @@ async function planRetime(r, stOf, opt) {
   const stopsOf = async c => { if (!c.stops || !c.stops.length) return [];
     if (!stIx) { stIx = {}; try { for (const x of await railAll()) if (x.id) stIx[x.op + "|" + x.id] = x; } catch (e) {} }
     return c.stops.map(([id, ms]) => { const x = stIx[c.op + "|" + id] || {}; return { name: x.name || id, type: "station", lat: x.lat ?? null, lon: x.lon ?? null, time: isoTpe(ms) }; }); };
-  let cursor = null, origCursor = null, first = true, start = r.start, firstFixed = false;
+  let cursor = null, origCursor = null, first = true, start = r.start, firstFixed = false, broken = null;
   const pre = [];
   const walkSum = ls => ls.reduce((a, l) => a + (l.kind === "wait" ? 0 : l.dur * 1000), 0);
   const pushWait = (leg, at, dep) => { if (dep - at > 30000) res.push({ kind: "wait", from: { ...leg.from, time: isoTpe(at) }, to: { ...leg.from, time: isoTpe(dep) }, dur: Math.round((dep - at) / 1000) }); };
@@ -2412,7 +2454,7 @@ async function planRetime(r, stOf, opt) {
       }
       if (!picks) {   // 時刻表查不到：保留 TDX 的班次（高雄 headsign 是舊端點，不顯示）
         const keep = { ...base, headsign: op === "KLRT" || /環狀輕軌/.test(leg.name) ? "" : base.headsign };
-        if (!first) { if (p0 < cursor) warns.push(`${hmTpe(cursor)} 到${leg.from.name || "車站"}，可能趕不上 ${hmTpe(p0)} 的${leg.name || "輕軌"}`); pushWait(leg, cursor, p0); }
+        if (!first) { if (p0 < cursor) { warns.push(`${hmTpe(cursor)} 到${leg.from.name || "車站"}，可能趕不上 ${hmTpe(p0)} 的${leg.name || "輕軌"}`); broken = broken || leg.name || "輕軌"; } pushWait(leg, cursor, p0); }
         else { res.push(...pre); }
         res.push(keep); cursor = a0; origCursor = a0; first = false; continue;
       }
@@ -2487,6 +2529,7 @@ async function planRetime(r, stOf, opt) {
       cursor = arr; origCursor = a0;
     } else {
       warns.push(`${hmTpe(cursor)} 才到${leg.from.name || "轉乘站"}，可能趕不上 ${hmTpe(p0)} 的${leg.name || MODE_NAME[leg.mode] || "車"}`);
+      broken = broken || leg.name || MODE_NAME[leg.mode] || "車";   // v2.23.3：校正後接不上沒有時刻表可改的車（公車等）→ 這條路線不成立，planRoutes 會拿掉
       res.push(base); cursor = a0; origCursor = a0;
     }
   }
@@ -2497,7 +2540,8 @@ async function planRetime(r, stOf, opt) {
     let j = k + 1; while (j < res.length && res[j].kind === "wait") j++;
     const M = res[j]; if (!M || M.kind !== "transit" || M.mode !== L.mode || M.number !== L.number) continue;
     const mid = { name: L.to.name, type: "station", lat: L.to.lat ?? null, lon: L.to.lon ?? null, time: M.from.time }, st = [...(L.stops || []), mid, ...(M.stops || [])];
-    if (L._note != null && notes[L._note]) notes[L._note] = notes[L._note].replace(`（${hmTpe(tms(L.to.time))} 到）`, `（${hmTpe(tms(M.to.time))} 到${M.to.name || ""}）`);
+    if (L._note != null && notes[L._note]) { const n0 = notes[L._note], n1 = n0.replace(`（${hmTpe(tms(L.to.time))} 到）`, `（${hmTpe(tms(M.to.time))} 到${M.to.name || ""}）`);
+      notes[L._note] = n1 !== n0 ? n1 : `${n0}（${L.to.name || "中途站"}），續坐到${M.to.name || "下車站"} ${hmTpe(tms(M.to.time))}`; }
     if (M._note != null) notes[M._note] = null;
     res.splice(k, j - k + 1, { ...L, to: M.to, dur: Math.round((tms(M.to.time) - tms(L.from.time)) / 1000), stops: st, stopCount: st.length + 1 });
     k--;
@@ -2508,7 +2552,7 @@ async function planRetime(r, stOf, opt) {
   const sys = [...sysNames].join("、");
   const ttNote = [notes.length ? `${sys || "班次"}已依官方時刻表校正：` + notes.join("；") : "", ...warns.map(w => "注意：" + w)].filter(Boolean).join("；");
   const tr = res.filter(l => l.kind === "transit");
-  const o = { ...r, legs: res, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), ttNote: [r.ttNote, ttNote].filter(Boolean).join("；") || undefined, ...(warns.length ? { ttWarn: true } : {}) };
+  const o = { ...r, legs: res, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), ttNote: [r.ttNote, ttNote].filter(Boolean).join("；") || undefined, ...(warns.length ? { ttWarn: true } : {}), ...(broken ? { broken } : {}) };
   if (firstFixed) { delete o.shifted; delete o.missed; }
   return o;
 }
