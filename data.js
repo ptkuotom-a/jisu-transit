@@ -1775,7 +1775,7 @@ function planClean(routes, yb) {
       const t = s.transport || {};
       legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: t.headsign || "", color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
         number: t.number || "", agency: (s.agency && s.agency.agency_id) || "", agencyName: (s.agency && s.agency.name) || "", from, to, dur,
-        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)) });
+        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}) });
     }
     // 換成步行的頭尾段：依公共運輸的時刻往前／往後推，算出新的出發／抵達時間
     const tr = legs.filter(l => l.kind === "transit");
@@ -1787,7 +1787,7 @@ function planClean(routes, yb) {
     } else if (approx) end = start + legs.reduce((a, l) => a + l.dur * 1000, 0);
     const sig = legs.map(l => l.kind === "transit" ? l.name + "@" + l.from.name + ">" + l.to.name + "@" + l.from.time : l.kind).join("|");
     if (out.some(o => o.sig === sig)) continue;   // 同一班車、只差頭尾接駁方式的重複結果
-    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs });
+    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}) });
   }
   return out.filter(r => !r.approx).concat(out.filter(r => r.approx));
 }
@@ -1797,15 +1797,18 @@ const TDX_MISSING = { "廣慈/奉天宮": { name: "象山", lat: 25.032871, lon:
 const planIsStation = p => !!p && !p.here && (!!p.st || /北捷|新北捷|機捷|桃捷|中捷|高捷|捷運|輕軌|台鐵|高鐵/.test(p.sub || ""));
 async function planRoutes({ o, d, modes, yb, when, time }) {
   const snapOf = p => { if (!planIsStation(p)) return null; const m = TDX_MISSING[String(p.name || "").replace(/站$/, "")]; return m && modes.includes(m.mode) ? m : null; };
-  const so = snapOf(o), sd = snapOf(d), qo = so || o, qd = sd || d;
-  // 座標原樣送出（車站用車站本身的座標，不四捨五入）
+  let so = snapOf(o), sd = snapOf(d); const qo = so || o, qd = sd || d;
+  // 座標原樣送出（車站用車站本身的座標，不四捨五入）；換成相鄰站時另外帶原本的座標（Worker 改問 Google 時用）
   const q = new URLSearchParams({ o: `${qo.lat},${qo.lon}`, d: `${qd.lat},${qd.lon}`, t: modes.join(","), gc: "1", yb: yb ? "1" : "0" });
+  if (so) q.set("go", `${o.lat},${o.lon}`); if (sd) q.set("gd", `${d.lat},${d.lon}`);
   if (when === "dep" && time) q.set("dep", time); if (when === "arr" && time) q.set("arr", time);
   let out = [];
   try {
     const j = await authedGet("/plan?" + q.toString());
     if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
     out = planClean(j.data && j.data.routes, yb);
+    // Google 備援的結果是用原本的起訖點查的：不套用「換成相鄰站」的註記，車站頭尾的步行也照常剪掉
+    if (j.source === "google") { so = null; sd = null; }
   } catch (e) {
     // TDX 找不到路線（404／result: fail）：回傳空清單，畫面顯示「找不到可行的路線」；登入、次數限制等其他錯誤照常顯示
     if (/登入|頻繁|次數|太多|連線|TDX 5\d\d/.test(e.message) || !/找不到|no route|40001|spec params|fail|規劃失敗|404/i.test(e.message + " " + (e.status || ""))) throw e;
@@ -1869,6 +1872,19 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
 // 路線「形狀」：搭哪些車、在哪上下車（不看時間），用來判斷是不是同一種走法
 const planShape = r => r.legs.filter(l => l.kind === "transit").map(l => l.name + "@" + l.from.name + ">" + l.to.name).join("|");
 const isoTpe = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19);
+// Google 來源路線的靜態地圖（Worker 代理 Maps Static API，金鑰不在前端）：回傳 blob URL；Maps Static API 沒開通時回 null（之後這次開啟 App 都不再試）
+let gmapOff = false;
+async function gmapImg({ poly, o, d, x }) {
+  if (gmapOff || !poly || !o || !d) return null;
+  const proxy = getProxy(), s = getSession(); if (!proxy) return null;
+  const f = p => `${(+p.lat).toFixed(6)},${(+p.lon).toFixed(6)}`;
+  const q = new URLSearchParams({ p: poly, o: f(o), d: f(d) }); if (x && x.length) q.set("x", x.map(f).join("|"));
+  try {
+    const r = await fetch(`${proxy}/gmap?${q}`, { headers: s ? { "x-session": s.token } : {} });
+    if (!r.ok) { const j = await r.json().catch(() => null); if (j && j.code === "STATIC_DISABLED") gmapOff = true; return null; }
+    return URL.createObjectURL(await r.blob());
+  } catch (e) { return null; }
+}
 const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`);
 const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
 
@@ -2030,6 +2046,7 @@ window.dataApi = async (action, p = {}) => {
     case "busHeal": return busHeal(p.uids, p.cities);
     case "planRoutes": return planRoutes(p);
     case "planLive": return planLive(p);
+    case "gmapImg": return gmapImg(p || {});
     case "geoSearch": return geoSearch(p);
     case "geoReverse": return geoReverse(p);
     case "locate": return locate();
