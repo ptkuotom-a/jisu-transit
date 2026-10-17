@@ -29,9 +29,9 @@ function getProxy() {
 
 const r_ok = c => c >= 200 && c < 300;
 
-// ---------- GET（經代理；429 稍等重試） ----------
+// ---------- GET（經代理；429稍等重試） ----------
 // profile "main" 用第一組金鑰，"route" 用第二組，"rail"（軌道）用第三組（Worker 端沒設會退回第一組）
-// 遇到 429 時 Worker 會先換另一組金鑰重試；仍然限流就丟出 RATE_MSG
+// 遇到429時 Worker 會先換另一組金鑰重試；仍然限流就丟出 RATE_MSG
 const RATE_MSG = "查詢太頻繁，請稍後再試";
 const isRate = e => !!(e && (e.rate || String(e.message || e).includes(RATE_MSG)));
 async function tdx(profile, url) {
@@ -47,7 +47,7 @@ async function tdx(profile, url) {
     } catch (e) { res = { message: String(e) }; }
     if (Array.isArray(res)) return res;
     if (res && typeof res === "object" && r_ok(code) && !res.message && !res.Message) {
-      const arr = Object.values(res).find(Array.isArray);   // v3 API 回傳 {Stations:[...]} 這類容器
+      const arr = Object.values(res).find(Array.isArray);   // v3 API 回傳 {Stations:[...]}這類容器
       if (arr) return arr;
     }
     last = `(${code}) ` + JSON.stringify(res).slice(0, 120);
@@ -121,8 +121,8 @@ async function loadRouteDest(profile, uids) {
 }
 const destOf = (uid, dirNum, map) => { const r = map[uid]; return r ? (dirNum === 1 ? r.dep : r.dest) || null : null; };
 
-// ---------- 省額度：短期記憶、30 天的站牌／站點／站序快取 ----------
-// memoTdx：同一網址在 ms 毫秒內重用上次結果（YouBike 車位 90 秒、高鐵座位 60 秒）
+// ---------- 省額度：短期記憶、30天的站牌／站點／站序快取 ----------
+// memoTdx：同一網址在 ms 毫秒內重用上次結果（YouBike 車位90秒、高鐵座位60秒）
 const memoMap = new Map();
 async function memoTdx(profile, url, ms) {
   const h = memoMap.get(url); if (h && Date.now() - h.t < ms) return h.v;
@@ -130,7 +130,7 @@ async function memoTdx(profile, url, ms) {
   if (memoMap.size > 60) memoMap.delete(memoMap.keys().next().value);
   return v;
 }
-// 附近站牌、YouBike 站點：以約 100 公尺的格子（座標取到小數第 3 位）存 30 天
+// 附近站牌、YouBike 站點：以約100公尺的格子（座標取到小數第3位）存30天
 const GEO_KEY = "jisu_geo", LONG_DAYS = 30, DAY_MS = 86400000;
 function lsGet(key, k) { try { const c = JSON.parse(localStorage.getItem(key) || "{}"); const e = c[k]; if (e && Date.now() - e.t < LONG_DAYS * DAY_MS) return e; } catch (e) {} return null; }
 function lsSet(key, k, d, max) {
@@ -160,7 +160,7 @@ async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
 const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
 async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
   const loc = await locate();
-  // 查詢座標取到小數第 3 位（約 100 公尺格子），半徑多加 100 公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
+  // 查詢座標取到小數第3位（約100公尺格子），半徑多加100公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
   const lat = loc.latitude.toFixed(3), lon = loc.longitude.toFixed(3);
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
@@ -192,14 +192,14 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // 同名站牌依實際位置分開（相距 > 20 公尺視為不同站牌），之後依距離標「同向／對向」
+    // 同名站牌依實際位置分開（相距 > 20公尺視為不同站牌），之後依距離標「同向／對向」
     const groups = {}, list = [];
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
       const pos = byUID[it.StopUID] || byName[name] || null;
       if (pos && pos.d > busR) continue;                    // 查詢範圍比設定大一點，超出設定距離的不列
       const arr = groups[name] = groups[name] || [];
-      // 同一 StationID 一定同一站；不同 StationID 只有在 20 公尺內且行車方位（Bearing）相同時才合併（兩側站牌可能只差 10 公尺）
+      // 同一 StationID 一定同一站；不同 StationID 只有在20公尺內且行車方位（Bearing）相同時才合併（兩側站牌可能只差10公尺）
       const same = x => x.lat !== null && ((pos.sid && x.sids.has(pos.sid)) ||
         (haversine(x.lat, x.lon, pos.lat, pos.lon) <= 20 && (!pos.bear || !x.bear || x.bear === pos.bear)));
       let g = pos ? arr.find(same) : arr.find(x => x.lat === null);
@@ -319,7 +319,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (!k) throw new Error("缺少路線識別資訊");
   const name = enc(route);
   const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
-  // 站序存 30 天（jisu_sor）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
+  // 站序存30天（jisu_sor）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = lsGet(SOR_KEY, sorKey);
   const sorFresh = async () => { const l = await tdx("route", u("StopOfRoute")); lsSet(SOR_KEY, sorKey, sorPack(l), 30); return l; };
   let [sor, etas, near] = await Promise.all([
@@ -373,7 +373,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
 }
 
 // ---------- 軌道（台鐵、高鐵、捷運、輕軌） ----------
-// get(profile, url) 需回傳陣列（v3 的物件容器要先拆成陣列）
+// get(profile, url) 需回傳陣列（v3的物件容器要先拆成陣列）
 const RAIL_BASE = "https://tdx.transportdata.tw/api/basic";
 const RAIL_SYSTEMS = [
   { key: "TRA",    label: "台鐵",     kind: "tra",  url: `${RAIL_BASE}/v3/Rail/TRA/Station?%24top=1000&%24format=JSON` },
@@ -406,8 +406,8 @@ function mapRailStations(list, sys) {
 }
 
 // 找附近車站：
-// 1. 步行範圍內的車站依距離排序，不分系統（同系統最多 3 站、總共最多 8 站）
-// 2. 範圍內沒有車站 → 顯示最近的 2 站（fallback）
+// 1. 步行範圍內的車站依距離排序，不分系統（同系統最多3站、總共最多8站）
+// 2. 範圍內沒有車站 → 顯示最近的2站（fallback）
 // 3. 選擇性附上「最近的台鐵、高鐵站」（far），即使不在步行範圍
 // 距離以「最近的出口」計算（有出口座標的系統），大站會比用車站中心點準很多
 // opts: { walkKm, systems: ["TRA",...] 或 null 代表全部, far: true/false }
@@ -436,7 +436,7 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
       if (d < g.dist) Object.assign(g, { dist: d, exit: exit ? exit.name : g.exit, navLat: exit ? exit.lat : s.lat, navLon: exit ? exit.lon : s.lon });
     }
   }
-  // 北捷與環狀線轉乘站（板橋 BL07／Y16 等）合併成一張卡
+  // 北捷與環狀線轉乘站（板橋 BL07／Y16等）合併成一張卡
   const trtcBy = {};
   for (const g of Object.values(groups)) if (g.op === "TRTC") for (const i of g.ids) trtcBy[i] = g;
   for (const [k, g] of Object.entries(groups)) {
@@ -490,7 +490,7 @@ async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
   const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
-  // 本站 StationLiveBoard ＋ 全台列車動態（Worker 共用快取 60 秒），讓已發車的每一班都有誤點
+  // 本站 StationLiveBoard ＋ 全台列車動態（Worker 共用快取60秒），讓已發車的每一班都有誤點
   const [tt, slive, tlive] = await Promise.allSettled([
     storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
       .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
@@ -508,10 +508,10 @@ async function traBoard(get, st) {
   else if (tt.status === "fulfilled" && tt.value.length) {
     for (const s of tt.value) {
       const list = s.TimeTables || s.Timetables || s.StopTimes;
-      if (s.DailyTrainInfo) {                       // v2 格式
+      if (s.DailyTrainInfo) {                       // v2格式
         const i = s.DailyTrainInfo, p = (s.StopTimes || [])[0] || {};
         rows.push({ no: String(i.TrainNo), type: shortType(zh(i.TrainTypeName)), dest: zh(i.EndingStationName), dir: i.Direction ?? s.Direction, time: hm(p.DepartureTime || p.ArrivalTime) });
-      } else if (Array.isArray(list)) {             // v3 格式（每個方向一包）
+      } else if (Array.isArray(list)) {             // v3格式（每個方向一包）
         for (const t of list) rows.push({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.DestinationStationName) || zh(t.EndingStationName), dir: t.Direction ?? s.Direction, time: hm(t.DepartureTime || t.ArrivalTime) });
       }
     }
@@ -689,7 +689,7 @@ async function metroBoard0(get, st) {
       via: (/(順行|逆行)/.exec(zh(t.TripHeadSign) || "") || [])[1] || null,   // 環狀線（高雄輕軌）起訖同站，用順／逆行區分
       eta: typeof t.EstimateTime === "number" ? (isSec ? Math.floor(t.EstimateTime / 60) : t.EstimateTime) : null,
     })).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    // 北捷 LiveBoard 只列出「正在進站」的列車（EstimateTime 全為 0），不是完整看板：與時刻表合併
+    // 北捷 LiveBoard 只列出「正在進站」的列車（EstimateTime 全為0），不是完整看板：與時刻表合併
     if (!trains.every(t => t.eta === 0)) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };
     const tt = await metroTimetable(get, st, filter).catch(e => { if (isRate(e)) throw e; return []; });
     const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
@@ -746,7 +746,7 @@ function pickDay(recs, info) {
 }
 const svcDate = (offsetDays = 0) => { const d = new Date(); if (d.getHours() < 3) d.setDate(d.getDate() - 1); d.setDate(d.getDate() + offsetDays); return d; };
 
-// 手動更新：瀏覽器向 TDX（經 Worker、金鑰 3）抓整個系統，壓縮後存回 Worker KV。回傳用了幾次 TDX 呼叫
+// 手動更新：瀏覽器向 TDX（經 Worker、金鑰3）抓整個系統，壓縮後存回 Worker KV。回傳用了幾次 TDX 呼叫
 async function ttRefresh(op, pass, onStep) {
   const proxy = getProxy(); if (!proxy) throw new Error("尚未設定 Worker");
   if (op === "HOLIDAY") {
@@ -783,7 +783,7 @@ async function ttRefresh(op, pass, onStep) {
     }
     if (!rows.length) throw new Error("TDX 沒有這個系統的站別時刻表");
     out = { v: 1, op, kind: "metro", sd: sds, rows };
-    if (HW_LINES[op]) {   // 沒有站別時刻表的路線：一起存班距＋首末班（2 次呼叫）
+    if (HW_LINES[op]) {   // 沒有站別時刻表的路線：一起存班距＋首末班（2次呼叫）
       const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
       out.hw = hwPack(await get(`${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), await get(`${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`));
     }
@@ -829,7 +829,7 @@ async function ttRefresh(op, pass, onStep) {
   return { calls, bytes: body.length, count, version, trips, ...j };
 }
 // ---------- 由各站時刻表串出每一班車的官方時刻（更新時刻表時在瀏覽器計算，存到 KV 的 TRIPS_系統） ----------
-// 方法：同一線、同方向、同終點、同日別的各站發車時間，依站序把第 i 站的每個發車接到第 i+1 站「時間差≈站間行駛時間」的那一班（不超車、貪婪配對）。
+// 方法：同一線、同方向、同終點、同日別的各站發車時間，依站序把第 i 站的每個發車接到第 i+1站「時間差≈站間行駛時間」的那一班（不超車、貪婪配對）。
 // 直達車（跳站）在下一站接不到時，往後幾站找；支線、短程車因為以終點分組，自然分開；配不到的就退回推估。
 const TRIP_RULES = { "TRTC|R": [["leaf", "R22A", "R22"]], "TRTC|G": [["leaf", "G03A", "G03"]], "TRTC|O": [["branch", "O50", "O12"]], "NTDLRT|V": [["branch", "V28", "V09"]] };
 const TRIP_LOOP = { "KLRT|C": true };
@@ -920,7 +920,7 @@ function buildTrips(tt) {
         const g = tripGreedy(A, Bt, m.T, 1, claimed[n]);
         g.out.forEach((j, i) => { if (j >= 0) { link[s][i] = [n, j]; claimed[n][j] = true; } });
         ss.ok += g.n; ss.ambig += g.amb;
-        // 第二輪：剩下的放寬到 ±2 分（尖峰停站較久），仍要維持不超車
+        // 第二輪：剩下的放寬到 ±2分（尖峰停站較久），仍要維持不超車
         const left = A.map((t, i) => link[s][i] ? -1 : i).filter(i => i >= 0);
         for (const i of left) {
           let lo = -1, hi = Bt.length;
@@ -932,7 +932,7 @@ function buildTrips(tt) {
       }
       pend.push([s, p]);
     }
-    // 跳站（直達車）：沒接上的往後 2～8 站找
+    // 跳站（直達車）：沒接上的往後2～8站找
     for (const [s, p] of pend) {
       const A = st[s], rest = A.map((t, i) => link[s][i] ? null : i).filter(i => i != null);
       if (!rest.length) continue;
@@ -1034,7 +1034,7 @@ async function metroTimetable(get, st, filter, all) {
   const now = nowMin() < 180 ? nowMin() + 1440 : nowMin();
   const build = list => { const byKey = {};
   for (const r of list) {
-    const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向 ${r.Direction ?? "?"}`;
+    const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向${r.Direction ?? "?"}`;
     const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
     const dir = r.Direction ?? null;
     const k = dest + "|" + line + "|" + dir;
@@ -1048,7 +1048,7 @@ async function metroTimetable(get, st, filter, all) {
   const dirsOf = {};
   for (const g of Object.values(byKey)) (dirsOf[g.dest + "|" + g.line] = dirsOf[g.dest + "|" + g.line] || new Set()).add(g.dir);
   for (const g of Object.values(byKey)) {
-    if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向 ${g.dir}`;
+    if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
     let up = ts.filter(o => o.t >= now);
     if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
@@ -1062,8 +1062,8 @@ async function metroTimetable(get, st, filter, all) {
   return trains;
 }
 
-// 依方向分組：台鐵用 Direction（0 順行、1 逆行）；高鐵（0 南下、1 北上）；捷運／輕軌用終點站（往 X）
-// 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多 8 班
+// 依方向分組：台鐵用 Direction（0順行、1逆行）；高鐵（0南下、1北上）；捷運／輕軌用終點站（往 X）
+// 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多8班
 function groupTrains(kind, a, b) {
   const ids = b === undefined ? [] : a, trains = b === undefined ? a : b;
   const per = kind === "metro" ? 8 : 999, key = t => t.t ?? t.eta ?? 9999;
@@ -1111,7 +1111,7 @@ function metroSide(t, ids) {
   return b > a ? "up" : "dn";
 }
 
-// 全台車站搜尋：重用已快取 30 天的車站清單
+// 全台車站搜尋：重用已快取30天的車站清單
 const normZh = x => String(x || "").replace(/臺/g, "台").toLowerCase();
 async function railSearch(p) {
   const q = normZh(p.q).trim(); if (!q) return [];
@@ -1132,7 +1132,7 @@ async function stationOfLine(get, op) {
   if (lines.length) { c[op] = { time: Date.now(), lines }; try { localStorage.setItem(SOL_KEY, JSON.stringify(c)); } catch (e) {} }
   return lines;
 }
-// 依站序串成路網：帶字尾的支線站（G03A、R22A）若前一站不是本站則接到本站；蘆洲支線 O50 接大橋頭 O12；高雄輕軌是環狀
+// 依站序串成路網：帶字尾的支線站（G03A、R22A）若前一站不是本站則接到本站；蘆洲支線 O50接大橋頭 O12；高雄輕軌是環狀
 const LINE_BRANCH = { TRTC: { O50: "O12" } };
 function lineGraph(op, st) {
   const adj = {}; const link = (a, b) => { (adj[a] = adj[a] || new Set()).add(b); (adj[b] = adj[b] || new Set()).add(a); };
@@ -1195,7 +1195,7 @@ async function lineView(get, p) {
       }
     } catch (e) { if (isRate(e)) throw e; }
   }
-  { const v = Object.values(eta); if (v.length > 4 && v.filter(x => x === 0).length > v.length / 2) for (const k in eta) delete eta[k]; }   // 收班後看板全是 0：不顯示
+  { const v = Object.values(eta); if (v.length > 4 && v.filter(x => x === 0).length > v.length / 2) for (const k in eta) delete eta[k]; }   // 收班後看板全是0：不顯示
   const liveAll = Object.keys(eta).length > 0;
   if (p.curEta != null && cur && eta[cur] == null) eta[cur] = p.curEta;
   const ci = order.indexOf(cur);
@@ -1217,11 +1217,11 @@ async function s2sEdges(get, op) {
   c[op] = { time: Date.now(), e }; try { localStorage.setItem(S2S_KEY, JSON.stringify(c)); } catch (err) {}
   return e;
 }
-// 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約 2 分推估
+// 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約2分推估
 // 從 KV 的 TRIPS_系統 找這一班車（同線、同終點、今天的日別、本站時刻相同）
 async function tripOfficial(p) {
   const T = await ttLoad("TRIPS_" + p.op).catch(() => null); if (!T || !T.trips || p.t == null) return null;
-  const info = await dayInfo(svcDate(p.t >= 1700 ? 1 : 0));   // 收班後列出的是明天的班次（t 已加 1440）
+  const info = await dayInfo(svcDate(p.t >= 1700 ? 1 : 0));   // 收班後列出的是明天的班次（t 已加1440）
   const ids = new Set(p.ids || []), destId = p.dests && p.dests[0] && p.dests[0].id;
   let gs = T.groups.map((g, i) => ({ g, i })).filter(x => (!p.line || x.g.l === p.line) && (!destId || x.g.de === destId) && x.g.st.some(id => ids.has(id)));
   const recs = [...new Set(gs.map(x => x.g.sd))].map(sd => ({ sd, ServiceDay: { ...sdObj(T.sd[sd].m), ServiceTag: T.sd[sd].tag } }));
@@ -1345,7 +1345,7 @@ async function tmrtBoard(get, st) {
     if (up.length < 3 && last >= now && !up.includes(last)) up.push(last);   // 末班車一定列入
     if (up.length) closed = false;
     up.forEach(t => trains.push({ time: clock(t), t, eta: t - now, dest, destId: r.DestinationStationID || null, dir: r.Direction ?? null, line: r.LineID || "G", via: null }));
-    lines.push(`往 ${dest}：${up.length ? `約每 ${hwAt(now)} 分一班，` : "今日已收班，"}首班 ${hm(r.FirstTrainTime)}、末班 ${hm(r.LastTrainTime)}`);
+    lines.push(`往${dest}：${up.length ? `約每${hwAt(now)}分一班，` : "今日已收班，"}首班${hm(r.FirstTrainTime)}、末班${hm(r.LastTrainTime)}`);
   }
   trains.sort((a, b) => a.t - b.t);
   const tt = [];
@@ -1374,7 +1374,7 @@ async function loadRailStations() {
   const cache = loadRailCache(), now = Date.now();
   let rateErr = null;
   const todo = RAIL_SYSTEMS.filter(s => { const c = cache.systems[s.key]; return !(c && c.stations && c.stations.length && now - c.time < RAIL_STATION_DAYS * 86400000); });
-  for (let i = 0; i < todo.length; i += 3) {           // 一次 3 個系統，避免限流
+  for (let i = 0; i < todo.length; i += 3) {           // 一次3個系統，避免限流
     await Promise.all(todo.slice(i, i + 3).map(async s => {
       try {
         const st = mapRailStations(await tdx("rail", s.url), s);
@@ -1411,7 +1411,7 @@ function loadState() {
   return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
 }
 
-// 全台公車路線索引：各縣市 + 公路客運，30 天更新一次；失敗的縣市下次再補
+// 全台公車路線索引：各縣市 + 公路客運，30天更新一次；失敗的縣市下次再補
 const IDX_KEY = "jisu_bus_idx", IDX_DAYS = 30;
 let idxLoading = null;
 async function busIndex() {
@@ -1434,6 +1434,75 @@ async function busIndex() {
     await idxLoading;
   } else if (idxLoading) await idxLoading;
   return { cities: c.cities, missing: all.filter(x => !c.cities[x]) };
+}
+
+// ---------- 全市站牌／YouBike 站點名單（搜尋用）：只抓所在縣市，Worker 與本機都存30天 ----------
+// 站牌：同名且相距300公尺內的併成一筆 [名稱, 緯度, 經度, 半徑]；YouBike：[UID, 名稱, 地址, 緯度, 經度, 柱數, 類型]
+const PLACE_KEY = "jisu_place_";
+const placeJobs = {};
+function placeIndex({ city }) {
+  if (!city || !UID_CITY_SET.has(city)) return Promise.resolve(null);
+  try { const c = JSON.parse(localStorage.getItem(PLACE_KEY + city)); if (c && Date.now() - c.t < LONG_DAYS * DAY_MS) return Promise.resolve(c); } catch (e) {}
+  if (placeJobs[city]) return placeJobs[city];
+  return placeJobs[city] = (async () => {
+    const [st, bk] = await Promise.allSettled([
+      tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON`),
+      tdx("route", `${BASE}/basic/v2/Bike/Station/City/${city}?%24select=${enc("StationUID,StationName,StationAddress,StationPosition,BikesCapacity,ServiceType")}&%24top=5000&%24format=JSON`)]);
+    if (st.status === "rejected" && bk.status === "rejected") throw st.reason;
+    const r5 = x => Math.round(x * 1e5) / 1e5;
+    const stops = [];
+    if (st.status === "fulfilled") {
+      const byName = {};
+      for (const x of st.value) {
+        const n = x.StopName && x.StopName.Zh_tw, p = x.StopPosition; if (!n || !p || !p.PositionLat) continue;
+        const arr = byName[n] = byName[n] || [];
+        let g = arr.find(g => haversine(g.lat, g.lon, p.PositionLat, p.PositionLon) <= 300);
+        if (!g) arr.push(g = { lat: p.PositionLat, lon: p.PositionLon, pts: [] });
+        g.pts.push([p.PositionLat, p.PositionLon]);
+      }
+      for (const [n, arr] of Object.entries(byName)) for (const g of arr) {
+        const la = g.pts.reduce((a, q) => a + q[0], 0) / g.pts.length, lo = g.pts.reduce((a, q) => a + q[1], 0) / g.pts.length;
+        const r = Math.max(...g.pts.map(q => haversine(la, lo, q[0], q[1])));
+        stops.push([n, r5(la), r5(lo), Math.round(r)]);
+      }
+    }
+    const bikes = bk.status === "fulfilled" ? bk.value.filter(x => x.StationPosition).map(x => [x.StationUID,
+      ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""), (x.StationAddress && x.StationAddress.Zh_tw) || "",
+      r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]) : [];
+    const c = { t: Date.now(), city, stops, bikes, part: st.status === "rejected" || bk.status === "rejected" };
+    if (!c.part) { try { localStorage.setItem(PLACE_KEY + city, JSON.stringify(c)); } catch (e) {} }
+    return c;
+  })().finally(() => { delete placeJobs[city]; });
+}
+const UID_CITY_SET = new Set(Object.values(UID_CITY));
+
+// 搜尋結果點進去：用站牌位置查一次附近預估到站（Worker 共用快取20秒），只留同名站牌
+async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
+  const rad = Math.min(Math.max(r + 60, 80), 400);
+  const eta = await tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`);
+  const routes = {};
+  for (const it of eta) {
+    if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
+    const dirNum = it.Direction === 1 ? 1 : 0, sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
+    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null };
+    const k = `${x.routeUID}|${dirNum}`, old = routes[k];
+    if (!old || (sec !== null && (old.sec === null || sec < old.sec))) routes[k] = x;
+  }
+  const list = Object.values(routes);
+  let destMap = {}; try { destMap = await loadRouteDest("main", list.map(x => x.routeUID)); } catch (e) {}
+  for (const x of list) x.dest = destOf(x.routeUID, x.dirNum, destMap);
+  return { name, lat, lon, dist: uLat == null ? null : haversine(uLat, uLon, lat, lon), bear: null, side: null, bearTxt: null, routes: list };
+}
+// YouBike 搜尋結果點進去：只查這一站的車位（90秒內重用）
+async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
+  const city = UID_CITY[(uid || "").slice(0, 3)];
+  let a = {};
+  if (city) { try { a = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0] || {}; } catch (e) {} }
+  const det = a.AvailableRentBikesDetail || null;
+  return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
+    rent: typeof a.AvailableRentBikes === "number" ? a.AvailableRentBikes : null, ret: typeof a.AvailableReturnBikes === "number" ? a.AvailableReturnBikes : null,
+    general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
+    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || a.UpdateTime || null };
 }
 
 // 推播／下車提醒（Worker 端點）
@@ -1467,6 +1536,9 @@ window.dataApi = async (action, p = {}) => {
     }
     case "open": location.href = p.url; return true;
     case "busIndex": return busIndex();
+    case "placeIndex": return placeIndex(p || {});
+    case "stopAt": return stopAt(p || {});
+    case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
     case "lineView": return lineView(tdx, p);
     case "trainView": return trainView(tdx, p);
