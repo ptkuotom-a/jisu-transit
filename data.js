@@ -674,7 +674,7 @@ async function metroBoard(get, st) {
 async function metroBoard0(get, st) {
   if (busPlusOK(st)) {
     const trains = await trtcLive(st);
-    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: "北捷／環狀線即時到站（資料來源：Bus+ 非官方）" };
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };   // 資料來源統一寫在設定頁
   }
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
@@ -695,12 +695,12 @@ async function metroBoard0(get, st) {
     const liveDest = new Set(trains.map(t => t.dest + "|" + t.line));
     const rest = tt.filter(t => !(liveDest.has(t.dest + "|" + t.line) && t.eta <= 1));
     const all = [...trains.map(t => ({ ...t, arriving: true })), ...rest].sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
-    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", st.ids, all), note: st.op === "TRTC" ? "北捷即時來源暫時無法使用；改用 TDX（只有進站中列車）＋時刻表" : "TDX 即時看板目前只有進站中列車，其餘依時刻表" };
+    return { kind: "metro", live: true, trains: all, groups: groupTrains("metro", st.ids, all), note: st.op === "TRTC" ? "北捷即時來源暫時無法使用，只有進站中列車＋時刻表" : null };
   }
   let tt;
   try { tt = await metroTimetable(get, st, filter); } catch (e) { if (isRate(e)) throw e; tt = null; }
   if (tt === null) return { kind: "metro", live: false, trains: [], groups: [], note: "這個系統沒有提供即時到站或時刻表資料" };
-  const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "北捷即時來源暫時無法使用，以下為時刻表" : "這個系統沒有即時到站資料，以下為時刻表";
+  const note = !tt.length ? "今日班次已結束" : st.op === "TRTC" ? "北捷即時來源暫時無法使用，以下為時刻表" : null;
   return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", st.ids, tt), note };
 }
 
@@ -1358,7 +1358,7 @@ async function tmrtBoard(get, st) {
   }
   tt.sort((a, b) => a.t - b.t);
   { const fix = await destFixer("TMRT"); tt.forEach((t, i) => { tt[i] = fix(t); tt[i].side = metroSide(tt[i], st.ids); }); }
-  const note = (closed ? `今日已收班／明日首班 ${clock(nextFirst)}\n` : "預估（依班距推算，非即時）\n") + lines.join("\n");
+  const note = null;   // 估算方式寫在設定頁「資料來源」；收班後列出的是明日班次（列上標「明日」）
   return { kind: "metro", live: false, trains, groups: groupTrains("metro", st.ids, trains), note, tt, ttKind: "estimate", ttTomorrow: closed };
 }
 
