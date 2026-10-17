@@ -313,10 +313,10 @@ html.locked,html.locked body{overflow:hidden}
 .rhead.pdh h1{font-size:clamp(30px,10vw,44px);white-space:nowrap}
 /* 路線規劃（v2.13.0） */
 .srow{display:flex;align-items:center;gap:10px;margin-bottom:22px}.srow[hidden]{display:none}.srow .search{flex:1;min-width:0;margin-bottom:0}
-.planbar{display:flex;align-items:center;gap:14px;width:100%;margin:8px 0 2px;padding:12px 14px;border-radius:22px;background:var(--surface);border:1px solid var(--line);color:var(--text);text-align:left;transition:transform .12s}.planbar[hidden]{display:none}.planbar:active{transform:scale(.98)}
-.planbar .pbi{flex:none;width:44px;height:44px;border-radius:14px;background:var(--lime);color:var(--ink);display:grid;place-items:center}.planbar .pbi svg{width:24px;height:24px}
-.planbar .pbt{flex:1;min-width:0;font-size:18px;font-weight:800;line-height:1.25}.planbar .pbt small{display:block;font-size:13px;font-weight:500;color:var(--muted)}
-.planbar .pbc{flex:none;color:var(--lime);display:grid;place-items:center}.planbar .pbc svg{width:22px;height:22px}
+.planbar{display:flex;align-items:center;gap:12px;width:100%;margin:0 0 12px;padding:9px 12px 9px 9px;border-radius:20px;background:var(--surface);border:1px solid var(--line);color:var(--text);text-align:left;transition:transform .12s}.planbar:active{transform:scale(.98)}
+.planbar .pbi{flex:none;width:36px;height:36px;border-radius:12px;background:var(--lime);color:var(--ink);display:grid;place-items:center}.planbar .pbi svg{width:20px;height:20px}
+.planbar .pbt{flex:1;min-width:0;font-size:16px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.planbar .pbt small{margin-left:8px;font-size:13px;font-weight:500;color:var(--muted)}
+.planbar .pbc{flex:none;color:var(--lime);display:grid;place-items:center}.planbar .pbc svg{width:20px;height:20px}
 .pbox{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:4px 10px 4px 18px;margin-top:4px}
 .pfield{display:flex;align-items:center;gap:14px;width:100%;text-align:left;padding:12px 0;min-height:62px}.pfield + .pfield{border-top:1px solid var(--line)}
 .pdot{flex:none;width:14px;height:14px;border-radius:50%;border:3px solid var(--lime)}.pdot.d{background:var(--lime);border-radius:4px}
@@ -370,7 +370,6 @@ html.locked,html.locked body{overflow:hidden}
 <div class="wrap">
   <header class="top">
     <div class="brand"><span class="ico" id="titleIco"></span><h1 id="title">極速通勤</h1></div>
-    <button class="planbar" id="planBtn" data-act="planNew" hidden><span class="pbi" id="planIco"></span><span class="pbt">路線規劃<small>輸入起點和終點，找出最快的走法</small></span><span class="pbc" id="planChev"></span></button>
     <div class="meta"><span class="live" id="status"><i></i>定位中</span><button class="refresh" id="refreshBtn" aria-label="重新整理"></button></div>
     <div class="srow" id="searchRow"><label class="search" id="searchBar"><span id="searchIco"></span><input id="q" type="text" enterkeyhint="search" placeholder="搜尋公車路線、站牌、YouBike、車站" autocomplete="off"><button class="clear" id="qClear" hidden>清除</button></label></div>
   </header>
@@ -472,7 +471,6 @@ function renderChrome() {
   if (!brandLock) showBrand(S.tab);
   $('#searchRow').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
-  const pb = $('#planBtn'); pb.hidden = S.tab !== 'home'; if (!$('#planIco').innerHTML) { $('#planIco').innerHTML = I.route; $('#planChev').innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>'; }
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
   // 功能列只建一次，之後只切換 on 與移動膠囊（重建會讓動畫中的膠囊被換掉而跳一下）
   const tb = $('#tabbar');
@@ -599,6 +597,8 @@ function vHome() {
   if (S.q) return vSearch();
   const d = S.data;
   let h = errBox();
+  // 路線規劃入口：地圖正上方（v2.15.1）
+  h += `<button class="planbar" id="planBtn" data-act="planNew"><span class="pbi">${I.route}</span><span class="pbt">路線規劃<small>找出最快的走法</small></span><span class="pbc">${I.chev}</span></button>`;
   if (d && d.lat) h += `<div id="mapSlot" class="mapslot"></div>`;
   h += `<div class="sec"><h2>離你最近</h2></div>`;
   if (!d) h += S.error ? '' : skel(3);
@@ -1305,7 +1305,7 @@ function bikeSheet(b) {
     <button class="btn sec2 ${on?'on':''}" data-act="favBike" data-i="${reg(b)}">${on ? I.star : I.starO}${on ? '已收藏' : '收藏'}</button></div>`);
 }
 
-/* ---------- 路線規劃（v2.13.0）：首頁標題下方的「路線規劃」橫條（v2.15.0） → 規劃頁（推進頁面堆疊，右滑返回） ---------- */
+/* ---------- 路線規劃（v2.13.0）：首頁地圖正上方的「路線規劃」橫條（v2.15.1） → 規劃頁（推進頁面堆疊，右滑返回） ---------- */
 // 頁面堆疊：規劃頁 → 選地點頁／路線詳情 → 車站頁／公車路線頁；S.back 記錄底下的頁面，返回時依序回去
 const PLAN_PREF_KEY = 'jisu_plan_pref', PLAN_RECENT_KEY = 'jisu_plan_recent';
 const PLAN_MODES = [['bus','公車',5],['mrt','捷運',6],['lrt','輕軌',7],['tra','台鐵',4],['thsr','高鐵',3]];
