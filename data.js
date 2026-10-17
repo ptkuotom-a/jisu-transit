@@ -130,33 +130,95 @@ async function memoTdx(profile, url, ms) {
   if (memoMap.size > 60) memoMap.delete(memoMap.keys().next().value);
   return v;
 }
-// 附近站牌、YouBike 站點：以約100公尺的格子（座標取到小數第3位）永久保存（v2.12.3起不再過期）
-// 站牌異動靠「自動補救」：即時資料出現清單裡沒有的站、且清單超過一天，就略過快取重抓一次
-// 容量靠 LRU 上限控制：t＝抓取時間、u＝最近使用時間（每天最多記一次，避免一直重寫 localStorage）
-const GEO_KEY = "jisu_geo", DAY_MS = 86400000;
+// ---------- 大型快取：IndexedDB（v2.12.4起；不設筆數上限，只有空間真的滿了才刪最久沒用的） ----------
+// kv：geo|格子、sor|路線、place|縣市、busidx；meta：每筆的最近使用時間 u 與大約大小 n（淘汰時只讀 meta，不讀大資料）
+// 小東西（設定、收藏、登入、Worker 網址）仍在 localStorage
+const DAY_MS = 86400000;
 const FRESH = "&__fresh=1";   // 請 Worker 略過共用快取重抓（Worker 端同一網址每天最多一次）
-const lastUse = e => Math.max(e.t || 0, e.u || 0);
-function lsGet(key, k) {
-  try {
-    const c = JSON.parse(localStorage.getItem(key) || "{}"); const e = c[k];
-    if (e && Date.now() - lastUse(e) > DAY_MS) { e.u = Date.now(); try { localStorage.setItem(key, JSON.stringify(c)); } catch (x) {} }
-    return e || null;
-  } catch (e) {} return null;
-}
-function lsSet(key, k, d, max) {
-  let c = {}; try { c = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) {}
-  c[k] = { t: Date.now(), d };
-  for (const x of Object.keys(c).sort((a, b) => lastUse(c[b]) - lastUse(c[a])).slice(max)) delete c[x];
-  try { localStorage.setItem(key, JSON.stringify(c)); } catch (e) { try { localStorage.setItem(key, JSON.stringify({ [k]: c[k] })); } catch (e2) {} }
-}
+const IDB = (() => {
+  const mem = new Map(); let dbp = null;
+  const rq = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const done = t => new Promise((res, rej) => { t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error || new Error("abort")); });
+  const isQuota = e => e && (e.name === "QuotaExceededError" || /quota/i.test(String(e.message || e)));
+  const sizeOf = v => { try { return JSON.stringify(v).length; } catch (e) { return 0; } };
+  async function migrate(db) {   // 舊版存在 localStorage 的大型快取搬過來一次，搬完刪掉
+    if (localStorage.getItem("jisu_idb_mig") === "1") return;
+    const jobs = [];
+    const take = (lsKey, toRecs) => { try { const v = JSON.parse(localStorage.getItem(lsKey)); if (v) jobs.push([lsKey, toRecs(v)]); } catch (e) {} };
+    take("jisu_geo", c => Object.entries(c).map(([k, e]) => ["geo|" + k, { t: e.t, d: e.d }, e.u || e.t]));
+    take("jisu_sor", c => Object.entries(c).map(([k, e]) => ["sor|" + k, { t: e.t, d: e.d }, e.u || e.t]));
+    take("jisu_bus_idx", c => [["busidx", c, c.time]]);
+    for (const k of Object.keys(localStorage)) if (k.startsWith("jisu_place_")) take(k, c => [["place|" + k.slice(11), c, c.u || c.t]]);
+    for (const [lsKey, recs] of jobs) {
+      try {
+        const t = db.transaction(["kv", "meta"], "readwrite");
+        for (const [k, v, u] of recs) { t.objectStore("kv").put(v, k); t.objectStore("meta").put({ u: u || Date.now(), n: sizeOf(v) }, k); }
+        await done(t); localStorage.removeItem(lsKey);
+      } catch (e) {}
+    }
+    if (!Object.keys(localStorage).some(k => k === "jisu_geo" || k === "jisu_sor" || k === "jisu_bus_idx" || k.startsWith("jisu_place_"))) localStorage.setItem("jisu_idb_mig", "1");
+  }
+  const open = () => dbp || (dbp = new Promise(res => {
+    try {
+      if (!self.indexedDB) return res(null);
+      const r = indexedDB.open("jisu", 1);
+      r.onupgradeneeded = () => { const db = r.result; if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv"); if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta"); };
+      r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  }).then(async db => {
+    if (db) { await migrate(db).catch(() => {}); try { navigator.storage && navigator.storage.persist && navigator.storage.persisted().then(p => p || navigator.storage.persist()).catch(() => {}); } catch (e) {} }
+    return db;
+  }));
+  async function evict(keep, need) {   // 空間滿了：從最久沒用的開始刪，至少騰出 need 的兩倍（最少刪5筆）
+    const db = await open(); if (!db) return 0;
+    const t = db.transaction(["meta"], "readonly"), st = t.objectStore("meta");
+    const [keys, vals] = await Promise.all([rq(st.getAllKeys()), rq(st.getAll())]);
+    const list = keys.map((k, i) => ({ k, u: (vals[i] || {}).u || 0, n: (vals[i] || {}).n || 0 })).filter(x => x.k !== keep).sort((a, b) => a.u - b.u);
+    let freed = 0, cnt = 0; const del = [];
+    for (const x of list) { if (cnt >= 5 && freed >= need * 2) break; del.push(x.k); freed += x.n; cnt++; }
+    if (!del.length) return 0;
+    const t2 = db.transaction(["kv", "meta"], "readwrite");
+    for (const k of del) { t2.objectStore("kv").delete(k); t2.objectStore("meta").delete(k); }
+    await done(t2); return del.length;
+  }
+  return {
+    async get(k) {
+      const db = await open(); if (!db) return mem.get(k) || null;
+      try {
+        const t = db.transaction(["kv", "meta"], "readonly");
+        const [v, m] = await Promise.all([rq(t.objectStore("kv").get(k)), rq(t.objectStore("meta").get(k))]);
+        if (v != null && (!m || Date.now() - (m.u || 0) > DAY_MS)) {   // 最近使用時間每天最多記一次
+          try { const t2 = db.transaction(["meta"], "readwrite"); t2.objectStore("meta").put({ u: Date.now(), n: (m && m.n) || sizeOf(v) }, k); } catch (e) {}
+        }
+        return v == null ? null : v;
+      } catch (e) { return mem.get(k) || null; }
+    },
+    async set(k, v) {
+      const db = await open(); if (!db) { mem.set(k, v); return; }
+      const n = sizeOf(v);
+      for (let i = 0; i < 4; i++) {
+        try {
+          const t = db.transaction(["kv", "meta"], "readwrite");
+          t.objectStore("kv").put(v, k); t.objectStore("meta").put({ u: Date.now(), n }, k);
+          await done(t); return;
+        } catch (e) {
+          if (!isQuota(e) || !(await evict(k, n).catch(() => 0))) { mem.set(k, v); return; }
+        }
+      }
+      mem.set(k, v);
+    },
+    open,
+  };
+})();
+IDB.open();
 const stopPack = s => [s.StopUID || "", (s.StopName && s.StopName.Zh_tw) || "", s.StopPosition ? s.StopPosition.PositionLat : null, s.StopPosition ? s.StopPosition.PositionLon : null, s.StationID || "", s.Bearing || ""];
 const stopUnpack = a => ({ StopUID: a[0] || null, StopName: { Zh_tw: a[1] }, StopPosition: a[2] == null ? null : { PositionLat: a[2], PositionLon: a[3] }, StationID: a[4] || null, Bearing: a[5] || null });
 const bikePack = s => [s.StationUID, (s.StationName && s.StationName.Zh_tw) || "", (s.StationAddress && s.StationAddress.Zh_tw) || "", s.BikesCapacity ?? null, s.ServiceType ?? null, s.StationPosition ? s.StationPosition.PositionLat : null, s.StationPosition ? s.StationPosition.PositionLon : null];
 const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, StationAddress: { Zh_tw: a[2] || null }, BikesCapacity: a[3], ServiceType: a[4], StationPosition: a[5] == null ? null : { PositionLat: a[5], PositionLon: a[6] } });
 // 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
 async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
-  const c = lsGet(GEO_KEY, key);
-  const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); lsSet(GEO_KEY, key, l.map(pack), 40); return l; };
+  const c = await IDB.get("geo|" + key);
+  const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); IDB.set("geo|" + key, { t: Date.now(), d: l.map(pack) }).catch(() => {}); return l; };
   if (!c) return fresh(false);
   const list = c.d.map(unpack);
   if (liveUIDs && Date.now() - c.t > DAY_MS) {
@@ -327,16 +389,15 @@ async function liveFavs(favs) {
 }
 
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
-const SOR_KEY = "jisu_sor";
 const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence })) }));
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
   const name = enc(route);
   const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
-  // 站序永久保存（jisu_sor，LRU 30條）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
-  const sorKey = `${k.path}|${route}`, sc = lsGet(SOR_KEY, sorKey);
-  const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); lsSet(SOR_KEY, sorKey, sorPack(l), 30); return l; };
+  // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
+  const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
+  const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); IDB.set("sor|" + sorKey, { t: Date.now(), d: sorPack(l) }).catch(() => {}); return l; };
   let [sor, etas, near] = await Promise.all([
     sc ? sc.d : sorFresh(false),
     tdx("route", u("EstimatedTimeOfArrival")),
@@ -1428,12 +1489,12 @@ function loadState() {
 }
 
 // 全台公車路線索引：各縣市 + 公路客運，30天更新一次；失敗的縣市下次再補
-const IDX_KEY = "jisu_bus_idx", IDX_DAYS = 30;
-let idxLoading = null;
+const IDX_DAYS = 30;   // 存在 IndexedDB busidx
+let idxLoading = null, idxMem = null;
 async function busIndex() {
-  let c = null;
-  try { c = JSON.parse(localStorage.getItem(IDX_KEY)); } catch (e) {}
+  let c = idxMem || await IDB.get("busidx");
   if (!c || Date.now() - c.time > IDX_DAYS * 86400000) c = { time: Date.now(), cities: {} };
+  idxMem = c;
   const all = [...Object.values(UID_CITY), "InterCity"];
   const todo = all.filter(x => !c.cities[x]);
   if (todo.length && !idxLoading) {
@@ -1445,7 +1506,7 @@ async function busIndex() {
         }));
         await sleep(300);
       }
-      try { localStorage.setItem(IDX_KEY, JSON.stringify(c)); } catch (e) {}
+      await IDB.set("busidx", c).catch(() => {});
     })().finally(() => { idxLoading = null; });
     await idxLoading;
   } else if (idxLoading) await idxLoading;
@@ -1455,21 +1516,17 @@ async function busIndex() {
 // ---------- 全市站牌／YouBike 站點名單（搜尋用）：只抓所在縣市，永久保存 ----------
 // 站牌：同名且相距300公尺內的併成一筆 [名稱, 緯度, 經度, 半徑]；YouBike：[UID, 名稱, 地址, 緯度, 經度, 柱數, 類型]
 // ts／tb＝站牌／YouBike 抓取時間；最多保留3個縣市（LRU）。即時資料出現名單沒有的站名／站點，且名單超過一天 → 只重抓那一份
-const PLACE_KEY = "jisu_place_", PLACE_MAX = 3;
 const placeJobs = {}, placeMem = {}, placeSets = {}, healing = {};
 const r5 = x => Math.round(x * 1e5) / 1e5;
-function placeLoad(city) {
+async function placeLoad(city) {   // IndexedDB place|縣市；不限縣市數
   if (placeMem[city] !== undefined) return placeMem[city];
-  let c = null; try { c = JSON.parse(localStorage.getItem(PLACE_KEY + city)); } catch (e) {}
+  const c = await IDB.get("place|" + city);
   if (c && !c.ts) { c.ts = c.tb = c.t; }   // v2.12.0 舊格式
   return placeMem[city] = c && c.stops ? c : null;
 }
 function placeSave(c) {
-  c.u = Date.now(); placeMem[c.city] = c; delete placeSets[c.city];
-  const keys = Object.keys(localStorage).filter(k => k.startsWith(PLACE_KEY) && k !== PLACE_KEY + c.city);
-  const age = k => { try { const x = JSON.parse(localStorage.getItem(k)); return x.u || x.t || 0; } catch (e) { return 0; } };
-  for (const k of keys.sort((a, b) => age(b) - age(a)).slice(PLACE_MAX - 1)) { localStorage.removeItem(k); delete placeMem[k.slice(PLACE_KEY.length)]; }
-  try { localStorage.setItem(PLACE_KEY + c.city, JSON.stringify(c)); } catch (e) {}
+  placeMem[c.city] = c; delete placeSets[c.city];
+  IDB.set("place|" + c.city, c).catch(() => {});
 }
 async function placeStops(city, heal) {
   const l = await tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON` + (heal ? FRESH : ""));
@@ -1492,9 +1549,9 @@ async function placeBikes(city, heal) {
   return l.filter(x => x.StationPosition).map(x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
     (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]);
 }
-function placeIndex({ city }) {
-  if (!city || !UID_CITY_SET.has(city)) return Promise.resolve(null);
-  const c0 = placeLoad(city); if (c0) return Promise.resolve(c0);
+async function placeIndex({ city }) {
+  if (!city || !UID_CITY_SET.has(city)) return null;
+  const c0 = await placeLoad(city); if (c0) return c0;
   if (placeJobs[city]) return placeJobs[city];
   return placeJobs[city] = (async () => {
     const [st, bk] = await Promise.allSettled([placeStops(city, false), placeBikes(city, false)]);
@@ -1507,12 +1564,13 @@ function placeIndex({ city }) {
   })().finally(() => { delete placeJobs[city]; });
 }
 // 自動補救：stops＝[{ uid, name }]（即時預估裡的站牌）、bikes＝[StationUID]；只檢查已存名單的縣市
-function placeHeal(stops = [], bikes = []) {
+function placeHeal(stops, bikes) { placeHealA(stops, bikes).catch(() => {}); }
+async function placeHealA(stops = [], bikes = []) {
   const want = {};
   for (const x of stops) { const city = UID_CITY[(x.uid || "").slice(0, 3)]; if (city && x.name) (want[city] = want[city] || { s: new Set(), b: new Set() }).s.add(x.name); }
   for (const u of bikes) { const city = UID_CITY[(u || "").slice(0, 3)]; if (city) (want[city] = want[city] || { s: new Set(), b: new Set() }).b.add(u); }
   for (const [city, w] of Object.entries(want)) {
-    const c = placeLoad(city); if (!c) continue;
+    const c = await placeLoad(city); if (!c) continue;
     const S = placeSets[city] = placeSets[city] || { s: new Set(c.stops.map(x => x[0])), b: new Set(c.bikes.map(x => x[0])) };
     const now = Date.now();
     const needS = now - c.ts > DAY_MS && [...w.s].some(n => !S.s.has(n));
@@ -1521,12 +1579,12 @@ function placeHeal(stops = [], bikes = []) {
       if (!need || healing[city + kind]) continue;
       healing[city + kind] = true;
       (kind === "s" ? placeStops(city, true) : placeBikes(city, true)).then(l => {
-        const cur = placeLoad(city) || c;
+        const cur = placeMem[city] || c;
         if (kind === "s") { cur.stops = l; cur.ts = Date.now(); } else { cur.bikes = l; cur.tb = Date.now(); }
         placeSave(cur);
       }).catch(() => {
         // 失敗也記時間，明天再試，避免一直重抓
-        const cur = placeLoad(city) || c; if (kind === "s") cur.ts = Date.now(); else cur.tb = Date.now(); placeSave(cur);
+        const cur = placeMem[city] || c; if (kind === "s") cur.ts = Date.now(); else cur.tb = Date.now(); placeSave(cur);
       }).finally(() => { delete healing[city + kind]; });
     }
   }
