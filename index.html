@@ -627,7 +627,7 @@ function natSearch(q) {
   if (DEMO) return '';
   if (!S.busIdx) {
     if (!S.busIdxLoading) { S.busIdxLoading = true; api('busIndex').then(j => { S.busIdx = j; }).catch(() => {}).finally(() => { S.busIdxLoading = false; if (S.q) render(); }); }
-    return `<div class="sec"><h2>全台路線</h2></div><div class="note">第一次搜尋，正在下載全台公車路線（約150 KB，之後30天內免下載）…</div>`;
+    return `<div class="sec"><h2>全台路線</h2></div><div class="note">第一次搜尋，正在下載全台公車路線（約150 KB，之後免下載）…</div>`;
   }
   const near = new Set((S.data?.busStops || []).flatMap(s => s.routes.map(r => r.routeUID)));
   const score = n => { n = n.toLowerCase(); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : 9; };
@@ -635,6 +635,10 @@ function natSearch(q) {
   for (const [city, list] of Object.entries(S.busIdx.cities)) {
     const hits = list.filter(r => !near.has(r[0]) && score(r[1]) < 9).sort((a, b) => score(a[1]) - score(b[1]) || a[1].length - b[1].length || a[1].localeCompare(b[1]));
     if (hits.length) groups.push({ city, hits, best: score(hits[0][1]) });
+  }
+  if (!groups.length && q.length >= 2 && S.busHealQ !== q) {   // 完全找不到：所在縣市的路線清單存超過一天就重抓一次（每天最多一次），有新路線再搜一次
+    S.busHealQ = q; const mc = mine;
+    if (mc) api('busHeal', { cities:[mc] }).then(ch => { if (ch && S.q) render(); }).catch(() => {});
   }
   if (!groups.length) return S.busIdx.missing?.length ? `<div class="note" style="margin-top:8px">部分縣市路線暫時下載失敗，稍後再搜尋會自動補上。</div>` : '';
   groups.sort((a, b) => (a.city === mine ? -1 : b.city === mine ? 1 : 0) || a.best - b.best || (a.city === 'InterCity') - (b.city === 'InterCity'));
@@ -647,7 +651,7 @@ function natSearch(q) {
   }
   return h;
 }
-/* 全市站牌／YouBike：所在縣市（雙北一起）的名單，第一次搜尋時下載，之後30天內免下載 */
+/* 全市站牌／YouBike：所在縣市（雙北一起）的名單，第一次搜尋時下載，之後永久保存 */
 function placeCities() {
   let c = myCity();
   if (!c) { const b = (S.data?.bikes || [])[0]; c = b ? UID2CITY[(b.uid || '').slice(0, 3)] : null; }
@@ -674,7 +678,7 @@ function placeSearch(q, nearStops, nearBikes) {
   }
   st.sort((a, b) => score(a.x[0].toLowerCase()) - score(b.x[0].toLowerCase()) || a.d - b.d);
   bk.sort((a, b) => score(a.x[1].toLowerCase()) - score(b.x[1].toLowerCase()) || a.d - b.d);
-  const loading = wait.length ? `<div class="note" style="margin-top:8px">正在下載${esc(wait.join('、'))}的站牌與 YouBike 名單（第一次搜尋才需要，之後30天內免下載）…</div>` : '';
+  const loading = wait.length ? `<div class="note" style="margin-top:8px">正在下載${esc(wait.join('、'))}的站牌與 YouBike 名單（第一次搜尋才需要，之後免下載）…</div>` : '';
   const row = (act, o, title, desc, d, c) => `<button class="trow nrow" data-act="${act}" data-i="${reg(o)}"><span class="tmain"><div class="td">${esc(title)}</div><div class="tt">${esc(desc)}</div></span>${d < 1e8 ? `<span class="pill">${distTxt(Math.round(d / 10) * 10)}</span>` : ''}<span class="chev">${I.chev}</span></button>`;
   const stops = st.length ? `<div class="board">` + st.slice(0, 15).map(({ c, x, d }) => row('stopAt', { name:x[0], lat:x[1], lon:x[2], r:x[3] }, x[0], CITY_ZH[c] || c, d, c)).join('') + `</div>` + (st.length > 15 ? `<div class="note">還有${st.length - 15}個站牌，請輸入更完整的名稱。</div>` : '') : '';
   const bikes = bk.length ? `<div class="board">` + bk.slice(0, 15).map(({ c, x, d }) => row('bikeAt', { uid:x[0], name:x[1], address:x[2] || null, lat:x[3], lon:x[4], capacity:x[5], type:x[6] }, x[1], x[2] || (CITY_ZH[c] || c), d, c)).join('') + `</div>` + (bk.length > 15 ? `<div class="note">還有${bk.length - 15}個站點，請輸入更完整的名稱。</div>` : '') : '';
