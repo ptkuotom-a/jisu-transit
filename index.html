@@ -826,6 +826,7 @@ function vSettings() {
     <dt>高鐵</dt><dd>TDX 定期時刻表與剩餘座位（每分鐘更新）</dd>
     <dt>估算班次</dt><dd>台中捷運、北捷文湖線沒有站別時刻表，依 TDX 班距與首末班推算，列上標「估算」</dd>
     <dt>列車停靠站時間</dt><dd>由各站官方時刻表串成每一班車；串不起來的站依 TDX 站間行駛時間推估（標 ≈）</dd>
+    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用 TDX 當日時刻表並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
   </dl></div>
@@ -1590,7 +1591,7 @@ function detailHtml() {
     const c = legColor(l), L = (P.live || {})[i], open = L && L.open;
     const stops = l.stops || [], open2 = P.open[i];
     const label = esc(legLabel(l));
-    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : l.mode === 'tra' && l.trainType ? `・${esc(l.trainType)}` : ''}`, 'on', `border-color:${c}`);
+    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : (l.mode === 'tra' || l.mode === 'mrt') && l.trainType ? `・${esc(l.trainType)}` : ''}${l.est ? '・依班距估計' : ''}`, 'on', `border-color:${c}`);
     h += `<div class="tsg tr" style="--c:${c}"><span class="tt0"></span><span class="ln"><i></i></span><span class="bd">
       <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">${l.via ? `${esc(l.via)}・到 ${esc(l.to.name || '')}` : l.headsign ? `往 ${esc(l.headsign)}` : `到 ${esc(l.to.name || '')}`}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
       <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站'}</span>` : ''}</button>
@@ -1599,7 +1600,7 @@ function detailHtml() {
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
   if (r.legs[r.legs.length - 1]?.kind !== 'transit') h += node(r.end, P.d?.name || '終點', '', 'end');
-  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : (r.legs.some(l => l.tt) ? '時刻為 TDX 規劃結果，輕軌（及因此改搭的班次）依官方時刻表' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
+  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
