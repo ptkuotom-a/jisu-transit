@@ -875,14 +875,14 @@ function vTimetable() {
       <li><b>台鐵、高鐵</b>：存成星期一～日 7 份（七天班表），取自同一個平常週的實際時刻表；這一週不含國定假日、連假或連假前一天，週六、週日也是平常的週末。下方會列出取自哪幾天。</li>
       <li>只有查<b>國定假日、連假的每一天、或連假前一天</b>，才會抓那一天的實際時刻表（含疏運加班、停駛，每個日期只抓一次）；平常的平日和週末一律用七天班表。連假＝國定假日（含補假）加上相連的週末；依人事總處辦公日曆表判斷。</li>
       <li><b>捷運、輕軌</b>：依各系統的平日／假日班表（國定假日用假日班表）。</li>
-      <li>所有時刻表都存在雲端，只有按「更新」才會更新，沒有排程；每個系統一小時最多更新一次。有效期間取自時刻表本身。</li>
+      <li>所有時刻表都存在雲端，只有按「更新」才會更新，沒有排程；每個系統一小時最多更新一次。有效期間取自時刻表本身；台鐵、高鐵的七天班表一直用到下次更新（不再看舊定期表的到期日），行程規劃判斷要不要改問 Google 也用同一個有效期間。</li>
     </ul>`;
   if (!TT.sys) h += `<div class="ts">讀取中…</div>`;
   else for (const [op, name] of TT.sys) {
     const m = (TT.meta && TT.meta.systems || {})[op], st = TT.st[op], on = TT.sel.has(op);
     const md = (x, back) => { const t = Date.parse(String(x).slice(0, 10) + 'T00:00:00+08:00') - (back ? 86400000 : 0); if (isNaN(t)) return ''; const d = new Date(t + 8 * 3600000); return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
     const m7 = (op === 'TRA' || op === 'THSR') ? (TT.meta && TT.meta.systems || {})[op + '_MON'] : null, s7 = m7 && m7.src7;
-    const valid = s7 ? (m7.eff ? `・有效期間 ${md(m7.eff)}${m7.exp ? '–' + md(m7.exp, true) : ' 起（至下次更新）'}` : '') : m && m.exp ? `・有效期間 ${m.eff ? md(m.eff) : ''}–${md(m.exp, true)}` : '';
+    const valid = s7 ? (m7.eff ? `・有效期間 ${md(m7.eff)}${m7.exp ? '–' + md(m7.exp, true) : ' 起（至下次更新）'}` : '・有效至下次更新') : m && m.exp ? `・有效期間 ${m.eff ? md(m.eff) : ''}–${md(m.exp, true)}` : '';
     const src7 = s7 ? `<div class="tm">七天班表取自 ${s7.every((d, i) => !i || Date.parse(d) - Date.parse(s7[i - 1]) === 86400000) ? md(s7[0]) + '–' + md(s7[6]) : s7.map(d => md(d)).join('、')}（平常週，不含國定假日／連假）</div>` : '';
     const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version && !m.exp ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}${valid}・${m.count}${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
     h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
