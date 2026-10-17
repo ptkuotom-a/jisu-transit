@@ -440,8 +440,9 @@ const SEAT = { Available: "ok", Limited: "few", Full: "full" };
 async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
+  const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
   const [tt, tlive, slive] = await Promise.allSettled([
-    get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
+    storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
       .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
@@ -453,7 +454,8 @@ async function traBoard(get, st) {
   }
   const live = tlive.status === "fulfilled" || slive.status === "fulfilled";
   let rows = [];
-  if (tt.status === "fulfilled" && tt.value.length) {
+  if (storedRows && storedRows.length) rows = storedRows;
+  else if (tt.status === "fulfilled" && tt.value.length) {
     for (const s of tt.value) {
       const list = s.TimeTables || s.Timetables || s.StopTimes;
       if (s.DailyTrainInfo) {                       // v2 格式
@@ -478,8 +480,9 @@ async function traBoard(get, st) {
 
 async function thsrBoard(get, st) {
   const id = st.ids[0];
+  const storedRows = await ttTrainRows("THSR", id, await dayInfo(svcDate(0))).catch(() => null);
   const [tt, seats] = await Promise.allSettled([
-    get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
+    storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
     get("rail", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`),
   ]);
   const seatMap = {};
@@ -490,7 +493,8 @@ async function thsrBoard(get, st) {
     for (const s of seatList) seatMap[String(s.TrainNo)] = { std: SEAT[s.StandardSeatStatus] || null, biz: SEAT[s.BusinessSeatStatus] || null };
   }
   let rows;
-  if (tt.status === "fulfilled" && tt.value.length) {
+  if (storedRows && storedRows.length) rows = storedRows;
+  else if (tt.status === "fulfilled" && tt.value.length) {
     rows = tt.value.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
   } else if (seatList.length) {
     rows = seatList.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
@@ -599,16 +603,155 @@ async function metroBoard0(get, st) {
   return { kind: "metro", live: false, trains: tt, groups: groupTrains("metro", st.ids, tt), note };
 }
 
+
+// ---------- 時刻表雲端儲存（Worker KV）：手動更新；車站頁優先讀這份，沒有才即時向 TDX 查 ----------
+const SD_KEYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "NationalHolidays"];
+const TT_SYSTEMS = [
+  ["TRTC", "台北捷運", "metro"], ["NTMC", "新北捷運（環狀線）", "metro"], ["NTDLRT", "淡海輕軌", "metro"], ["NTALRT", "安坑輕軌", "metro"],
+  ["TYMC", "桃園機場捷運", "metro"], ["TMRT", "台中捷運（班距）", "tmrt"], ["KRTC", "高雄捷運", "metro"], ["KLRT", "高雄輕軌", "metro"],
+  ["TRA", "台鐵", "tra"], ["THSR", "高鐵", "thsr"], ["HOLIDAY", "國定假日曆（人事總處）", "holiday"],
+];
+const sdMask = sd => SD_KEYS.map(k => sd && sd[k] ? "1" : "0").join("");
+const sdObj = m => Object.fromEntries(SD_KEYS.map((k, i) => [k, m[i] === "1"]));
+let ttMetaP = null; const ttMem = {};
+async function ttMeta(force) {
+  const proxy = getProxy(); if (!proxy) return { systems: {} };
+  if (force || !ttMetaP) ttMetaP = fetch(`${proxy}/tt/meta${force ? "?t=" + Date.now() : ""}`).then(r => r.ok ? r.json() : { systems: {} }).catch(() => (ttMetaP = null, { systems: {} }));
+  return ttMetaP;
+}
+async function ttLoad(op) {
+  const m = (await ttMeta()).systems[op]; if (!m) return null;
+  const k = op + "|" + m.updated; if (ttMem[k]) return ttMem[k];
+  return ttMem[k] = fetch(`${getProxy()}/tt/data/${op}?v=${encodeURIComponent(m.updated)}`).then(r => r.ok ? r.json() : null).catch(() => { delete ttMem[k]; return null; });
+}
+// 今天（或指定日期）屬於哪一種營運日：國定假日 → NationalHolidays（系統沒有假日表就用週日）；補班日 → 平日
+async function dayInfo(date) {
+  const h = await ttLoad("HOLIDAY").catch(() => null);
+  const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const name = h && h.dates && h.dates[iso];
+  if (name && name !== "補班") return { key: "NationalHolidays", hol: true, name };
+  if (name === "補班") return { key: "Monday", hol: false, name };
+  // 國定假日前一天（平日）：高雄捷運等有「假日前一天」時刻表的系統會用它
+  const n = new Date(date); n.setDate(n.getDate() + 1);
+  const isoN = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+  const eve = !!(h && h.dates && h.dates[isoN] && h.dates[isoN] !== "補班") && date.getDay() >= 1 && date.getDay() <= 4;
+  return { key: DAY_KEYS[date.getDay()], hol: false, name: null, eve };
+}
+function pickDay(recs, info) {
+  if (info.eve) { const e = recs.filter(r => r.ServiceDay && /前/.test(r.ServiceDay.ServiceTag || "")); if (e.length) return e; }
+  if (info.hol) { const h = recs.filter(r => r.ServiceDay && r.ServiceDay.NationalHolidays === true); if (h.length) return h; info = { key: "Sunday" }; }
+  const x = recs.filter(r => r.ServiceDay && r.ServiceDay[info.key] === true);
+  return x.length ? x : recs;
+}
+const svcDate = (offsetDays = 0) => { const d = new Date(); if (d.getHours() < 3) d.setDate(d.getDate() - 1); d.setDate(d.getDate() + offsetDays); return d; };
+
+// 手動更新：瀏覽器向 TDX（經 Worker、金鑰 3）抓整個系統，壓縮後存回 Worker KV。回傳用了幾次 TDX 呼叫
+async function ttRefresh(op, pass, onStep) {
+  const proxy = getProxy(); if (!proxy) throw new Error("尚未設定 Worker");
+  if (op === "HOLIDAY") {
+    const r = await fetch(`${proxy}/tt/holidays`, { method: "POST", headers: { "x-admin": pass } });
+    const j = await r.json(); if (!r.ok) throw new Error(j.message || r.status); ttMetaP = null; return { calls: 0, ...j };
+  }
+  let calls = 0, version = "", out;
+  // 每頁之間稍停；限流時等久一點再試（每次嘗試都算一次呼叫）
+  const get = async (url, raw) => {
+    for (let i = 0; ; i++) {
+      calls++; onStep && onStep(calls);
+      try {
+        if (!raw) return await tdx("rail", url);
+        const r = await fetch(proxy + url.slice(TDX_ORIGIN.length) + "&__k=3"); const j = await r.json();
+        if (r.status === 429) { const e = new Error(RATE_MSG); e.rate = true; throw e; }
+        if (!r.ok) throw new Error("資料讀取失敗 (" + r.status + ")"); return j;
+      } catch (e) { if (!isRate(e) || i >= 3) throw e; await sleep(5000 * (i + 1)); }
+    }
+  };
+  const sys = (TT_SYSTEMS.find(x => x[0] === op) || [])[2];
+  if (sys === "metro") {
+    const all = [], top = 300;
+    for (let skip = 0; skip < 20000; skip += top) {
+      const page = await get(`${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${op}?%24top=${top}&%24skip=${skip}&%24format=JSON`);
+      all.push(...page); if (page.length < top) break; await sleep(700);
+    }
+    const sds = [], rows = [];
+    for (const r of all) {
+      const m = sdMask(r.ServiceDay); let i = sds.findIndex(x => x.m === m); if (i < 0) { sds.push({ m, tag: r.ServiceDay && r.ServiceDay.ServiceTag || "" }); i = sds.length - 1; }
+      const times = (r.Timetables || []).map(t => hm(t.DepartureTime || t.ArrivalTime)).filter(Boolean).map(x => x.replace(":", ""));
+      rows.push([r.StationID, r.LineID || r.LineNO || "", r.Direction ?? "", r.DestinationStaionID || r.DestinationStationID || "", zh(r.DestinationStaionName) || zh(r.DestinationStationName) || "", i, times.join(" ")]);
+      if (r.VersionID && String(r.VersionID) > version) version = String(r.VersionID);
+      if (!version && r.UpdateTime) version = r.UpdateTime.slice(0, 10);
+    }
+    if (!rows.length) throw new Error("TDX 沒有這個系統的站別時刻表");
+    out = { v: 1, op, kind: "metro", sd: sds, rows };
+  } else if (sys === "tmrt") {
+    const [freq, fl] = [await get(`${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`), await get(`${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/TMRT?%24format=JSON`)];
+    if (!freq.length || !fl.length) throw new Error("TDX 沒有台中捷運班距資料");
+    version = String((freq[0] && (freq[0].VersionID || (freq[0].UpdateTime || "").slice(0, 10))) || "");
+    out = { v: 1, op, kind: "tmrt", freq, fl };
+  } else if (sys === "tra") {
+    const j = await get(`${RAIL_BASE}/v3/Rail/TRA/GeneralTrainTimetable?%24format=JSON`, true);
+    const list = j.TrainTimetables || [];
+    version = String(j.VersionID || (j.EffectiveDate || j.UpdateTime || "").slice(0, 10));
+    const trains = list.map(t => { const i = t.TrainInfo || {};
+      return [String(i.TrainNo), shortType(zh(i.TrainTypeName)), i.Direction ?? "", zh(i.StartingStationName) || "", zh(i.EndingStationName) || "", sdMask(t.ServiceDay || i.ServiceDay || { Monday: 1, Tuesday: 1, Wednesday: 1, Thursday: 1, Friday: 1, Saturday: 1, Sunday: 1, NationalHolidays: 1 }),
+        (t.StopTimes || []).map(x => [x.StationID, (hm(x.ArrivalTime) || "").replace(":", ""), (hm(x.DepartureTime) || "").replace(":", "")].join(",")).join(";")]; });
+    if (!trains.length) throw new Error("TDX 沒有台鐵定期時刻表");
+    out = { v: 1, op, kind: "tra", trains, eff: j.EffectiveDate || null, exp: j.ExpireDate || null };
+  } else if (sys === "thsr") {
+    const list = await get(`${RAIL_BASE}/v2/Rail/THSR/GeneralTimetable?%24format=JSON`);
+    const trains = list.map(x => x.GeneralTimetable || x).map(g => { const i = g.GeneralTrainInfo || {};
+      const ut = g.UpdateTime || x.UpdateTime; if (ut && !version) version = String(g.VersionID || x.VersionID || ut.slice(0, 10));
+      return [String(i.TrainNo), "高鐵", i.Direction ?? "", zh(i.StartingStationName) || "", zh(i.EndingStationName) || "", sdMask(g.ServiceDay),
+        (g.StopTimes || []).map(x => [x.StationID, (hm(x.ArrivalTime) || "").replace(":", ""), (hm(x.DepartureTime) || "").replace(":", "")].join(",")).join(";"),
+        g.EffectiveDate || "", g.ExpiringDate || ""]; });
+    if (!trains.length) throw new Error("TDX 沒有高鐵定期時刻表");
+    out = { v: 1, op, kind: "thsr", trains };
+  } else throw new Error("不支援的系統");
+  const body = JSON.stringify(out);
+  const count = out.rows ? out.rows.length : out.trains ? out.trains.length : (out.fl || []).length;
+  const r = await fetch(`${proxy}/tt/data/${op}`, { method: "PUT", headers: { "x-admin": pass, "content-type": "application/json", "x-tt-calls": String(calls), "x-tt-version": version, "x-tt-count": String(count) }, body });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || "上傳失敗 " + r.status);
+  ttMetaP = null;
+  return { calls, bytes: body.length, count, version, ...j };
+}
+// 把儲存的捷運列轉回 TDX StationTimeTable 的樣子，沿用原本的處理邏輯
+function ttMetroRecs(tt, ids) {
+  const want = new Set(ids);
+  return tt.rows.filter(r => want.has(r[0])).map(r => ({ StationID: r[0], LineID: r[1] || null, Direction: r[2] === "" ? null : +r[2], DestinationStationID: r[3] || null,
+    DestinationStationName: { Zh_tw: r[4] }, ServiceDay: { ...sdObj(tt.sd[r[5]].m), ServiceTag: tt.sd[r[5]].tag }, Timetables: r[6] ? r[6].split(" ").map(x => ({ DepartureTime: x.slice(0, 2) + ":" + x.slice(2) })) : [] }));
+}
+const hhmm4 = x => x ? x.slice(0, 2) + ":" + x.slice(2) : null;
+// 台鐵／高鐵：從定期時刻表取出某站今天（依營運日）停靠的班次
+async function ttTrainRows(op, id, info) {
+  const tt = await ttLoad(op); if (!tt || !tt.trains) return null;
+  // 台鐵／高鐵的定期表沒有國定假日欄，連假多半另有疏運表 → 假日改抓 TDX 當日時刻表
+  if (info.hol && !tt.trains.some(t => t[5][7] === "1")) return null;
+  const ix = info.hol ? 7 : SD_KEYS.indexOf(info.key), hasHol = tt.trains.some(t => t[5][7] === "1"), sunIx = 6;
+  const today = todayStr().replace(/-/g, "");
+  const rows = [];
+  for (const t of tt.trains) {
+    const m = t[5]; const ok = info.hol && !hasHol ? m[sunIx] === "1" : m[ix] === "1"; if (!ok) continue;
+    if (t[7] && t[7].replace(/-/g, "") > today) continue; if (t[8] && t[8].replace(/-/g, "") < today) continue;
+    const stops = t[6].split(";"), si = stops.findIndex(x => x.startsWith(id + ","));
+    if (si < 0 || si === stops.length - 1) continue;            // 終點站不列
+    const [, a, d] = stops[si].split(",");
+    rows.push({ no: t[0], type: t[1], dir: t[2] === "" ? null : +t[2], dest: t[4], time: hhmm4(d || a) });
+  }
+  return rows;
+}
+
 // 時刻表：回傳今日接下來的班次；查無資料回傳 null
 async function metroTimetable(get, st, filter, all) {
   let recs = [];
-  try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; }
+  const stored = await ttLoad(st.op).catch(() => null);
+  if (stored && stored.rows) recs = ttMetroRecs(stored, st.ids);
+  else { try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; } }
   if (!recs.length) return null;
-  const dayKey = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date().getDay()];
-  let todays = recs.filter(r => r.ServiceDay && r.ServiceDay[dayKey] === true);
-  if (!todays.length) todays = recs;
-  const now = nowMin() < 180 ? nowMin() + 1440 : nowMin(), byKey = {};
-  for (const r of todays) {
+  const info = await dayInfo(svcDate(0)), infoT = await dayInfo(svcDate(1));
+  const todays = pickDay(recs, info), tomorrows = pickDay(recs, infoT);
+  metroTimetable.last = { info, infoT, stored: !!stored };
+  const now = nowMin() < 180 ? nowMin() + 1440 : nowMin();
+  const build = list => { const byKey = {};
+  for (const r of list) {
     const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向 ${r.Direction ?? "?"}`;
     const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
     const dir = r.Direction ?? null;
@@ -616,6 +759,8 @@ async function metroTimetable(get, st, filter, all) {
     const set = byKey[k] = byKey[k] || { dest, destId: r.DestinationStationID || null, line, dir, times: new Set() };
     for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (x) set.times.add(x); }
   }
+  return byKey; };
+  const byKey = build(todays), byKeyT = build(tomorrows);
   const trains = [];
   // 同一終點有兩個方向（環狀線）時補上方向；高雄輕軌 Direction 0 = 逆行、1 = 順行（已對照即時看板）
   const dirsOf = {};
@@ -624,7 +769,10 @@ async function metroTimetable(get, st, filter, all) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向 ${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
     let up = ts.filter(o => o.t >= now);
-    if (!up.length && all) up = ts.map(o => ({ x: o.x, t: o.t + 1440 }));   // 今日已收班：列出明日班次
+    if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
+      const gT = byKeyT[g.dest + "|" + g.line + "|" + g.dir] || g;
+      up = [...gT.times].map(x => ({ x, t: (toMin(x) < 180 ? toMin(x) + 1440 : toMin(x)) + 1440 })).sort((a, b) => a.t - b.t);
+    }
     up.slice(0, all ? 999 : 3)
       .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, destId: g.destId, dir: g.dir, line: g.line, via: g.via || null, eta: o.t - now }));
   }
@@ -804,7 +952,14 @@ async function tripView(get, p) {
 async function trainView(get, p) {
   const no = String(p.no), here = new Set((p.ids || []).map(String));
   let stops = [], info = {}, delay = null, pos = null;
-  if (p.kind === "tra") {
+  const stT = await ttLoad(p.kind === "tra" ? "TRA" : "THSR").catch(() => null);
+  const sT = stT && stT.trains && stT.trains.find(t => t[0] === no || t[0] === no.replace(/^0+/, ""));
+  if (sT) {
+    const nameOf = {}; try { for (const s of await loadRailStations()) if (s.op === (p.kind === "tra" ? "TRA" : "THSR")) nameOf[s.id] = s.name; } catch (e) {}
+    info = { type: sT[1], from: sT[3], to: sT[4] };
+    stops = sT[6].split(";").map(x => { const [id, a, d] = x.split(","); return { id, name: nameOf[id] || id, arr: hhmm4(a), dep: hhmm4(d) }; });
+    if (p.kind === "tra") { try { const lv = await get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard/TrainNo/${encodeURIComponent(no)}?%24format=JSON`); const b = (lv.TrainLiveBoards || lv || [])[0]; if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } } catch (e) { if (isRate(e)) throw e; } }
+  } else if (p.kind === "tra") {
     const [tt, lv] = await Promise.allSettled([
       get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`),
       get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard/TrainNo/${encodeURIComponent(no)}?%24format=JSON`)]);
@@ -826,6 +981,7 @@ async function trainView(get, p) {
 // ---------- 台中捷運：TDX 沒有即時與站別時刻表，用班距＋首末班推估 ----------
 const TMRT_KEY = "jisu_tmrt";
 async function loadTmrt(get) {
+  const stored = await ttLoad("TMRT").catch(() => null); if (stored && stored.freq) return stored;
   try { const c = JSON.parse(localStorage.getItem(TMRT_KEY)); if (c && Date.now() - c.time < 86400000 && c.freq && c.fl) return c; } catch (e) {}
   const [freq, fl] = await Promise.all([
     get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`),
@@ -841,7 +997,8 @@ async function tmrtBoard(get, st) {
   const d = new Date();
   let now = nowMin(), day = d.getDay();
   if (now < 180) { now += 1440; day = (day + 6) % 7; }             // 凌晨仍算前一個營運日
-  const dayKey = DAY_KEYS[day];
+  const di = await dayInfo(svcDate(0));
+  const dayKey = di.hol ? (freq.some(f => f.ServiceDay && f.ServiceDay.NationalHolidays) ? "NationalHolidays" : "Sunday") : di.key;
   const plan = freq.find(f => f.ServiceDay && f.ServiceDay[dayKey]) || freq[0];
   const bands = ((plan && plan.Headways) || []).map(h => ({ s: toMin(h.StartTime), e: h.EndTime === "24:00" ? 1440 : toMin(h.EndTime), hw: h.MinHeadwayMins || h.MaxHeadwayMins }));
   const hwAt = t => { const x = t % 1440 < 180 ? 1439 : t; const b = bands.find(b => x >= b.s && x < b.e); return b ? b.hw : (bands.length ? bands[bands.length - 1].hw : 10); };
@@ -986,6 +1143,10 @@ window.dataApi = async (action, p = {}) => {
     case "lineView": return lineView(tdx, p);
     case "trainView": return trainView(tdx, p);
     case "tripView": return tripView(tdx, p);
+    case "ttMeta": return ttMeta(true);
+    case "ttSystems": return TT_SYSTEMS;
+    case "ttRefresh": return ttRefresh(p.op, p.pass, p.onStep);
+    case "ttAuth": { const r = await fetch(`${getProxy()}/tt/auth`, { method: "POST", headers: { "x-admin": p.pass } }); if (!r.ok) throw new Error("管理密碼錯誤"); return true; }
     case "pushKey": return pushCall("GET", "/push/key");
     case "pushTest": return pushCall("POST", "/push/test", { sub: p.sub });
     case "remindCreate": {

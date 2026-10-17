@@ -245,6 +245,14 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;background:var(--bg);border-radius:999px;padding:5px}
 .seg button{padding:10px 0;border-radius:999px;font-weight:700;font-size:15px;color:var(--muted)}
 .seg button.on{background:var(--lime);color:var(--ink)}
+.ttrow{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--line)}
+.ttrow:first-of-type{border-top:0}
+.ttrow .ck{flex:none;width:24px;height:24px;border-radius:8px;border:2px solid var(--line);margin-top:2px;display:grid;place-items:center;color:var(--ink);font-weight:800;font-size:15px}
+.ttrow.on .ck{background:var(--lime);border-color:var(--lime)}
+.ttrow .tb{flex:1;min-width:0}.ttrow .tn{font-weight:700;font-size:16px}
+.ttrow .tm{color:var(--muted);font-size:13px;line-height:1.45;margin-top:2px}
+.ttrow .ts{font-size:13px;margin-top:3px;color:var(--muted)}.ttrow .ts.ok{color:var(--lime)}.ttrow .ts.bad{color:var(--bad)}.ttrow .ts.run{color:var(--text)}
+.ttrow:disabled{opacity:1}
 
 @media (prefers-reduced-motion: reduce){ .page,.sheet,.scrim{transition:none} .refresh.spin svg,.sk::after{animation:none} }
 .toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translate(-50%,-20px);opacity:0;z-index:60;background:var(--lime);color:var(--ink);font-weight:700;font-size:15px;padding:10px 18px;border-radius:999px;transition:opacity .3s,transform .3s;pointer-events:none}
@@ -619,6 +627,7 @@ function vSettings() {
   <div class="set"><h3>附上最近的台鐵、高鐵站</h3><p>即使不在步行範圍，也在清單最後列出最近的台鐵、高鐵站各一站。</p>${seg('railFar',[1,0],v=>v?'顯示':'不顯示')}</div>
   <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
     <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
+  ${vTimetable()}
   <div class="sec"><h2>自動更新</h2></div>
   <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+' 秒':'關閉')}</div>
   <div class="sec"><h2>通知</h2></div>
@@ -626,6 +635,62 @@ function vSettings() {
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
   <div class="sec"><h2>關於</h2></div>
   <div class="note">極速通勤 ${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
+}
+
+/* ---------- 時刻表（存在 Worker 雲端） ---------- */
+const TT_PASS_KEY = 'jisu_tt_admin';
+const TT = { meta:null, sys:null, sel:new Set(), st:{}, busy:false, loading:false };
+function ttLoadMeta(force) {
+  if (TT.loading || DEMO) return; TT.loading = true;
+  Promise.all([api('ttSystems'), api('ttMeta')]).then(([sys, meta]) => { TT.sys = sys; TT.meta = meta; })
+    .catch(() => { TT.meta = { systems:{} }; }).finally(() => { TT.loading = false; if (S.tab === 'settings') render(); });
+}
+const fmtKB = b => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+function vTimetable() {
+  if (DEMO) return '';
+  if (!TT.meta && !TT.loading) ttLoadMeta();
+  const pass = localStorage.getItem(TT_PASS_KEY);
+  let h = `<div class="sec"><h2>更新時刻表</h2><span class="side">存在雲端</span></div><div class="set">
+    <p>各系統完整時刻表（平日、週六、週日、假日）存在你的 Worker（Cloudflare KV），車站頁直接讀，不必每次向 TDX 查。不會自動更新；時刻表改版時勾選系統再按「更新」。國定假日依人事總處行事曆判斷。</p>`;
+  if (!TT.sys) h += `<div class="ts">讀取中…</div>`;
+  else for (const [op, name] of TT.sys) {
+    const m = (TT.meta && TT.meta.systems || {})[op], st = TT.st[op], on = TT.sel.has(op);
+    const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })} 更新${m.version ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}・${m.count} ${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : `・上次用 ${m.calls} 次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
+    h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
+      <span class="tb"><div class="tn">${esc(name)}</div><div class="tm">${meta}</div>${st ? `<div class="ts ${st.c}">${esc(st.t)}</div>` : ''}</span></button>`;
+  }
+  if (pass) h += `<div class="kmsg" style="margin:6px 0 10px">管理密碼已存在這台裝置。<button data-act="ttPassClear" style="color:var(--lime);font-weight:700">清除</button></div>`;
+  else h += `<p style="margin:10px 0 8px">更新需要管理密碼（只要輸入一次，會存在這台裝置）。</p>
+    <input class="inp" id="ttPass" type="password" placeholder="管理密碼" autocomplete="off" autocapitalize="off">
+    <div class="btns" style="grid-template-columns:1fr;margin:4px 0 10px"><button class="btn" data-act="ttPassSave">儲存密碼</button></div>`;
+  const n = TT.sel.size;
+  h += `<div class="btns" style="grid-template-columns:1fr 2fr"><button class="btn" data-act="ttAll" ${TT.busy ? 'disabled' : ''}>${TT.sys && n === TT.sys.length ? '全不選' : '全選'}</button>
+    <button class="btn pri" data-act="ttRun" ${TT.busy || !n || !pass ? 'disabled' : ''}>${TT.busy ? '更新中…' : n ? `更新 ${n} 個系統` : '先勾選系統'}</button></div>
+    <div class="kmsg" id="ttMsg">${esc(TT.msg || '')}</div></div>`;
+  return h;
+}
+async function ttRun() {
+  const pass = localStorage.getItem(TT_PASS_KEY); if (!pass || TT.busy) return;
+  TT.busy = true; TT.msg = ''; let total = 0, ok = 0;
+  const ops = TT.sys.map(x => x[0]).filter(op => TT.sel.has(op));
+  for (const op of ops) TT.st[op] = { c:'', t:'等待中' };
+  render();
+  for (const op of ops) {
+    TT.st[op] = { c:'run', t:'下載中…' }; render();
+    try {
+      const r = await window.dataApi('ttRefresh', { op, pass, onStep: n => { TT.st[op] = { c:'run', t:`下載中…已呼叫 TDX ${n} 次` }; render(); } });
+      total += r.calls || 0; ok++;
+      TT.st[op] = { c:'ok', t:`完成：${op === 'HOLIDAY' ? '' : `用了 ${r.calls} 次 TDX，`}${r.count} ${op === 'HOLIDAY' ? '天假日' : '筆'}，${fmtKB(r.bytes || 0)}` };
+      TT.sel.delete(op);
+    } catch (e) {
+      TT.st[op] = { c:'bad', t:'失敗：' + (e.message || e) };
+      if (/密碼|401|403/.test(String(e.message))) { localStorage.removeItem(TT_PASS_KEY); TT.msg = '管理密碼不對，已清除，請重新輸入。'; break; }
+    }
+    render();
+  }
+  TT.busy = false; TT.msg = TT.msg || `完成 ${ok}/${ops.length} 個系統，共用了 ${total} 次 TDX 呼叫。`;
+  TT.meta = await api('ttMeta').catch(() => TT.meta);
+  render();
 }
 
 /* ---------- rail ---------- */
@@ -954,6 +1019,17 @@ document.addEventListener('click', e => {
     case 'remStart': startRemind(el); break;
     case 'remCancel': cancelRemind(); break;
     case 'pushTest': pushTest(el); break;
+    case 'ttSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
+    case 'ttAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
+    case 'ttRun': ttRun(); break;
+    case 'ttPassClear': localStorage.removeItem(TT_PASS_KEY); render(); break;
+    case 'ttPassSave': {
+      const v = ($('#ttPass') || {}).value; if (!v || !v.trim()) break;
+      el.disabled = true; el.textContent = '確認中…';
+      api('ttAuth', { pass: v.trim() }).then(() => { localStorage.setItem(TT_PASS_KEY, v.trim()); TT.msg = '管理密碼正確，已存在這台裝置。'; render(); })
+        .catch(e => { TT.msg = e.message || '管理密碼錯誤'; render(); });
+      break;
+    }
     case 'rail': closeSheetQuiet(); if (o) openRail(o); break;
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
     case 'stop': if (o) stopSheet(o); break;
