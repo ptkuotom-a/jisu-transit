@@ -152,6 +152,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rhead h1.trip{white-space:nowrap;flex:none;display:flex;align-items:center;gap:6px}
 .rhead .dirbtn.trip{min-width:0;flex:0 1 auto}
+.lblk{overflow:hidden;margin:0 -4px;padding:0 4px}
 .page.under{transform:none;z-index:29;transition:none;pointer-events:none}
 .dirbtn svg{width:18px;height:18px;color:var(--lime);flex:none}
 .rmeta{color:var(--muted);font-size:14px;margin-top:10px}
@@ -847,6 +848,26 @@ function railTabsTrain(R, D, G) {
   return `<div class="lblk">` + segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}<span>今日剩 ${n} 班</span></div><div class="board">` +
     T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('') + `</div>` + moreBtn(id, n, show) + `</div>`;
 }
+// 切換方向分頁：重新繪製後，新內容從切換方向的那一側滑入（和主分頁一樣）
+const tabBody = b => b ? [...b.children].filter(e => !e.classList.contains('seg') && !e.classList.contains('lsec')) : [];
+function selectRailTab(btn, fromSwipe) {
+  const blk = btn.closest('.lblk'), bi = [...document.querySelectorAll('#routePage .lblk')].indexOf(blk);
+  const btns = [...btn.parentElement.querySelectorAll('button')], dir = btns.indexOf(btn) > btns.findIndex(b => b.classList.contains('on')) ? 1 : -1;
+  const v = btn.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1);
+  const go = () => {
+    renderRail();
+    const nb = document.querySelectorAll('#routePage .lblk')[bi], els = tabBody(nb), w = innerWidth;
+    if (reduceMotion() || !els.length) return;
+    for (const e of els) { e.style.transition = 'none'; e.style.transform = `translateX(${dir * w * 0.35}px)`; e.style.opacity = '0.2'; }
+    nb.offsetWidth;
+    for (const e of els) { e.style.transition = 'transform .22s ease, opacity .22s ease'; e.style.transform = ''; e.style.opacity = ''; }
+    setTimeout(() => { for (const e of els) e.style.transition = ''; }, 240);
+  };
+  const old = tabBody(blk);
+  if (reduceMotion() || !old.length || fromSwipe) { go(); return; }
+  for (const e of old) { e.style.transition = 'transform .16s ease, opacity .16s ease'; e.style.transform = `translateX(${-dir * innerWidth * 0.35}px)`; e.style.opacity = '0'; }
+  setTimeout(go, 160);
+}
 function renderRail() { if (S.rail && S.page === 'rail') $('#routePage').innerHTML = railHtml(); }
 function railHtml() {
   const R = S.rail; if (!R) return '';
@@ -856,7 +877,7 @@ function railHtml() {
     <div class="rhead"><h1 style="${big}">${esc(R.name)}</h1></div>
     <div class="rsub"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}<span>${distTxt(R.dist)}${R.exit ? `（${esc(R.exit)}）` : ''}</span>
       <span style="flex:1"></span><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div>
-    <div class="rmeta">${S.railLoading && !D ? '讀取列車資訊中…' : S.railError ? '讀取失敗：' + esc(S.railError) : D ? (D.kind === 'metro' ? (D.live ? '時刻表＋即時到站' : D.ttKind === 'estimate' ? '估算班次' : '時刻表') : D.kind === 'thsr' ? '今日班次與剩餘座位' : '時刻表＋即時誤點') : ''}</div></div>`;
+    ${S.railLoading && !D ? '<div class="rmeta">讀取列車資訊中…</div>' : S.railError ? `<div class="rmeta">讀取失敗：${esc(S.railError)}</div>` : ''}</div>`;
   if (!D) h += S.railError ? '' : skel(4);
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
@@ -1013,7 +1034,7 @@ document.addEventListener('click', e => {
     case 'tab': setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'closeRoute': closeRoute(); break;
-    case 'railTab': { const v = el.dataset.v, i = v.lastIndexOf('|'); S.railTab[v.slice(0, i)] = v.slice(i + 1); renderRail(); break; }
+    case 'railTab': selectRailTab(el); break;
     case 'ttAll': S.ttAll[el.dataset.v] = true; renderRail(); break;
     case 'tripOpen': if (o && S.rail) openLine({ kind:'trip', ...o, ids:S.rail.ids, dests:[{ id:o.destId, name:o.dest }], label:'往 ' + o.dest }); break;
     case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
@@ -1143,7 +1164,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       }
     }
     e.preventDefault();
-    if (mode === 'tab') { dx = ddx; for (const el of blk.querySelectorAll('.board,.tgrp,.note')) { el.style.transition = 'none'; el.style.transform = `translateX(${dx * 0.45}px)`; el.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / innerWidth)); } return; }
+    if (mode === 'tab') { dx = ddx; for (const el of tabBody(blk)) { el.style.transition = 'none'; el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / innerWidth)); } return; }
     dx = Math.max(0, ddx);
     pg.style.transform = `translateX(${dx}px)`;
     dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
@@ -1153,12 +1174,15 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     st = 0;
     const v = Math.abs(dx) / Math.max(1, Date.now() - tt), dur = reduceMotion() ? 0 : 220;
     if (mode === 'tab') {
-      const els = [...blk.querySelectorAll('.board,.tgrp,.note')];
-      const go = Math.abs(dx) > 60 || (v > 0.4 && Math.abs(dx) > 30);
+      const els = tabBody(blk);
+      const go = Math.abs(dx) > innerWidth * 0.2 || (v > 0.4 && Math.abs(dx) > 30);
       const btn = go ? tabBtns[tabIdx + (dx < 0 ? 1 : -1)] : null;
-      for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; }
-      if (btn) btn.click();          // 重新繪製方向分頁
       swallowClick = Date.now() + 500;
+      if (btn) {                      // 跟著手指滑出，再切換分頁讓新內容從另一側滑入
+        const d2 = reduceMotion() ? 0 : 160;
+        for (const el of els) { el.style.transition = `transform ${d2}ms ease, opacity ${d2}ms ease`; el.style.transform = `translateX(${dx < 0 ? -innerWidth : innerWidth}px)`; el.style.opacity = '0'; }
+        setTimeout(() => selectRailTab(btn, true), d2);
+      } else for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; }
       return;
     }
     swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
