@@ -309,6 +309,7 @@ html.locked,html.locked body{overflow:hidden}
 .acct{display:flex;align-items:center;justify-content:space-between;gap:12px}.acct b{font-size:17px}.acct .role{font-size:13px;color:var(--muted);margin-left:8px}
 .btn.out{color:var(--bad)}
 #routePage .sec,#routePage .pr,#routePage .tn{scroll-margin-top:150px}
+.pr .pnote{margin-top:8px;font-size:12.5px;text-align:left}
 .rhead.pdh h1{font-size:clamp(30px,10vw,44px);white-space:nowrap}
 /* 路線規劃（v2.13.0） */
 .srow{display:flex;align-items:center;gap:10px;margin-bottom:22px}.srow[hidden]{display:none}.srow .search{flex:1;min-width:0;margin-bottom:0}
@@ -339,9 +340,9 @@ html.locked,html.locked body{overflow:hidden}
 .tsg .ln i{display:block;width:6px;border-radius:3px;background:var(--c,#555);margin:-4px 0}.tsg.walk .ln i,.tsg.wait .ln i{width:0;border-left:3px dotted var(--dim);background:none;border-radius:0}.tsg.bike .ln i{width:0;border-left:3px dashed #FFB400;background:none}
 .tsg .bd{flex:1;min-width:0;padding:6px 0 10px}.wk{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:15px;font-weight:600}.wk svg{width:18px;height:18px;flex:none}.tsg.bike .wk{color:#FFB400}
 .gate{display:block;color:var(--dim);font-size:13px;margin:2px 0 0 24px}
-.legc{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:12px 10px 12px 12px}
-.legc .lc{flex:none;max-width:42%;padding:5px 10px;border-radius:10px;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.legc .lh{flex:1;min-width:0;font-size:15px;font-weight:700;line-height:1.3}.legc .lh small{display:block;color:var(--muted);font-size:12px;font-weight:500;margin-top:2px}
+.legc{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:12px 10px 12px 12px}
+.legc .lc{flex:none;max-width:34%;padding:5px 10px;border-radius:10px;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.legc .lh{flex:1;min-width:48px;font-size:15px;font-weight:700;line-height:1.3}.legc .lh small{display:block;color:var(--muted);font-size:12px;font-weight:500;margin-top:2px}
 .lstp{display:flex;gap:10px;align-items:center;padding:8px 2px 0;color:var(--muted);font-size:14px}.lstp span{color:var(--lime);font-weight:600}
 .istops{margin:4px 0 0 2px;border-left:2px solid var(--line);padding-left:12px}.istops div{display:flex;gap:10px;padding:4px 0;font-size:14px;color:var(--text)}.istops div span{width:42px;flex:none;color:var(--muted)}
 </style>
@@ -1392,6 +1393,8 @@ function legColor(l) {
 }
 const chipStyle = c => `background:${c};color:${hexLum(c) > 0.62 ? '#111' : '#fff'}`;
 const MODE_ZH = { bus:'公車', mrt:'捷運', lrt:'輕軌', tra:'台鐵', thsr:'高鐵' };
+// 路段標籤：台鐵／高鐵用「台鐵」「高鐵」（TDX 給的是「南港-左營」這種起訖名）；捷運去掉「線」字
+const legLabel = l => l.mode === 'tra' || l.mode === 'thsr' ? MODE_ZH[l.mode] : l.mode === 'bus' ? (l.name || '公車') : (l.name || MODE_ZH[l.mode] || '').replace(/線$/, '');
 function segBar(r) {
   const parts = [];
   for (const l of r.legs) {
@@ -1402,7 +1405,7 @@ function segBar(r) {
   }
   return `<div class="sbar">` + parts.map(p => p.k === 'walk' ? `<span class="w" style="flex:${p.m} 1 0">${I.walk}${p.m}${p.l.approx ? '≈' : ''}</span>`
     : p.k === 'bike' ? `<span class="y" style="flex:${p.m} 1 0">${I.bike}${p.m}</span>`
-    : `<span class="c" style="flex:${p.m * 1.4} 1 auto;${chipStyle(legColor(p.l))}">${esc(p.l.name || MODE_ZH[p.l.mode])}</span>`).join('') + `</div>`;
+    : `<span class="c" style="flex:${p.m * 1.4} 1 auto;${chipStyle(legColor(p.l))}">${esc(legLabel(p.l))}</span>`).join('') + `</div>`;
 }
 function planCard(r, i) {
   const tr = r.legs.filter(l => l.kind === 'transit'), walk = Math.round(r.legs.filter(l => l.kind === 'walk').reduce((a, l) => a + l.dur, 0) / 60);
@@ -1410,7 +1413,7 @@ function planCard(r, i) {
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span>${fareTxt(r) ? `<span class="pill">${fareTxt(r)}</span>` : ''}</div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span><span>步行${walk}分</span>${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}</button>`;
+    ${segBar(r)}${r.fixed ? `<div class="sub pnote">台鐵／高鐵段已依時刻表改搭較早的班次</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">原本的第一班已開走，已改成搭下一班（時間為估計）</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -1581,10 +1584,10 @@ function detailHtml() {
     }
     const c = legColor(l), L = (P.live || {})[i], open = L && L.open;
     const stops = l.stops || [], open2 = P.open[i];
-    const label = l.mode === 'bus' ? `${esc(l.name)}` : esc(l.name || MODE_ZH[l.mode]);
-    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車`, 'on', `border-color:${c}`);
+    const label = esc(legLabel(l));
+    h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : ''}${l.fixed ? '（依時刻表改搭）' : ''}`, 'on', `border-color:${c}`);
     h += `<div class="tsg tr" style="--c:${c}"><span class="tt0"></span><span class="ln"><i></i></span><span class="bd">
-      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">往 ${esc(l.headsign || l.to.name || '')}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '點這裡看車站即時看板' : '點這裡看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
+      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">往 ${esc(l.headsign || l.to.name || '')}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
       <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站'}</span>` : ''}</button>
       ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
       </span></div>`;
@@ -1628,7 +1631,7 @@ function mountPlanMap() {
       if (pts.length) { const b = pts.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(pts[0], pts[0])); PM.fitBounds(b, { padding: 36, duration: 0, maxZoom: 16 }); }
     };
     if (!PM) {
-      PM = new maplibregl.Map({ container: planMapEl.querySelector('.mapbox'), style: 'https://tiles.openfreemap.org/styles/dark', center: [121.52, 25.05], zoom: 12, minZoom: 7, maxZoom: 19, attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
+      PM = new maplibregl.Map({ container: planMapEl.querySelector('.mapbox'), style: 'https://tiles.openfreemap.org/styles/dark', center: [121.52, 25.05], zoom: 12, minZoom: 4, maxZoom: 19, attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
       PM.touchZoomRotate.disableRotation();
       PM.on('load', () => {
         const m = planMapEl.querySelector('.mapload'); if (m) m.remove();

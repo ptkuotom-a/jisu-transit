@@ -1798,11 +1798,83 @@ async function planRoutes({ o, d, modes, gc, yb, when, time }) {
   const j = await authedGet("/plan?" + q.toString());
   if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
   let out = planClean(j.data && j.data.routes, yb);
-  // 「現在出發」時 TDX 偶爾會給已經開走的班次（第一段車已過發車時間），趕不上的就不列
-  if (when === "now") { const now = Date.now(); out = out.filter(r => { const t = r.legs.find(l => l.kind === "transit"); return !t || tms(t.from.time) >= now - 60000; }); }
+  // TDX 的台鐵／高鐵時刻常漏班：最後一段若要等很久，用 App 的時刻表找更早的班次補上
+  try { out = await planRepair(out); } catch (e) {}
+  // 「現在出發」時 TDX 偶爾會給已經開走的班次：同樣路線還有較晚一班的就不列；沒有的保留但標示、排到後面
+  if (when === "now") {
+    const now = Date.now(), gone = r => { const t = r.legs.find(l => l.kind === "transit"); return !!t && tms(t.from.time) < now - 60000; };
+    // 第一段是捷運／輕軌／公車這類班次密的：改搭下一班（往後推「已過的時間＋一個班距」），只要下一段前的等車時間夠吸收就照樣可行
+    const HW = { mrt: 6, lrt: 10, bus: 12 };
+    out = out.map(r => {
+      if (!gone(r)) return r;
+      const i0 = r.legs.findIndex(l => l.kind === "transit"), L = r.legs[i0], hw = HW[L.mode]; if (!hw) return r;
+      const shift = now - tms(L.from.time) + 60000 + hw * 60000;
+      const i1 = r.legs.findIndex((l, k) => k > i0 && l.kind === "transit");
+      const waits = i1 < 0 ? [] : r.legs.slice(i0 + 1, i1).filter(l => l.kind === "wait"), slack = waits.reduce((a, l) => a + l.dur * 1000, 0);
+      if (i1 >= 0 && slack < shift) return r;
+      const mv = t => t && isoTpe(tms(t) + shift), upto = i1 < 0 ? r.legs.length : r.legs.indexOf(waits[0]);
+      const legs = r.legs.map((l, k) => k < upto ? { ...l, from: { ...l.from, time: mv(l.from.time) }, to: { ...l.to, time: mv(l.to.time) }, stops: l.stops && l.stops.map(x => ({ ...x, time: mv(x.time) })) } : l);
+      if (i1 >= 0) { let left = shift / 1000; for (const w of waits) { const k = legs.indexOf(w), cut = Math.min(w.dur, left); legs[k] = { ...w, dur: w.dur - cut, from: { ...w.from, time: mv(w.from.time) } }; left -= cut; } }
+      const start = r.start + shift, end = i1 < 0 ? r.end + shift : r.end;
+      return { ...r, legs, start, end, dur: Math.round((end - start) / 60000), shifted: true };
+    });
+    const ok = out.filter(r => !gone(r)), okShape = new Set(ok.map(planShape));
+    out = ok.concat(out.filter(r => gone(r) && !okShape.has(planShape(r))).map(r => ({ ...r, missed: true })));
+  }
   // 最快：先到的排前面（指定抵達則是最晚出發的排前面）；最便宜維持 TDX 的順序
-  if (gc) out.sort((a, b) => (a.approx - b.approx) || (when === "arr" ? b.start - a.start : a.end - b.end) || a.dur - b.dur);
-  return out;
+  if (gc) out.sort((a, b) => (!!a.missed - !!b.missed) || (a.approx - b.approx) || (when === "arr" ? b.start - a.start : a.end - b.end) || a.dur - b.dur);
+  // 同一種走法、同時出發又同時抵達（只差中間等哪一班）的只留一條；最多列8條
+  const seen = new Set(), real = new Set(out.filter(r => !r.shifted).map(r => planShape(r) + "|" + r.end));
+  return out.filter(r => !(r.shifted && real.has(planShape(r) + "|" + r.end))).filter(r => { const k = planShape(r) + "|" + r.start + "|" + r.end; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 8);
+}
+// 路線「形狀」：搭哪些車、在哪上下車（不看時間），用來判斷是不是同一種走法
+const planShape = r => r.legs.filter(l => l.kind === "transit").map(l => l.name + "@" + l.from.name + ">" + l.to.name).join("|");
+const isoTpe = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19);
+// 台鐵／高鐵 OD 時刻（同一天同一對車站只查一次）
+const odMem = {};
+async function railOD(op, a, b, date) {
+  const k = `${op}|${a}|${b}|${date}`;
+  if (!odMem[k]) odMem[k] = (async () => {
+    if (op === "TRA") {
+      const j = await tdx("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/OD/${a}/to/${b}/${date}?%24format=JSON`);
+      return (Array.isArray(j) ? j : (j && j.TrainTimetables) || []).map(t => { const st = t.StopTimes || []; return { no: t.TrainInfo && t.TrainInfo.TrainNo, type: t.TrainInfo && t.TrainInfo.TrainTypeName && t.TrainInfo.TrainTypeName.Zh_tw, dep: st[0] && st[0].DepartureTime, arr: st[st.length - 1] && st[st.length - 1].ArrivalTime }; });
+    }
+    const j = await tdx("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/OD/${a}/to/${b}/${date}?%24format=JSON`);
+    return (Array.isArray(j) ? j : []).map(t => ({ no: t.DailyTrainInfo && t.DailyTrainInfo.TrainNo, type: "高鐵", dep: t.OriginStopTime && t.OriginStopTime.DepartureTime, arr: t.DestinationStopTime && t.DestinationStopTime.ArrivalTime }));
+  })().catch(e => { delete odMem[k]; throw e; });
+  return odMem[k];
+}
+// 最後一段是台鐵／高鐵、而且前面要等超過20分鐘：找「到站後3分鐘以上、比原本更早到」的最早一班，整條路線的抵達時間跟著提前
+async function planRepair(routes) {
+  const work = routes.slice(0, 20).map(async r => {
+    const tr = r.legs.filter(l => l.kind === "transit"), L = tr[tr.length - 1];
+    if (!L || (L.mode !== "tra" && L.mode !== "thsr")) return;
+    const i = r.legs.indexOf(L); let wait = 0, j = i - 1;
+    while (j >= 0 && r.legs[j].kind === "wait") { wait += r.legs[j].dur; j--; }
+    if (wait < 20 * 60) return;
+    const g1 = await planRailStation(L, "from"), g2 = await planRailStation(L, "to"); if (!g1 || !g2) return;
+    const op = L.mode === "tra" ? "TRA" : "THSR", a = (g1.ids || [g1.id])[0], b = (g2.ids || [g2.id])[0]; if (!a || !b || a === b) return;
+    const date = L.from.time.slice(0, 10), base = Date.parse(date + "T00:00:00+08:00");
+    const dep0 = tms(L.from.time), arr0 = tms(L.to.time), ready = dep0 - wait * 1000 + 3 * 60000;
+    const at = hm => { const m = /^(\d\d):(\d\d)/.exec(hm || ""); return m ? base + (+m[1] * 60 + +m[2]) * 60000 : null; };
+    let best = null;
+    for (const t of await railOD(op, a, b, date)) {
+      const d = at(t.dep); let ar = at(t.arr); if (d == null || ar == null) continue; if (ar < d) ar += 86400000;
+      if (d >= ready && ar < arr0 - 60000 && (!best || ar < best.ar || (ar === best.ar && d > best.d))) best = { d, ar, t };
+    }
+    if (!best) return;
+    const shift = arr0 - best.ar;
+    // 等車段縮短；這段車改成新班次（沿途停靠站的時間已不準，只留站名）；後面的步行一起提前
+    let left = (dep0 - best.d) / 1000;
+    for (let k = i - 1; k > j && left > 0; k--) { const w = r.legs[k], cut = Math.min(w.dur, left); w.dur -= cut; left -= cut; w.to = { ...w.to, time: isoTpe(tms(w.to.time) - cut * 1000) }; }
+    r.legs[i] = { ...L, from: { ...L.from, time: isoTpe(best.d) }, to: { ...L.to, time: isoTpe(best.ar) }, dur: (best.ar - best.d) / 1000, number: best.t.no || L.number, trainType: best.t.type || "", stops: L.stops.map(x => ({ ...x, time: null })), fixed: true };
+    for (let k = i + 1; k < r.legs.length; k++) { const l = r.legs[k]; r.legs[k] = { ...l, from: { ...l.from, time: l.from.time && isoTpe(tms(l.from.time) - shift) }, to: { ...l.to, time: l.to.time && isoTpe(tms(l.to.time) - shift) } }; }
+    r.end -= shift; r.dur = Math.round((r.end - r.start) / 60000); r.fixed = true;
+  });
+  await Promise.all(work.map(p => p.catch(() => {})));
+  // 補完後可能和別條變成同一班，再去重一次
+  const seen = new Set();
+  return routes.filter(r => { const k = r.legs.filter(l => l.kind === "transit").map(l => l.name + "@" + l.from.name + "@" + l.from.time).join("|"); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`);
 const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
@@ -1811,9 +1883,12 @@ const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
 const pn = x => normZh(x).replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
 const nameHit = (a, b) => { a = pn(a); b = pn(b); return !!a && !!b && (a === b || a.includes(b) || b.includes(a)); };
 const AG_OP = { TRTC: ["TRTC", "NTMC"], NTMC: ["NTMC", "TRTC"], KRTC: ["KRTC", "KLRT"], KLRT: ["KLRT", "KRTC"], TYMC: ["TYMC"], TMRT: ["TMRT"], NTDLRT: ["NTDLRT", "NTMC"], NTALRT: ["NTALRT", "NTMC"], THSR: ["THSR"], TRA: ["TRA"] };
+// 多段同時對車站時共用同一次載入（冷啟動時避免同時抓好幾次車站清單）
+let railAllP = null;
+const railAll = () => railAllP || (railAllP = loadRailStations().finally(() => setTimeout(() => { railAllP = null; }, 60000)));
 async function planRailStation(leg, end) {
   const p = leg[end]; if (p.lat == null) return null;
-  const all = await loadRailStations();
+  const all = await railAll();
   const kindOk = g => leg.mode === "tra" ? g.op === "TRA" : leg.mode === "thsr" ? g.op === "THSR" : g.kind === "metro";
   const groups = nearestRail(all, p.lat, p.lon, { all: true }).filter(g => g.dist <= 800 && kindOk(g));
   const pref = AG_OP[(leg.agency || "").toUpperCase()] || [];
