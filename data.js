@@ -2138,10 +2138,104 @@ async function railTrains(op, day) {
       let last = -1, roll = 0; const pts = [];
       const m = x => { if (!x) return null; let v = +x.slice(0, 2) * 60 + +x.slice(2); if (v + roll < last) roll += 1440; v += roll; last = v; return v; };
       for (const s of (t[6] || "").split(";")) { const [id, a, d] = s.split(","); const am = m(a), dm = m(d); if (am == null && dm == null) continue; pts.push([id, am ?? dm, dm ?? am]); }
-      trains.push({ no: String(t[0]), type: t[1] || "", start: t[3] || "", dest: t[4] || "", pts });
+      trains.push({ no: String(t[0]), type: t[1] || "", dir: t[2] === "" || t[2] == null ? null : +t[2], start: t[3] || "", dest: t[4] || "", pts });
     }
     return { base: tpeMid(day), trains };
   })().catch(() => { delete railParsedMem[k]; return null; });
+}
+// ---------- 車站時刻表查詢（v2.23）：只用雲端 KV（經 Worker）與本機 IndexedDB 快取，不直接打 TDX ----------
+// 日期規則同路線規劃：台鐵／高鐵平常日用 7 天定期表，國定假日、連假與其前一天用那天的實際時刻表（railDayTt）；
+// 捷運／輕軌用平日／假日班表（dayInfo + pickDay，含國定假日與補班）；文湖線、台中捷運沒有站別時刻表，回傳班距與首末班。
+const dateOfIso = x => { const [y, m, d] = String(x).split("-").map(Number); return new Date(y, m - 1, d); };
+const clk = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+async function stationTT(p) {
+  const day = p.date ? dateOfIso(p.date) : svcDate(0), iso = isoDay(day), today = isoDay(svcDate(0));
+  const now = iso === today ? (nowMin() < 180 ? nowMin() + 1440 : nowMin()) : iso < today ? 1e6 : -1;
+  const di = await dayInfo(day);
+  const dayLabel = (di.hol ? `國定假日（${di.name}）` : di.name === "補班" ? "補班日（平日班表）" : "週" + "日一二三四五六"[day.getDay()]) + (di.eve ? "・假日前一天" : "");
+  const base = { op: p.op, date: iso, today: iso === today, dayLabel, now };
+  return p.op === "TRA" || p.op === "THSR" ? stationTTrain(p, day, base) : stationTTMetro(p, day, di, base);
+}
+async function stationTTrain(p, day, base) {
+  const op = p.op, D = await railDayTt(op, day), P = D && await railTrains(op, day);
+  if (!P) return { ...base, kind: "train", none: true, trains: [], dests: [], types: [] };
+  const ids = new Set(p.ids), names = {}, reach = {}, trains = [];
+  try { for (const s of await loadRailStations()) if (s.op === op) names[s.id] = s.name; } catch (e) {}
+  for (const t of P.trains) {
+    const i = t.pts.findIndex(x => ids.has(x[0])); if (i < 0 || i === t.pts.length - 1) continue;   // 終點站不列
+    const dep = t.pts[i][2], next = {};
+    for (let k = i + 1; k < t.pts.length; k++) {
+      const [id, a] = t.pts[k]; if (next[id] != null || ids.has(id)) continue;
+      next[id] = a; const r = reach[id]; if (!r || a - dep < r.min) reach[id] = { id, min: a - dep, dir: t.dir };
+    }
+    trains.push({ no: t.no, type: shortType(t.type), dir: t.dir, start: t.start, dest: t.dest, t: dep, time: clk(dep), next });
+  }
+  trains.sort((a, b) => a.t - b.t);
+  const dests = Object.values(reach).filter(r => names[r.id]).map(r => ({ ...r, name: names[r.id] })).sort((a, b) => a.min - b.min);
+  const cnt = {}; for (const t of trains) if (t.type) cnt[t.type] = (cnt[t.type] || 0) + 1;
+  return { ...base, kind: "train", src: D.daily ? "day" : "7day", trains, dests, types: Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]) };
+}
+// 班距＋首末班（文湖線存在 TRTC 那份的 hw；台中捷運那份本身就是 freq＋fl）
+function hwInfo(freq, fl, ids, di, lines) {
+  const lineOfR = r => r.LineID || r.LineNo || "G", out = {};
+  const recs = fl.filter(r => ids.includes(r.StationID) && (!lines || lines.includes(lineOfR(r))) && !(r.DestinationStationID && ids.includes(r.DestinationStationID)));
+  for (const r of recs) {
+    const line = lineOfR(r), fq = freq.filter(f => !(f.LineID || f.LineNo) || (f.LineID || f.LineNo) === line);
+    const key = di.hol ? (fq.some(f => f.ServiceDay && f.ServiceDay.NationalHolidays) ? "NationalHolidays" : "Sunday") : di.key;
+    if (r.ServiceDay && r.ServiceDay[key] === false) continue;
+    const dest = zh(r.DestinationStationName) || "?", k = line + "|" + dest, exact = !!(r.ServiceDay && r.ServiceDay[key]);
+    if (out[k] && (out[k].exact || !exact)) continue;
+    const plan = fq.find(f => f.ServiceDay && f.ServiceDay[key]) || fq[0];
+    const am = x => { const v = toMin(x); return v < 180 ? v + 1440 : v; };
+    const bands = ((plan && plan.Headways) || []).map(h => ({ s: hm(h.StartTime), e: hm(h.EndTime), min: h.MinHeadwayMins || h.MaxHeadwayMins, max: h.MaxHeadwayMins || h.MinHeadwayMins }))
+      .filter(b => b.s && b.e).sort((a, b) => am(a.s) - am(b.s));
+    out[k] = { line, dest, destId: r.DestinationStationID || null, first: hm(r.FirstTrainTime), last: hm(r.LastTrainTime), bands, exact };
+  }
+  return Object.values(out);
+}
+async function stationTTMetro(p, day, di, base) {
+  const op = p.op, ids = p.ids, out = { ...base, kind: "metro", trains: [], groups: [], hw: [] };
+  const stored = await ttLoad(op).catch(() => null);
+  const hwL = op === "TMRT" ? null : (HW_LINES[op] || []).filter(l => ids.some(i => stnPre(i) === l));
+  if (op === "TMRT" || hwL.length) {
+    const src = op === "TMRT" ? (stored && stored.freq ? stored : null) : stored && stored.hw;
+    if (src && src.freq && src.fl) out.hw = hwInfo(src.freq, src.fl, ids, di, hwL); else out.hwMissing = true;
+  }
+  if (stored && stored.rows) {
+    let recs = ttMetroRecs(stored, ids);
+    const other = op === "TRTC" && ids.some(i => /^Y\d/.test(i)) ? "NTMC" : op === "NTMC" && ids.some(i => !/^(Y|LB)\d/.test(i)) ? "TRTC" : null;
+    if (other) { const o2 = await ttLoad(other).catch(() => null); if (o2 && o2.rows) recs = recs.concat(ttMetroRecs(o2, ids)); }
+    if (hwL && hwL.length) recs = recs.filter(r => !hwL.includes(r.LineID || lineOf(op, r.StationID)));
+    recs = recs.length ? pickDay(recs, { ...di }) : [];
+    const fix = await destFixer(op), seen = new Set(), dirsOf = {}, list = [];
+    for (const r of recs) {
+      const dest = zh(r.DestinationStationName) || `方向${r.Direction ?? "?"}`, line = r.LineID || lineOf(op, r.StationID), dir = r.Direction ?? null;
+      (dirsOf[dest + "|" + line] = dirsOf[dest + "|" + line] || new Set()).add(dir);
+      for (const x0 of (r.Timetables || [])) {
+        const x = hm(x0.DepartureTime || x0.ArrivalTime); if (!x) continue;
+        const k = [line, dest, dir, x].join("|"); if (seen.has(k)) continue; seen.add(k);
+        const v = toMin(x);
+        list.push(fix({ time: x, t: v < 180 ? v + 1440 : v, dest, destId: r.DestinationStationID || null, line, dir, via: null }));
+      }
+    }
+    const trains = list.filter(t => !(t.destId && ids.includes(t.destId)));
+    for (const t of trains) {
+      if (dirsOf[t.dest + "|" + t.line].size > 1) t.via = op === "KLRT" ? (t.dir === 1 ? "順行" : "逆行") : `方向${t.dir}`;
+      t.side = metroSide(t, ids);
+    }
+    trains.sort((a, b) => a.t - b.t);
+    // 方向分組：同一條線、同一側（往站序大／小）算一組，標示列出最常見的終點
+    const gm = new Map();
+    for (const t of trains) {
+      const k = (t.line || "") + "|" + (t.side ?? ("x" + t.dest)) + "|" + (t.via || "");
+      if (!gm.has(k)) gm.set(k, { key: k, line: t.line, via: t.via, cnt: {}, n: 0 });
+      const g = gm.get(k); g.n++; g.cnt[t.dest] = (g.cnt[t.dest] || 0) + 1; t.g = k;
+    }
+    out.groups = [...gm.values()].map(g => ({ key: g.key, line: g.line, n: g.n, label: "往 " + Object.keys(g.cnt).sort((a, b) => g.cnt[b] - g.cnt[a]).join("／") + (g.via ? `（${g.via}）` : "") }));
+    out.trains = trains;
+  }
+  out.none = !out.trains.length && !out.hw.length;
+  return out;
 }
 // 先停 A、後停 B 的班次，發車時間在 [t0, t1]（絕對時間 ms）
 async function railRides(op, A, B, t0, t1) {
@@ -2612,6 +2706,7 @@ window.dataApi = async (action, p = {}) => {
     case "lineView": return lineView(tdx, p);
     case "trainView": return trainView(tdx, p);
     case "tripView": return tripView(tdx, p);
+    case "stationTT": return stationTT(p || {});
     case "ttMeta": return ttMeta(true);
     case "buildTrips": return buildTrips(p.tt);
     case "ttSystems": return TT_SYSTEMS;
