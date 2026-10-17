@@ -1418,7 +1418,7 @@ function planCard(r, i) {
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
+    ${segBar(r)}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -1574,7 +1574,7 @@ function detailHtml() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead pdh"><h1>${minTxt(r.dur)}</h1><span class="dirbtn"><span>${hmOf(r.start)}–${hmOf(r.end)}</span></span></div>
     <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${P.liveLoading ? '・讀取即時資料中…' : ''}</div></div>
-    <div id="planMapSlot" class="mapslot"></div>${segBar(r)}<div class="tl">`;
+    <div id="planMapSlot" class="mapslot"></div>${segBar(r)}${r.ttNote ? `<div class="sub pnote" style="margin:8px 0 0">${esc(r.ttNote)}</div>` : ''}<div class="tl">`;
   const node = (time, name, sub, cls = '', style = '') => `<div class="tn ${cls}"><span class="tt0">${time ? hmOf(time) : ''}</span><i class="nd" style="${style}"></i><span class="nm">${esc(name || '')}${sub ? `<small>${sub}</small>` : ''}</span></div>`;
   const legs = r.legs;
   if (r.legs[0]?.kind !== 'transit') h += node(r.start, P.o?.name || '起點', '', 'end');   // 起點就是上車的車站：不另列起點
@@ -1592,7 +1592,7 @@ function detailHtml() {
     const label = esc(legLabel(l));
     h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : l.mode === 'tra' && l.trainType ? `・${esc(l.trainType)}` : ''}`, 'on', `border-color:${c}`);
     h += `<div class="tsg tr" style="--c:${c}"><span class="tt0"></span><span class="ln"><i></i></span><span class="bd">
-      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">往 ${esc(l.headsign || l.to.name || '')}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
+      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">${l.headsign ? `往 ${esc(l.headsign)}` : `到 ${esc(l.to.name || '')}`}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
       <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站'}</span>` : ''}</button>
       ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
       </span></div>`;

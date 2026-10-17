@@ -1749,6 +1749,8 @@ const PLAN_MODE = s => { const m = ((s.transport || {}).mode || "") + " " + ((s.
   return /bus/i.test(m) ? "bus" : /lrt|light/i.test(m) ? "lrt" : /thsr|hsr|high/i.test(m) ? "thsr" : /mrt|metro|subway/i.test(m) ? "mrt" : /tra|rail|train/i.test(m) ? "tra" : "bus"; };
 const pPlace = (p, time) => { const pl = (p && p.place) || {}, loc = pl.location || {}; return { name: pl.name || null, type: pl.type || null, lat: loc.lat ?? null, lon: loc.lng ?? null, time: (p && p.time) || null }; };
 const tms = s => s ? Date.parse(s + "+08:00") : null;
+// TDX MaaS 的輕軌路段 headsign 常是字串 "nan"（資料缺值），當成沒有終點
+const planHead = h => { h = String(h ?? "").trim(); return /^(nan|null|undefined|none|-)?$/i.test(h) ? "" : h; };
 // 整理成前端好用的格式；計程車／開車路段一律換成步行（標「約」），沒開 YouBike 時騎車路段也換成步行
 function planClean(routes, yb) {
   const out = [];
@@ -1773,7 +1775,7 @@ function planClean(routes, yb) {
       }
       if (kind === "wait") { legs.push({ kind, from, to, dur }); continue; }
       const t = s.transport || {};
-      legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: t.headsign || "", color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
+      legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: planHead(t.headsign), color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
         number: t.number || "", agency: (s.agency && s.agency.agency_id) || "", agencyName: (s.agency && s.agency.name) || "", from, to, dur,
         stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}) });
     }
@@ -1850,6 +1852,7 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
     const ok = out.filter(r => !gone(r)), okShape = new Set(ok.map(planShape));
     out = when === "dep" ? ok : ok.concat(out.filter(r => gone(r) && !okShape.has(planShape(r))).map(r => ({ ...r, missed: true })));
   }
+  out = await planTtFix(out);
   if (so || sd) {
     const note = so && sd ? `TDX 還沒有${o.name}和${d.name}站的資料，改從相鄰的${so.name}站規劃到${sd.name}站` : so ? `TDX 還沒有${o.name}站的資料，改從相鄰的${so.name}站（同為${so.line}）起算` : `TDX 還沒有${d.name}站的資料，改規劃到相鄰的${sd.name}站（同為${sd.line}）`;
     out = out.map(r => ({ ...r, note }));
@@ -1869,6 +1872,67 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
     const k4 = mt ? "m|" + mt.mode + mt.name + "@" + (mt.to.time || "").slice(0, 16) + "|" + Math.round(r.end / 120000) : k1;
     if (seen.has(k1) || seen.has(k2) || seen.has(k3) || seen.has(k4)) return false; [k1, k2, k3, k4].forEach(k => seen.add(k)); return true; }).slice(0, 8);
 }
+// 輕軌路段對時刻表（v2.16.2）：TDX MaaS 的淡海輕軌常給時刻表上沒有的班次（例如週六 23:15 紅樹林發車，實際是 23:10／23:17），
+// 也沒有終點（headsign "nan"）。用上車站＋下車站的官方站別時刻表找「同一終點、先停上車站再停下車站」的班次：
+// 規劃的班次在時刻表上（±1分）就只補終點；不在就改搭趕得上的下一班，前後的等車段吸收時間差，吸收不了就不改、只加註記。
+// 只處理12小時內出發的路段（時刻表是依今天的營運日排的）。
+async function planTtFix(routes) {
+  const now = Date.now(), memo = new Map();
+  const ttOf = async (leg, end) => {
+    const g = await planRailStation(leg, end).catch(() => null); if (!g || !g.ids || !g.ids.length) return null;
+    const k = g.op + "|" + g.ids.join(",");
+    if (!memo.has(k)) memo.set(k, metroTimetable(tdx, g, encodeURIComponent(g.ids.map(i => `StationID eq '${i}'`).join(" or ")), true)
+      .then(tt => ({ g, tt: (tt || []).map(t => ({ ...t, abs: Math.floor(now / 60000) * 60000 + t.eta * 60000 })) })).catch(() => null));
+    return memo.get(k);
+  };
+  const out = [];
+  for (const r0 of routes) {
+    let r = r0;
+    for (let i = 0; i < r.legs.length; i++) {
+      const leg = r.legs[i]; if (leg.kind !== "transit" || leg.mode !== "lrt") continue;
+      const p0 = tms(leg.from.time), a0 = tms(leg.to.time); if (!p0 || !a0 || p0 < now - 5 * 60000 || p0 > now + 12 * 3600000) continue;
+      const [A, B] = await Promise.all([ttOf(leg, "from"), ttOf(leg, "to")]);
+      if (!A || !B || !A.tt.length) continue;
+      const d0 = Math.max(1, Math.round((a0 - p0) / 60000));
+      // 每一班上車站的車，找它到下車站的時間（同終點、同線、同方向／順逆行，晚1～d0+6分）；下車站是終點站時直接用行車時間
+      const atTo = a => { if (a.destId && B.g.ids.includes(a.destId)) return a.abs + d0 * 60000;
+        const b = B.tt.find(b => b.dest === a.dest && b.line === a.line && (b.via || null) === (a.via || null) && b.abs - a.abs >= 60000 && b.abs - a.abs <= (d0 + 6) * 60000);
+        return b ? b.abs : null; };
+      const V = A.tt.filter(a => !(a.destId && A.g.ids.includes(a.destId))).map(a => ({ a, arr: atTo(a) })).filter(x => x.arr != null).sort((x, y) => x.a.abs - y.a.abs);
+      if (!V.length) continue;
+      const same = V.find(x => Math.abs(x.a.abs - p0) <= 60000);
+      const legs = r.legs.slice();
+      if (same) { if (!leg.headsign) legs[i] = { ...leg, headsign: same.a.dest }; r = { ...r, legs }; continue; }
+      const prev = legs[i - 1], hasWait = prev && prev.kind === "wait", firstTr = !legs.slice(0, i).some(l => l.kind === "transit");
+      const ready = hasWait ? p0 - prev.dur * 1000 : p0;
+      // 從別的車轉乘過來：時刻表發車時間要比走到月台的時間晚至少1分鐘；第一段車照 TDX 的步行時間（可以早點出門）
+      const pick = V.find(x => x.a.abs >= ready + (firstTr ? 0 : 60000));
+      if (!pick) { r = { ...r, ttNote: addNote(r.ttNote, `依${leg.name || "輕軌"}時刻表，這段可能已沒有趕得上的班次`) }; continue; }
+      const nd = pick.a.abs, na = pick.arr, sh = nd - p0, ash = na - a0;
+      const mv = (l, d) => ({ ...l, from: { ...l.from, time: isoTpe(tms(l.from.time) + d) }, to: { ...l.to, time: isoTpe(tms(l.to.time) + d) } });
+      let start = r.start, end = r.end;
+      // 上車前：有等車段就調整等車時間；第一段車且沒有等車就把出發（前面的步行）一起挪
+      if (hasWait) legs[i - 1] = { ...prev, dur: Math.max(0, prev.dur + sh / 1000), to: { ...prev.to, time: isoTpe(nd) } };
+      else if (firstTr) { for (let k = 0; k < i; k++) legs[k] = mv(legs[k], sh); start += sh; }
+      else if (sh > 0) legs.splice(i, 0, { kind: "wait", from: { ...leg.from, time: leg.from.time }, to: { ...leg.from, time: isoTpe(nd) }, dur: sh / 1000 });
+      const j = legs.indexOf(leg);
+      legs[j] = { ...leg, headsign: leg.headsign || pick.a.dest, from: { ...leg.from, time: isoTpe(nd) }, to: { ...leg.to, time: isoTpe(na) }, dur: (na - nd) / 1000, stops: [], ttFix: { from: leg.from.time, to: leg.to.time } };
+      // 下車後：到下一個等車段前都順延，等車段吸收；吸收不了（趕不上下一段）就整條不改，只加註記
+      const w = legs.findIndex((l, k) => k > j && l.kind === "wait"), nextTr = legs.findIndex((l, k) => k > j && l.kind === "transit");
+      let ok = true;
+      if (nextTr >= 0 && (w < 0 || w > nextTr)) ok = ash <= 0;
+      else if (w >= 0) { const nw = legs[w].dur - ash / 1000; if (nw < 0) ok = false; else { for (let k = j + 1; k < w; k++) legs[k] = mv(legs[k], ash); legs[w] = { ...legs[w], dur: nw, from: { ...legs[w].from, time: isoTpe(tms(legs[w].from.time) + ash) } }; } }
+      else { for (let k = j + 1; k < legs.length; k++) legs[k] = mv(legs[k], ash); end += ash; }
+      if (!ok) { r = { ...r, ttNote: addNote(r.ttNote, `依${leg.name || "輕軌"}時刻表，${hmTpe(p0)} 這班不存在，改搭下一班會趕不上後面的車`) }; continue; }
+      r = { ...r, legs, start, end, dur: Math.round((end - start) / 60000), ttNote: addNote(r.ttNote, `${leg.name || "輕軌"}已依官方時刻表校正：TDX 給的 ${hmTpe(p0)} 班次不在時刻表上，改搭 ${hmTpe(nd)}`) };
+      i = j;
+    }
+    out.push(r);
+  }
+  return out;
+}
+const addNote = (a, b) => a ? a + "；" + b.replace(/^淡海輕軌已依官方時刻表校正：|^.*?已依官方時刻表校正：/, "") : b;
+const hmTpe = ms => isoTpe(ms).slice(11, 16);
 // 路線「形狀」：搭哪些車、在哪上下車（不看時間），用來判斷是不是同一種走法
 const planShape = r => r.legs.filter(l => l.kind === "transit").map(l => l.name + "@" + l.from.name + ">" + l.to.name).join("|");
 const isoTpe = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19);
@@ -1901,7 +1965,9 @@ async function planRailStation(leg, end) {
   const kindOk = g => leg.mode === "tra" ? g.op === "TRA" : leg.mode === "thsr" ? g.op === "THSR" : g.kind === "metro";
   const groups = nearestRail(all, p.lat, p.lon, { all: true }).filter(g => g.dist <= 800 && kindOk(g));
   const pref = AG_OP[(leg.agency || "").toUpperCase()] || [];
-  const score = g => (nameHit(g.name, p.name) ? 0 : 2) + (pref.length && !pref.includes(g.op) ? 1 : 0) + g.dist / 1000;
+  // 輕軌路段要對到輕軌系統的站（紅樹林同時有北捷 R28 和淡海輕軌 V01，MaaS 的 agency 兩者都寫 NTMC）；捷運路段反之
+  const sysPen = g => leg.mode === "lrt" ? (/LRT$/.test(g.op) ? 0 : 1.5) : leg.mode === "mrt" ? (/LRT$/.test(g.op) ? 1.5 : 0) : 0;
+  const score = g => (nameHit(g.name, p.name) ? 0 : 2) + (pref.length && !pref.includes(g.op) ? 1 : 0) + sysPen(g) + g.dist / 1000;
   const best = groups.filter(g => nameHit(g.name, p.name) || g.dist <= 200).sort((a, b) => score(a) - score(b))[0];
   return best || null;
 }
