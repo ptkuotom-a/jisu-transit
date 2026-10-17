@@ -150,6 +150,9 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .rhead h1{margin:0;font-size:52px;line-height:1;font-weight:900;letter-spacing:-1.5px;color:var(--lime)}
 .dirbtn{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:10px 16px;font-weight:700;font-size:15px;max-width:60%}
 .dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rhead h1.trip{white-space:nowrap;flex:none;display:flex;align-items:center;gap:6px}
+.rhead .dirbtn.trip{min-width:0;flex:0 1 auto}
+.page.under{transform:none;z-index:29;transition:none;pointer-events:none}
 .dirbtn svg{width:18px;height:18px;color:var(--lime);flex:none}
 .rmeta{color:var(--muted);font-size:14px;margin-top:10px}
 .line{position:relative;margin-top:8px}
@@ -806,7 +809,7 @@ function railTabsMetro(R, D, G) {
     const sel = tabs.find(t => t.key === S.railTab[R.name + l])?.key || tabs[0].key, T = tabs.find(t => t.key === sel);
     const alts = tabs.map(t => ({ label:t.label, line:l, trains: (t.live.length ? t.live : t.tt.slice(0, 20)) }));
     const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, g: alts[tabs.indexOf(T)], alts });
-    let h = `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span><span style="flex:1"></span><button class="lstops" data-act="lineOpen" data-i="${li}">停靠站 ${I.chev}</button></div>` + segTabs(R.name + l, tabs, sel);
+    let h = `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` + segTabs(R.name + l, tabs, sel);
     // 即時併入時刻表：每班即時列車對應到同終點、時間最接近的表定班次
     const rows = T.tt.map(t => ({ ...t })), used = new Set();
     for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
@@ -834,18 +837,19 @@ function railTabsMetro(R, D, G) {
           return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div><div class="tt">${sub}</div></span>${right}</div></button>`;
         }).join('') + `</div>` + moreBtn(id, n, show);
     } else h += `<div class="note">這個方向目前沒有班次資料。</div>`;
-    return h;
+    return `<div class="lblk">${h}</div>`;
   }).join('');
 }
 function railTabsTrain(R, D, G) {
   const tabs = G.map(g => ({ key:g.label, label:g.label, g }));
   const sel = tabs.find(t => t.key === S.railTab[R.name])?.key || tabs[0].key, T = tabs.find(t => t.key === sel);
   const id = R.name + sel, all = S.ttAll[id], n = T.g.trains.length, show = all ? n : 15;
-  return segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}<span>今日剩 ${n} 班</span></div><div class="board">` +
-    T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('') + `</div>` + moreBtn(id, n, show);
+  return `<div class="lblk">` + segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}<span>今日剩 ${n} 班</span></div><div class="board">` +
+    T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('') + `</div>` + moreBtn(id, n, show) + `</div>`;
 }
-function renderRail() {
-  const R = S.rail; if (!R || S.page !== 'rail') return;
+function renderRail() { if (S.rail && S.page === 'rail') $('#routePage').innerHTML = railHtml(); }
+function railHtml() {
+  const R = S.rail; if (!R) return '';
   const D = S.railData;
   const big = R.name.length > 6 ? 'font-size:38px' : '';
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
@@ -861,7 +865,7 @@ function renderRail() {
     else if ((D.kind === 'tra' || D.kind === 'thsr') && G.length) h += railTabsTrain(R, D, G);
     else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length} 班</span></div>` : ''}<div class="board">${g.trains.map(t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
   }
-  $('#routePage').innerHTML = h + '</div>';
+  return h + '</div>';
 }
 
 /* ---------- 捷運路線／火車車次 停靠站頁 ---------- */
@@ -892,7 +896,7 @@ function renderLine() {
   const q = L.req, D = L.data, R = S.rail || {};
   const isLine = q.kind === 'line' || q.kind === 'trip';
   const title = isLine ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no} 次`;
-  const sub = q.kind === 'trip' ? `${q.label}・${R.name || ''} ${q.time}` : q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
+  const sub = q.kind === 'trip' ? `往 ${(D && D.dest) || q.dest || ''}` : q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
   const canSwap = q.kind === 'line' && q.alts && q.alts.length > 1;
   let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'trip' && D.official
     ? `<b style="color:var(--lime)">官方時刻</b>：由各站時刻表串成這一班車${D.nEst ? `；標 ≈ 的 ${D.nEst} 站為推估` : ''}${D.delay ? `；即時晚約 ${D.delay} 分（右側 +${D.delay}）` : q.live ? '；本站為即時到站' : ''}`
@@ -902,8 +906,8 @@ function renderLine() {
     ? `${D.stops.length} 站，目前在 ${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
     : `${D.stops.length} 站${q.kind === 'tra' ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚 ${D.delay} 分` : '；目前準點') : ''}`;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
-    <div class="rhead"><h1 style="font-size:${q.kind === 'trip' ? 28 : title.length > 4 ? 30 : 38}px">${isLine ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
-    ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn"><span>${esc(sub)}</span></span>` : ''}</div>
+    <div class="rhead"><h1 class="${q.kind === 'trip' ? 'trip' : ''}" style="font-size:${q.kind === 'trip' ? (title.length > 4 ? 22 : 26) : title.length > 4 ? 30 : 38}px">${isLine ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
+    ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn ${q.kind === 'trip' ? 'trip' : ''}"><span>${esc(sub)}</span></span>` : ''}</div>
     <div class="rmeta">${meta}</div></div>`;
   if (!D) h += L.err ? '' : skel(5);
   else h += `<div class="line">` + D.stops.map(s => {
@@ -1103,7 +1107,10 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   sh.addEventListener('touchend', end); sh.addEventListener('touchcancel', end);
 
   const pg = $('#routePage'), dim = $('#pageDim');
-  let x0 = 0, yy0 = 0, tt = 0, dx = 0, st = 0;   // st: 0 無 1 判斷中 2 拖曳中
+  // 滑動規則：從左邊緣（24px 內）往右滑＝返回上一頁；在車站頁的方向分頁區塊上左右滑＝切換方向（往左＝下一個、往右＝上一個），
+  // 已在第一個方向時往右滑＝返回；其他地方往右滑＝返回
+  let x0 = 0, yy0 = 0, tt = 0, dx = 0, st = 0, mode = '', blk = null, tabBtns = [], tabIdx = 0, under = null;   // st: 0 無 1 判斷中 2 拖曳中
+  const dropUnder = () => { if (under) { under.remove(); under = null; } };
   pg.addEventListener('touchstart', e => {
     st = 0;
     if (!pg.classList.contains('open') || e.touches.length !== 1) return;
@@ -1111,34 +1118,63 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     for (let el = e.target; el && el !== pg; el = el.parentElement)
       if (el.scrollWidth > el.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(el).overflowX)) return;   // 水平捲動區交給捲動
     const t = e.touches[0];
-    st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0;
+    st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0; mode = '';
+    blk = S.page === 'rail' && x0 > 24 ? e.target.closest('.lblk') : null;
   }, { passive:true });
   pg.addEventListener('touchmove', e => {
     if (!st) return;
     const t = e.touches[0], ddx = t.clientX - x0, ddy = t.clientY - yy0;
     if (st === 1) {
       if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
-      if (ddx <= 0 || Math.abs(ddx) < Math.abs(ddy) * 1.3) { st = 0; return; }   // 垂直捲動或往左：交給瀏覽器
-      st = 2; pg.classList.add('drag'); dim.style.transition = 'none';
+      if (Math.abs(ddx) < Math.abs(ddy) * 1.3) { st = 0; return; }   // 垂直捲動：交給瀏覽器
+      mode = 'back';
+      if (blk) {
+        tabBtns = [...blk.querySelectorAll('.seg button')]; tabIdx = tabBtns.findIndex(b => b.classList.contains('on'));
+        if (tabBtns.length > 1 && ((ddx < 0 && tabIdx < tabBtns.length - 1) || (ddx > 0 && tabIdx > 0))) mode = 'tab';
+      }
+      if (mode === 'back' && ddx <= 0) { st = 0; return; }
+      st = 2;
+      if (mode === 'back') {
+        pg.classList.add('drag'); dim.style.transition = 'none';
+        if (S.page === 'line' && S.rail) {   // 從停靠站頁返回：底下先墊好車站頁，避免露出第一頁
+          under = document.createElement('section'); under.className = 'page under'; under.innerHTML = railHtml();
+          pg.before(under); under.scrollTop = S.railScroll || 0;
+        }
+      }
     }
     e.preventDefault();
+    if (mode === 'tab') { dx = ddx; for (const el of blk.querySelectorAll('.board,.tgrp,.note')) { el.style.transition = 'none'; el.style.transform = `translateX(${dx * 0.45}px)`; el.style.opacity = String(1 - Math.min(0.5, Math.abs(dx) / innerWidth)); } return; }
     dx = Math.max(0, ddx);
     pg.style.transform = `translateX(${dx}px)`;
     dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
   }, { passive:false });
   const pend = () => {
     if (st !== 2) { st = 0; return; }
-    st = 0; swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
-
-    const v = dx / Math.max(1, Date.now() - tt), dur = reduceMotion() ? 0 : 220;
+    st = 0;
+    const v = Math.abs(dx) / Math.max(1, Date.now() - tt), dur = reduceMotion() ? 0 : 220;
+    if (mode === 'tab') {
+      const els = [...blk.querySelectorAll('.board,.tgrp,.note')];
+      const go = Math.abs(dx) > 60 || (v > 0.4 && Math.abs(dx) > 30);
+      const btn = go ? tabBtns[tabIdx + (dx < 0 ? 1 : -1)] : null;
+      for (const el of els) { el.style.transition = `transform ${dur}ms ease, opacity ${dur}ms ease`; el.style.transform = ''; el.style.opacity = ''; }
+      if (btn) btn.click();          // 重新繪製方向分頁
+      swallowClick = Date.now() + 500;
+      return;
+    }
+    swallowClick = Date.now() + 700;   // 拖曳結束後 iOS 可能補送一次 click，會把頁面又打開
     pg.classList.remove('drag');
     dim.style.transition = `opacity ${dur}ms ease`; dim.style.opacity = '0';
     if (dx > innerWidth / 3 || (v > 0.5 && dx > 40)) {
       pg.style.transition = `transform ${dur}ms ease`; pg.style.transform = 'translateX(100%)';
-      setTimeout(() => { closeRoute(); pg.style.transition = ''; pg.style.transform = ''; }, dur);
+      setTimeout(() => {
+        const toRail = S.page === 'line' && S.rail;
+        closeRoute();
+        if (toRail) { pg.style.transition = 'none'; pg.style.transform = ''; pg.offsetWidth; pg.style.transition = ''; requestAnimationFrame(dropUnder); }
+        else { pg.style.transition = ''; pg.style.transform = ''; dropUnder(); }
+      }, dur);
     } else {
       pg.style.transition = `transform ${dur}ms ease`; pg.style.transform = '';
-      setTimeout(() => { pg.style.transition = ''; }, dur);
+      setTimeout(() => { pg.style.transition = ''; dropUnder(); }, dur);
     }
   };
   pg.addEventListener('touchend', pend); pg.addEventListener('touchcancel', pend);

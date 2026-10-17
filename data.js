@@ -1181,9 +1181,9 @@ async function tripOfficial(p) {
     if (best && best.d === 0) break;
   }
   if (!best) return null;
-  const times = {}; let first = null;
-  for (const part of best.tr[1].split(" ")) { const est = part[0] === "~", [si, hh] = (est ? part.slice(1) : part).split("."); const id = best.g.st[si]; if (!first) first = id; times[id] = { time: hh.slice(0, 2) + ":" + hh.slice(2), est }; }
-  return { times, first, sure: !!best.tr[2] };
+  const times = {}, seq = []; let first = null;
+  for (const part of best.tr[1].split(" ")) { const est = part[0] === "~", [si, hh] = (est ? part.slice(1) : part).split("."); const id = best.g.st[si]; if (!first) first = id; times[id] = { time: hh.slice(0, 2) + ":" + hh.slice(2), est }; seq.push(id); }
+  return { times, seq, first, sure: !!best.tr[2], dest: best.g.dn };
 }
 async function tripView(get, p) {
   const lv = await lineView(get, { ...p, noLive: true });
@@ -1199,6 +1199,14 @@ async function tripView(get, p) {
   // 有串好的官方車次（中捷除外）：各站用官方時刻；不在這班車行經範圍的站不給時間；其餘站推估並標 ≈
   const off = p.op !== "TMRT" && !p.est ? await tripOfficial(p).catch(() => null) : null;
   if (off && off.sure) {
+    // 直接用官方車次的站序（支線、短程車都正確，例如淡海往漁人碼頭）；起站之前的站不列
+    const nm = {}; for (const x of st) nm[x.id] = x.name;
+    try { for (const r of await loadRailStations()) if (r.op === p.op || (r.ids || []).length) for (const id of r.ids || [r.id]) if (!nm[id]) nm[id] = r.name; } catch (e) {}
+    const here = new Set(p.ids || []);
+    const stops = off.seq.map(id => ({ id, name: nm[id] || id, here: here.has(id), time: off.times[id].time, est: off.times[id].est }));
+    return { ...base, official: true, dest: off.dest, nEst: stops.filter(x => x.est).length, stops };
+  }
+  if (off && off.sure) {
     const fi = st.findIndex(x => x.id === off.first);
     let nEst = 0;
     const stops = st.map((x, i) => {
@@ -1207,7 +1215,7 @@ async function tripView(get, p) {
       if (fi >= 0 && i < fi) return { ...x, time: "", before: true };
       nEst++; return { ...x, time: clock(T[i]), est: true };
     });
-    return { ...base, official: true, nEst, stops };
+    return { ...base, official: true, dest: off.dest, nEst, stops };
   }
   return { ...base, stops: st.map((x, i) => ({ ...x, time: clock(T[i]) })) };
 }
