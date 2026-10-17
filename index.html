@@ -680,7 +680,7 @@ async function ttRun() {
     try {
       const r = await window.dataApi('ttRefresh', { op, pass, onStep: n => { TT.st[op] = { c:'run', t:`下載中…已呼叫 TDX ${n} 次` }; render(); } });
       total += r.calls || 0; ok++;
-      TT.st[op] = { c:'ok', t:`完成：${op === 'HOLIDAY' ? '' : `用了 ${r.calls} 次 TDX，`}${r.count} ${op === 'HOLIDAY' ? '天假日' : '筆'}，${fmtKB(r.bytes || 0)}` };
+      TT.st[op] = { c:'ok', t:`完成：${op === 'HOLIDAY' ? '' : `用了 ${r.calls} 次 TDX，`}${r.count} ${op === 'HOLIDAY' ? '天假日' : '筆'}，${fmtKB(r.bytes || 0)}${r.trips ? (r.trips.error ? `；串車次失敗：${r.trips.error}` : `；串成 ${r.trips.count} 班車（${r.trips.rates}）`) : ''}` };
       TT.sel.delete(op);
     } catch (e) {
       TT.st[op] = { c:'bad', t:'失敗：' + (e.message || e) };
@@ -879,7 +879,7 @@ async function loadLine(scroll) {
   const L = S.line; if (!L) return;
   const q = L.req;
   try {
-    L.data = q.kind === 'trip' ? await api('tripView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, t:q.t, delay:q.delay })
+    L.data = q.kind === 'trip' ? await api('tripView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, t:q.t, delay:q.delay, est:q.est })
       : q.kind === 'line' ? await api('lineView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, curEta:q.curEta, label:q.label })
       : await api('trainView', { kind:q.kind, no:q.no, ids:q.ids }); L.err = null;
   } catch (e) { L.err = e.message; }
@@ -894,7 +894,9 @@ function renderLine() {
   const title = isLine ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no} 次`;
   const sub = q.kind === 'trip' ? `${q.label}・${R.name || ''} ${q.time}` : q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
   const canSwap = q.kind === 'line' && q.alts && q.alts.length > 1;
-  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'trip'
+  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'trip' && D.official
+    ? `<b style="color:var(--lime)">官方時刻</b>：由各站時刻表串成這一班車${D.nEst ? `；標 ≈ 的 ${D.nEst} 站為推估` : ''}${D.delay ? `；即時晚約 ${D.delay} 分（右側 +${D.delay}）` : q.live ? '；本站為即時到站' : ''}`
+    : q.kind === 'trip'
     ? `${D.stops.length} 站；${q.est ? '依班距估算發車時間，' : ''}各站時間${D.noS2S ? '以每站約 2 分鐘估算' : '依 TDX 站間行駛時間推算'}${D.delay ? `，已含即時晚約 ${D.delay} 分` : q.live ? '，本站為即時到站' : ''}`
     : q.kind === 'line'
     ? `${D.stops.length} 站，目前在 ${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
@@ -906,7 +908,7 @@ function renderLine() {
   if (!D) h += L.err ? '' : skel(5);
   else h += `<div class="line">` + D.stops.map(s => {
     let right = '';
-    if (q.kind === 'trip') right = `<span class="eta ${s.here ? 'soon' : ''}">${esc(s.time)}</span>`;
+    if (q.kind === 'trip') right = s.before ? '' : `<span class="eta ${s.here ? 'soon' : ''}">${s.est && D.official ? '≈' : ''}${esc(s.time)}${D.official && D.delay > 0 ? `<small style="display:block;font-size:11px;color:var(--warn)">+${D.delay}</small>` : ''}</span>`;
     else if (q.kind === 'line') { const e = s.eta == null ? null : s.eta <= 0 ? { t:'進站中', k:'hot' } : s.eta <= 1 ? { t:'將到站', k:'hot' } : { t:`${s.eta} 分`, k: s.eta <= 3 ? 'soon' : '' }; right = e ? `<span class="eta ${e.k}">${e.t}</span>` : ''; }
     else { const t = s.dep || s.arr; right = t ? `<span class="eta ${s.here ? 'soon' : ''}">${esc(t)}${q.kind === 'tra' && D.delay > 0 && !s.past ? `<small style="display:block;font-size:11px;color:var(--warn)">+${D.delay}</small>` : ''}</span>` : ''; }
     return `<div class="st ${s.here ? 'here' : ''} ${s.at ? 'bus' : ''} ${s.past ? 'past' : ''}"><span class="dot">${s.at ? I.train : ''}</span><span class="sn">${esc(s.name)}${s.at ? '<small>列車目前位置</small>' : ''}</span>${right}</div>`;

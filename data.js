@@ -761,7 +761,181 @@ async function ttRefresh(op, pass, onStep) {
   const r = await fetch(`${proxy}/tt/data/${op}`, { method: "PUT", headers: { "x-admin": pass, "content-type": "application/json", "x-tt-calls": String(calls), "x-tt-version": version, "x-tt-count": String(count) }, body });
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || "上傳失敗 " + r.status);
   ttMetaP = null;
-  return { calls, bytes: body.length, count, version, ...j };
+  // 捷運／輕軌：同時串出每一班車的官方時刻，存成 TRIPS_系統（不用再呼叫 TDX）
+  let trips = null;
+  if (out.kind === "metro") {
+    try {
+      const T = buildTrips(out), tb = JSON.stringify(T);
+      const rates = Object.entries(T.stats).map(([l, v]) => `${l} ${v.rate}%`).join("、");
+      const r2 = await fetch(`${proxy}/tt/data/TRIPS_${op}`, { method: "PUT", headers: { "x-admin": pass, "content-type": "application/json", "x-tt-calls": "0", "x-tt-version": version, "x-tt-count": String(T.trips.length) }, body: tb });
+      trips = r2.ok ? { count: T.trips.length, rates } : { error: "車次上傳失敗 " + r2.status };
+    } catch (e) { trips = { error: String(e.message || e) }; }
+  }
+  return { calls, bytes: body.length, count, version, trips, ...j };
+}
+// ---------- 由各站時刻表串出每一班車的官方時刻（更新時刻表時在瀏覽器計算，存到 KV 的 TRIPS_系統） ----------
+// 方法：同一線、同方向、同終點、同日別的各站發車時間，依站序把第 i 站的每個發車接到第 i+1 站「時間差≈站間行駛時間」的那一班（不超車、貪婪配對）。
+// 直達車（跳站）在下一站接不到時，往後幾站找；支線、短程車因為以終點分組，自然分開；配不到的就退回推估。
+const TRIP_RULES = { "TRTC|R": [["leaf", "R22A", "R22"]], "TRTC|G": [["leaf", "G03A", "G03"]], "TRTC|O": [["branch", "O50", "O12"]], "NTDLRT|V": [["branch", "V28", "V09"]] };
+const TRIP_LOOP = { "KLRT|C": true };
+const TRIP_EXPRESS = { "TYMC|A": true };   // 有直達車：最後幾站接不上時視為直達終點（到站時間推估）
+const natKey = id => { const m = /^([A-Z]+)(\d+)([A-Za-z]*)$/.exec(id) || [0, id, 0, ""]; return [m[1], +m[2], (m[3] || "").toUpperCase()]; };
+const natCmp = (a, b) => { const x = natKey(a), y = natKey(b); return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : (x[1] - y[1]) || (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0); };
+const t2m = x => { const m = (+x.slice(0, 2)) * 60 + (+x.slice(2, 4)); return m < 180 ? m + 1440 : m; };
+const m2t = m => { m = ((Math.round(m) % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, "0") + String(m % 60).padStart(2, "0"); };
+// 站間行駛時間：試 lo～hi 分，取「不超車貪婪配對」配到最多的那個（同分取較小，避免把班距倍數當成行駛時間）
+function tripGreedy(A, B, T, tol, claimed) {
+  const out = new Array(A.length).fill(-1); let last = -1, n = 0, amb = 0;
+  for (let i = 0; i < A.length; i++) {
+    let bj = -1, bd = 9, c = 0;
+    for (let j = last + 1; j < B.length && B[j] <= A[i] + T + tol; j++) {
+      if (claimed && claimed[j]) continue;
+      const d = Math.abs(B[j] - A[i] - T); if (d <= tol) { c++; if (d < bd) { bd = d; bj = j; } }
+    }
+    if (bj >= 0) { out[i] = bj; last = bj; n++; if (c > 1) amb++; }
+  }
+  return { out, n, amb };
+}
+function tripMode(A, B, lo, hi, claimed) {
+  let best = null;
+  for (let T = lo; T <= hi; T++) { const r = tripGreedy(A, B, T, 1, claimed); if (!best || r.n > best.n) best = { T, n: r.n }; }
+  return best && best.n ? best : null;
+}
+function buildTrips(tt) {
+  const byLine = {}; for (const r of tt.rows) (byLine[r[1]] = byLine[r[1]] || []).push(r);
+  const groups = [], trips = [], stats = {}, seg = {};
+  const lineData = [];
+  for (const [line, rows] of Object.entries(byLine)) {
+    const key = tt.op + "|" + line, loop = !!TRIP_LOOP[key];
+    const gl = {}; for (const r of rows) (gl[r[2] + "|" + r[3]] = gl[r[2] + "|" + r[3]] || []).push(r[0]);
+    let best = []; for (const l of Object.values(gl)) { const u = [...new Set(l)]; if (u.length > best.length) best = u; }
+    const order = best.slice(), all = new Set(); for (const r of rows) { all.add(r[0]); if (r[3]) all.add(r[3]); }
+    for (const id of [...all].filter(x => !order.includes(x)).sort(natCmp)) { let i = order.findIndex(x => natCmp(x, id) > 0); if (i < 0) i = order.length; order.splice(i, 0, id); }
+    const adj = {}, add = (a, b) => { (adj[a] = adj[a] || new Set()).add(b); (adj[b] = adj[b] || new Set()).add(a); }, del = (a, b) => { adj[a] && adj[a].delete(b); adj[b] && adj[b].delete(a); };
+    for (let i = 1; i < order.length; i++) add(order[i - 1], order[i]);
+    for (const [type, b, a] of TRIP_RULES[key] || []) {
+      const i = order.indexOf(b); if (i < 0) continue;
+      if (type === "leaf") { const nb = [...(adj[b] || [])]; for (const x of nb) del(b, x); if (nb.length === 2) add(nb[0], nb[1]); add(a, b); }
+      else { if (i > 0) del(order[i - 1], b); add(a, b); }
+    }
+    if (loop) add(order[0], order[order.length - 1]);
+    const gs = {}; for (const r of rows) (gs[r[2] + "|" + r[3] + "|" + r[5]] = gs[r[2] + "|" + r[3] + "|" + r[5]] || []).push(r);
+    lineData.push({ line, key, loop, order, adj, gs });
+  }
+  // 第一輪：算各站間行駛時間（給終點到站時間用）
+  const build = [];
+  for (const L of lineData) for (const grows of Object.values(L.gs)) {
+    const [dir, de, sdi] = [grows[0][2], grows[0][3], grows[0][5]], dn = grows[0][4];
+    const st = {}; for (const r of grows) { const a = st[r[0]] = st[r[0]] || []; for (const x of r[6] ? r[6].split(" ") : []) a.push(t2m(x)); }
+    for (const a of Object.values(st)) a.sort((x, y) => x - y);
+    const next = {};
+    if (L.loop) {
+      const o = L.order, n = o.length, sc = f => { let c = 0; for (let i = 0; i < n; i++) { const a = st[o[i]], b = st[o[(i + f + n) % n]]; if (a && b) { const m = tripMode(a, b, 1, 6); if (m) c += m.n; } } return c; };
+      const f = sc(1) >= sc(-1) ? 1 : -1;
+      for (let i = 0; i < n; i++) next[o[i]] = o[(i + f + n) % n];
+    } else {
+      const dist = { [de]: 0 }, q = [de];
+      while (q.length) { const x = q.shift(); for (const y of L.adj[x] || []) if (dist[y] == null) { dist[y] = dist[x] + 1; q.push(y); } }
+      for (const s of Object.keys(st)) for (const y of L.adj[s] || []) if (dist[y] === dist[s] - 1) next[s] = y;
+    }
+    build.push({ L, dir, de, dn, sdi, st, next });
+  }
+  for (const B of build) for (const [s, a] of Object.entries(B.st)) {
+    const n = B.next[s]; if (!n || n === B.de || !B.st[n]) continue;
+    const m = tripMode(a, B.st[n], 1, 12); if (m && m.n >= 3) { (seg[s + "|" + n] = seg[s + "|" + n] || []).push(m.T); }
+  }
+  const segT = (a, b) => { const v = seg[a + "|" + b] || seg[b + "|" + a]; return v ? v.sort((x, y) => x - y)[v.length >> 1] : 2; };
+  // 第二輪：配對、串車次
+  for (const B of build) {
+    const { L, st, next, de } = B, S = Object.keys(st);
+    const ss = stats[L.line] = stats[L.line] || { need: 0, ok: 0, skip: 0, ambig: 0, trips: 0, groups: 0, miss: [] };
+    ss.groups++;
+    const link = {}, claimed = {};
+    for (const s of S) { link[s] = new Array(st[s].length).fill(null); claimed[s] = new Array(st[s].length).fill(false); }
+    const path = s => { const p = []; let x = next[s], g = 0; while (x && x !== de && g++ < 60) { p.push(x); x = next[x]; } return p; };
+    // 依站序處理（離終點遠的先）
+    const pend = [];
+    for (const s of S) {
+      const p = path(s); if (!next[s] || (next[s] === de && (L.loop || !st[de]))) continue;
+      const A = st[s];
+      ss.need += A.length;
+      const n = next[s], Bt = st[n];
+      const m = Bt ? tripMode(A, Bt, 1, 12) : null;
+      if (m) {
+        const g = tripGreedy(A, Bt, m.T, 1, claimed[n]);
+        g.out.forEach((j, i) => { if (j >= 0) { link[s][i] = [n, j]; claimed[n][j] = true; } });
+        ss.ok += g.n; ss.ambig += g.amb;
+        // 第二輪：剩下的放寬到 ±2 分（尖峰停站較久），仍要維持不超車
+        const left = A.map((t, i) => link[s][i] ? -1 : i).filter(i => i >= 0);
+        for (const i of left) {
+          let lo = -1, hi = Bt.length;
+          for (let q = i - 1; q >= 0; q--) if (link[s][q] && link[s][q][0] === n) { lo = link[s][q][1]; break; }
+          for (let q = i + 1; q < A.length; q++) if (link[s][q] && link[s][q][0] === n) { hi = link[s][q][1]; break; }
+          const c = []; for (let j = lo + 1; j < hi; j++) if (!claimed[n][j] && Math.abs(Bt[j] - A[i] - m.T) <= 2) c.push(j);
+          if (c.length === 1) { link[s][i] = [n, c[0]]; claimed[n][c[0]] = true; ss.ok++; ss.loose = (ss.loose || 0) + 1; }
+        }
+      }
+      pend.push([s, p]);
+    }
+    // 跳站（直達車）：沒接上的往後 2～8 站找
+    for (const [s, p] of pend) {
+      const A = st[s], rest = A.map((t, i) => link[s][i] ? null : i).filter(i => i != null);
+      if (!rest.length) continue;
+      for (let k = 1; k < Math.min(p.length, 8) && rest.length; k++) {
+        const n = p[k], Bt = st[n]; if (!Bt) continue;
+        const m = tripMode(rest.map(i => A[i]), Bt, k + 1, 6 * (k + 1), claimed[n]); if (!m || m.n < Math.min(3, rest.length)) continue;
+        for (let r = rest.length - 1; r >= 0; r--) {
+          const i = rest[r]; let bj = -1, bd = 9;
+          for (let j = 0; j < Bt.length; j++) { const d = Math.abs(Bt[j] - A[i] - m.T); if (d <= 1 && !claimed[n][j] && d < bd) { bd = d; bj = j; } }
+          if (bj >= 0) { link[s][i] = [n, bj]; claimed[n][bj] = true; ss.ok++; ss.skip++; rest.splice(r, 1); }
+        }
+      }
+    }
+    // 直達車會在有待避線的車站超越普通車：普通車「逐站進、跳站出」、直達車「跳站進、逐站出」代表兩者接反了，就互換進站來源
+    if (TRIP_EXPRESS[L.key]) {
+      const prev = {}; for (const s of S) prev[s] = new Array(st[s].length).fill(null);
+      for (const s of S) link[s].forEach((l, i) => { if (l && prev[l[0]]) prev[l[0]][l[1]] = [s, i, l[0] === next[s]]; });
+      for (const x of S) {
+        const outAdj = k => link[x][k] ? link[x][k][0] === next[x] : null;
+        const A = [], Bq = [];
+        st[x].forEach((t, k) => { const p = prev[x][k], o = outAdj(k); if (!p || o == null) return; if (p[2] && !o) A.push(k); else if (!p[2] && o) Bq.push(k); });
+        for (const ka of A) {
+          let bi = -1, bd = 7; Bq.forEach((kb, q) => { const d = Math.abs(st[x][kb] - st[x][ka]); if (kb >= 0 && d < bd) { bd = d; bi = q; } });
+          if (bi < 0) continue;
+          const kb = Bq[bi]; Bq[bi] = -1;
+          const pa = prev[x][ka], pb = prev[x][kb];
+          link[pa[0]][pa[1]] = [x, kb]; link[pb[0]][pb[1]] = [x, ka]; prev[x][ka] = pb; prev[x][kb] = pa;
+          ss.swap = (ss.swap || 0) + 1;
+        }
+      }
+    }
+    for (const [s] of pend) st[s].forEach((t, i) => { if (!link[s][i] && ss.miss.length < 400) ss.miss.push(`${B.dn}/${tt.sd[B.sdi].tag} ${s}@${m2t(t)}→${next[s]}`); });
+    // 串成車次
+    const sIdx = {}, sList = [...S]; if (!sList.includes(de)) sList.push(de); sList.forEach((x, i) => sIdx[x] = i);
+    const gi = groups.length; groups.push({ l: L.line, d: B.dir, de, dn: B.dn, sd: B.sdi, st: sList });
+    for (const s of S) for (let i = 0; i < st[s].length; i++) {
+      if (claimed[s][i] || (s === de && !L.loop)) continue;     // 終點站的「發車」其實是到站時間，只當串接目標
+      const parts = []; let x = s, k = i, guard = 0, ok = true, nAdj = 0, nSkip = 0;
+      while (x && guard++ < 80) {
+        parts.push(sIdx[x] + "." + m2t(st[x][k]));
+        const l = link[x][k];
+        if (!l) {
+          if (x === de) break;
+          if (next[x] === de) parts.push("~" + sIdx[de] + "." + m2t(st[x][k] + segT(x, de)));
+          else if (TRIP_EXPRESS[L.key] && path(x).length <= 3) { let y = x, m = st[x][k]; while (y && y !== de) { m += segT(y, next[y]); y = next[y]; } parts.push("~" + sIdx[de] + "." + m2t(m - path(x).length)); ss.xterm = (ss.xterm || 0) + 1; ss.ok++; }
+          else ok = false;
+          break;
+        }
+        if (l[0] === next[x]) nAdj++; else nSkip++;
+        [x, k] = l;
+      }
+      // 直達車與普通車混在一起（跳站之外又有很多逐站停靠）＝可能接錯車，標成不確定、改用推估
+      if (nSkip && nAdj > 3) { ok = false; ss.mixed = (ss.mixed || 0) + 1; }
+      trips.push([gi, parts.join(" "), ok ? 1 : 0]); ss.trips++;
+    }
+  }
+  for (const v of Object.values(stats)) { v.rate = v.need ? +(100 * v.ok / v.need).toFixed(2) : 100; v.missN = v.miss.length; v.miss = v.miss.slice(0, 20); v.uncertain = trips.filter(t => !t[2] && groups[t[0]].l === Object.keys(stats).find(k => stats[k] === v)).length; }
+  return { v: 1, op: tt.op, kind: "trips", sd: tt.sd, groups, trips, stats };
 }
 // 把儲存的捷運列轉回 TDX StationTimeTable 的樣子，沿用原本的處理邏輯
 function ttMetroRecs(tt, ids) {
@@ -986,6 +1160,31 @@ async function s2sEdges(get, op) {
   return e;
 }
 // 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約 2 分推估
+// 從 KV 的 TRIPS_系統 找這一班車（同線、同終點、今天的日別、本站時刻相同）
+async function tripOfficial(p) {
+  const T = await ttLoad("TRIPS_" + p.op).catch(() => null); if (!T || !T.trips || p.t == null) return null;
+  const info = await dayInfo(svcDate(p.t >= 1700 ? 1 : 0));   // 收班後列出的是明天的班次（t 已加 1440）
+  const ids = new Set(p.ids || []), destId = p.dests && p.dests[0] && p.dests[0].id;
+  let gs = T.groups.map((g, i) => ({ g, i })).filter(x => (!p.line || x.g.l === p.line) && (!destId || x.g.de === destId) && x.g.st.some(id => ids.has(id)));
+  const recs = [...new Set(gs.map(x => x.g.sd))].map(sd => ({ sd, ServiceDay: { ...sdObj(T.sd[sd].m), ServiceTag: T.sd[sd].tag } }));
+  const pick = new Set(pickDay(recs, info).map(r => r.sd)); gs = gs.filter(x => pick.has(x.g.sd));
+  const gset = new Map(gs.map(x => [x.i, x.g])), want = t2m(m2t(p.t));
+  let best = null;
+  for (const tr of T.trips) {
+    const g = gset.get(tr[0]); if (!g) continue;
+    for (const part of tr[1].split(" ")) {
+      const est = part[0] === "~", [si, hh] = (est ? part.slice(1) : part).split(".");
+      if (est || !ids.has(g.st[si])) continue;
+      const d = Math.abs(t2m(hh) - want);
+      if (d <= 1 && (!best || d < best.d)) best = { d, g, tr };
+    }
+    if (best && best.d === 0) break;
+  }
+  if (!best) return null;
+  const times = {}; let first = null;
+  for (const part of best.tr[1].split(" ")) { const est = part[0] === "~", [si, hh] = (est ? part.slice(1) : part).split("."); const id = best.g.st[si]; if (!first) first = id; times[id] = { time: hh.slice(0, 2) + ":" + hh.slice(2), est }; }
+  return { times, first, sure: !!best.tr[2] };
+}
 async function tripView(get, p) {
   const lv = await lineView(get, { ...p, noLive: true });
   const E = await s2sEdges(get, p.op);
@@ -996,8 +1195,21 @@ async function tripView(get, p) {
   for (let i = ci + 1; i < st.length; i++) T[i] = T[i - 1] + gap(st[i - 1].id, st[i].id);
   for (let i = ci - 1; i >= 0; i--) T[i] = T[i + 1] - gap(st[i].id, st[i + 1].id);
   const clock = m => { m = Math.round(m); m = ((m % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); };
-  return { op: p.op, line: lv.line, approx: miss > 0, noS2S: !Object.keys(E).length, delay: p.delay || 0,
-    stops: st.map((x, i) => ({ ...x, time: clock(T[i]) })) };
+  const base = { op: p.op, line: lv.line, approx: miss > 0, noS2S: !Object.keys(E).length, delay: p.delay || 0 };
+  // 有串好的官方車次（中捷除外）：各站用官方時刻；不在這班車行經範圍的站不給時間；其餘站推估並標 ≈
+  const off = p.op !== "TMRT" && !p.est ? await tripOfficial(p).catch(() => null) : null;
+  if (off && off.sure) {
+    const fi = st.findIndex(x => x.id === off.first);
+    let nEst = 0;
+    const stops = st.map((x, i) => {
+      const o = off.times[x.id];
+      if (o) { if (o.est) nEst++; return { ...x, time: o.time, est: o.est }; }
+      if (fi >= 0 && i < fi) return { ...x, time: "", before: true };
+      nEst++; return { ...x, time: clock(T[i]), est: true };
+    });
+    return { ...base, official: true, nEst, stops };
+  }
+  return { ...base, stops: st.map((x, i) => ({ ...x, time: clock(T[i]) })) };
 }
 async function trainView(get, p) {
   const no = String(p.no), here = new Set((p.ids || []).map(String));
@@ -1194,6 +1406,7 @@ window.dataApi = async (action, p = {}) => {
     case "trainView": return trainView(tdx, p);
     case "tripView": return tripView(tdx, p);
     case "ttMeta": return ttMeta(true);
+    case "buildTrips": return buildTrips(p.tt);
     case "ttSystems": return TT_SYSTEMS;
     case "ttRefresh": return ttRefresh(p.op, p.pass, p.onStep);
     case "ttAuth": { const r = await fetch(`${getProxy()}/tt/auth`, { method: "POST", headers: { "x-admin": p.pass } }); if (!r.ok) throw new Error("管理密碼錯誤"); return true; }
