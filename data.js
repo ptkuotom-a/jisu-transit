@@ -484,22 +484,25 @@ function mapExits(list, op) {
 
 const SEAT = { Available: "ok", Limited: "few", Full: "full" };
 
+const TRA_ALL_LIVE = `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`;
+const traAllLive = () => memoTdx("rail", TRA_ALL_LIVE, 60000);
 async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
   const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
-  // 只查本站的 StationLiveBoard（不再抓全台列車位置）
-  const [tt, slive] = await Promise.allSettled([
+  // 本站 StationLiveBoard ＋ 全台列車動態（Worker 共用快取 60 秒），讓已發車的每一班都有誤點
+  const [tt, slive, tlive] = await Promise.allSettled([
     storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
       .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
+    traAllLive(),
   ]);
   const delay = {};
-  for (const r of [slive]) {
+  for (const r of [tlive, slive]) {          // 本站資料較新，後寫覆蓋
     if (r.status !== "fulfilled") continue;
     for (const t of r.value) if (t.TrainNo != null && typeof t.DelayTime === "number") delay[String(t.TrainNo)] = t.DelayTime;
   }
-  const live = slive.status === "fulfilled";
+  const live = slive.status === "fulfilled" || tlive.status === "fulfilled";
   let rows = [];
   if (storedRows && storedRows.length) rows = storedRows;
   else if (tt.status === "fulfilled" && tt.value.length) {
@@ -513,7 +516,7 @@ async function traBoard(get, st) {
       }
     }
   } else if (slive.status === "fulfilled") {        // 時刻表失敗時，至少顯示即將進站的車
-    rows = slive.value.map(t => ({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.ScheduledDepartureTime || t.ScheduledArrivalTime) }));
+    rows = slive.value.map(t => ({ no: String(t.TrainNo), type: shortType(zh(t.TrainTypeName)), dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.ScheduleDepartureTime || t.ScheduleArrivalTime || t.ScheduledDepartureTime || t.ScheduledArrivalTime) }));
   } else {
     throw (isRate(tt.reason) ? tt.reason : tt.reason || new Error("台鐵時刻表讀取失敗"));
   }
@@ -1005,11 +1008,11 @@ async function trainView(get, p) {
     const nameOf = {}; try { for (const s of await loadRailStations()) if (s.op === (p.kind === "tra" ? "TRA" : "THSR")) nameOf[s.id] = s.name; } catch (e) {}
     info = { type: sT[1], from: sT[3], to: sT[4] };
     stops = sT[6].split(";").map(x => { const [id, a, d] = x.split(","); return { id, name: nameOf[id] || id, arr: hhmm4(a), dep: hhmm4(d) }; });
-    if (p.kind === "tra") { try { const lv = await get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard/TrainNo/${encodeURIComponent(no)}?%24format=JSON`); const b = (lv.TrainLiveBoards || lv || [])[0]; if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } } catch (e) { if (isRate(e)) throw e; } }
+    if (p.kind === "tra") { try { const lv = await traAllLive(); const b = lv.find(x => String(x.TrainNo) === no); if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } } catch (e) { if (isRate(e)) throw e; } }
   } else if (p.kind === "tra") {
     const [tt, lv] = await Promise.allSettled([
       get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`),
-      get("rail", `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard/TrainNo/${encodeURIComponent(no)}?%24format=JSON`)]);
+      traAllLive().then(l => l.filter(x => String(x.TrainNo) === no))]);
     if (tt.status !== "fulfilled") throw tt.reason;
     const T = (tt.value.TrainTimetables || tt.value || [])[0]; if (!T) throw new Error("查無這個車次今日的時刻");
     info = { type: shortType(zh(T.TrainInfo.TrainTypeName)), from: zh(T.TrainInfo.StartingStationName), to: zh(T.TrainInfo.EndingStationName) };
