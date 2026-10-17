@@ -827,7 +827,7 @@ function vSettings() {
     <dt>高鐵</dt><dd>七天班表（同台鐵規則）與剩餘座位（每分鐘更新）</dd>
     <dt>估算班次</dt><dd>台中捷運、北捷文湖線沒有站別時刻表，依 TDX 班距與首末班推算，列上標「估算」</dd>
     <dt>列車停靠站時間</dt><dd>由各站官方時刻表串成每一班車；串不起來的站依 TDX 站間行駛時間推估（標 ≈）</dd>
-    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
+    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖，Google 的路線同樣依官方時刻表校正、用校正後的時間比較；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
   </dl></div>
@@ -1612,7 +1612,7 @@ function detailHtml() {
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
   if (r.legs[r.legs.length - 1]?.kind !== 'transit') h += node(r.end, P.d?.name || '終點', '', 'end');
-  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
+  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];

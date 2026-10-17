@@ -1910,6 +1910,22 @@ function planClean(routes, yb) {
 // 起訖點是這種車站時，改用同一條線上相鄰、TDX 認得的車站去查，並在結果上註明
 const TDX_MISSING = { "廣慈/奉天宮": { name: "象山", lat: 25.032871, lon: 121.570029, line: "淡水信義線", mode: 6 } };
 const planIsStation = p => !!p && !p.here && (!!p.st || /北捷|新北捷|機捷|桃捷|中捷|高捷|捷運|輕軌|台鐵|高鐵/.test(p.sub || ""));
+// TDX 和 Google 兩組都校正過之後，照 Worker 原本的規則用「校正後」的時間決定用哪一組（v2.22）：
+// faster＝Google 早到 15 分以上或快 15% 以上（指定抵達則是晚出發）；klrt-night＝Google 有搭高雄輕軌、或比較好
+function planPickG(T, G, rule, { when, ref, arrBy }) {
+  const best = rs => { let b = null;
+    for (const r of rs) { if (r.approx) continue; const ft = r.legs.find(l => l.kind === "transit"), f0 = ft ? tms(ft.from.time) : r.start;
+      if (when === "arr") { if (arrBy && r.end <= arrBy + 60000 && (b == null || r.start > b)) b = r.start; }
+      else if (f0 >= ref - 60000 && (b == null || r.end < b)) b = r.end; }
+    return b; };
+  const tb = best(T), gb = best(G);
+  if (gb == null) return false;
+  if (tb == null) return true;
+  const better = when === "arr" ? gb > tb : gb < tb;
+  if (rule === "klrt-night") return G.some(r => r.legs.some(l => l.kind === "transit" && l.mode === "lrt")) || better;
+  const gain = when === "arr" ? gb - tb : tb - gb, base = when === "arr" ? arrBy - tb : tb - ref;
+  return gain >= 15 * 60000 || gain >= 0.15 * base;
+}
 async function planRoutes({ o, d, modes, yb, when, time }) {
   const snapOf = p => { if (!planIsStation(p)) return null; const m = TDX_MISSING[String(p.name || "").replace(/站$/, "")]; return m && modes.includes(m.mode) ? m : null; };
   let so = snapOf(o), sd = snapOf(d); const qo = so || o, qd = sd || d;
@@ -1917,21 +1933,25 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
   const q = new URLSearchParams({ o: `${qo.lat},${qo.lon}`, d: `${qd.lat},${qd.lon}`, t: modes.join(","), gc: "1", yb: yb ? "1" : "0" });
   if (so) q.set("go", `${o.lat},${o.lon}`); if (sd) q.set("gd", `${d.lat},${d.lon}`);
   if (when === "dep" && time) q.set("dep", time); if (when === "arr" && time) q.set("arr", time);
-  let out = [];
+  let out = [], cand = null;
   try {
     const j = await authedGet("/plan?" + q.toString());
     if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
     out = planClean(j.data && j.data.routes, yb);
     // Google 備援的結果是用原本的起訖點查的：不套用「換成相鄰站」的註記，車站頭尾的步行也照常剪掉
     if (j.source === "google" || j.source === "timetable") { so = null; sd = null; }   // Worker 用原本的起訖點查（Google 備援、深夜直達車）
+    // Worker 比較過 TDX 和 Google（v2.22）：兩組都帶回來，各自依官方時刻表校正後再用校正過的時間決定用哪一組
+    const c = j.data && j.data.cand;
+    if (c && Array.isArray(c.tdx) && Array.isArray(c.google) && c.tdx.length && c.google.length) cand = { rule: c.rule, T: planClean(c.tdx, yb), G: planClean(c.google, yb) };
   } catch (e) {
     // TDX 找不到路線（404／result: fail）：回傳空清單，畫面顯示「找不到可行的路線」；登入、次數限制等其他錯誤照常顯示
     if (/登入|頻繁|次數|太多|連線|TDX 5\d\d/.test(e.message) || !/找不到|no route|40001|spec params|fail|規劃失敗|404/i.test(e.message + " " + (e.status || ""))) throw e;
   }
   // 起訖點本身就是車站（從車站清單選的）：在這一站上車／下車的路線，不算進出站的步行，直接從上車時間算起、到下車時間為止
+  const ref0 = when === "now" ? Date.now() : when === "dep" && time ? tms(time) : null, arrBy = when === "arr" && time ? tms(time) : null;
   const sysOk = (p, l) => /台鐵/.test(p.sub || "") ? l.mode === "tra" : /高鐵/.test(p.sub || "") ? l.mode === "thsr" : l.mode === "mrt" || l.mode === "lrt";
   const sameSt = (p, pl, l) => sysOk(p, l) && (nameHit(pl.name || "", p.name || "") || (pl.lat != null && haversine(pl.lat, pl.lon, p.lat, p.lon) <= 300));
-  out = out.map(r => {
+  const trim = (list, so, sd) => list.map(r => {
     const tr = r.legs.filter(l => l.kind === "transit"); if (!tr.length) return r;
     const f = tr[0], l = tr[tr.length - 1], i0 = r.legs.indexOf(f), i1 = r.legs.indexOf(l);
     const cutO = !so && planIsStation(o) && i0 > 0 && sameSt(o, f.from, f), cutD = !sd && planIsStation(d) && i1 < r.legs.length - 1 && sameSt(d, l.to, l);
@@ -1940,11 +1960,17 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
     const start = cutO ? tms(f.from.time) : r.start, end = cutD ? tms(l.to.time) : r.end;
     return { ...r, legs, start, end, dur: Math.round((end - start) / 60000), trimmed: true };
   });
+  // 先對官方時刻表（v2.18：捷運／台鐵／高鐵／輕軌的第一班車直接改搭「指定時間以後」的真實班次；v2.22 起 Google 的路線也一樣校正）
+  const fix = list => planTtFix(list, { when, ref: ref0 || (when === "now" ? Date.now() : null), arrBy });
+  if (cand) {
+    const [T, G] = await Promise.all([fix(trim(cand.T, so, sd)), fix(trim(cand.G, null, null))]);
+    const useG = planPickG(T, G, cand.rule, { when, ref: ref0 || Date.now(), arrBy });
+    out = useG ? G : T; if (useG) { so = null; sd = null; }
+  } else out = await fix(trim(out, so, sd));
   // 「現在出發」時 TDX 偶爾會給已經開走的班次；「指定出發」時 TDX 也常給比指定時間更早出門的走法（例如指定18:12卻17:54出發）：
   // 同樣路線還有較晚一班的就不列；班次密的第一段改搭下一班；其餘「現在出發」保留但標示，「指定出發」直接拿掉
-  const ref = when === "now" ? Date.now() : when === "dep" && time ? tms(time) : null;
-  // 先對官方時刻表（v2.18：捷運／台鐵／高鐵／輕軌的第一班車直接改搭「指定時間以後」的真實班次），剩下對不到時刻表的才用下面的班距估計
-  out = await planTtFix(out, { when, ref: ref || (when === "now" ? Date.now() : null), arrBy: when === "arr" && time ? tms(time) : null });
+  const ref = ref0;
+  // 對不到時刻表的才用下面的班距估計
   if (ref) {
     const now = ref, late = r => { if (when === "dep") return r.start - ref; const t = r.legs.find(l => l.kind === "transit"); return t ? tms(t.from.time) - ref : 0; };
     // 指定出發：顯示到分鐘也不能早於指定時間；現在出發：TDX 的「現在」常慢幾分鐘，容許1分鐘
@@ -2225,16 +2251,9 @@ async function planTtFix(routes, opt = {}) {
   for (const r of routes) {
     if (!r.legs.some(l => l.kind === "transit" && (l.mode === "lrt" || l.mode === "mrt" || l.mode === "tra" || l.mode === "thsr"))) { out.push(r); continue; }
     if (r.src === "tt") { out.push(r); continue; }   // 深夜直達車（v2.21）：本來就取自官方時刻表
-    if (r.src === "google" && !r.legs.some(l => l.kind === "transit" && l.mode === "lrt")) { out.push(r); continue; }   // Google 的時刻本來就跟時刻表一致
-    if (r.src === "google") {   // Google 的時刻本來就跟時刻表一致：不改時間，只把高雄輕軌的終點（籬仔內）換成順行／逆行
-      const legs = [];
-      for (const l of r.legs) {
-        if (l.kind !== "transit" || l.mode !== "lrt" || !/環狀輕軌/.test(l.name)) { legs.push(l); continue; }
-        const A = await stOf(l, "from"), B = await stOf(l, "to"), p0 = tms(l.from.time);
-        const c = A && B && A.op === "KLRT" && B.op === "KLRT" ? await tripPick("KLRT", A.ids, B.ids, { ready: p0 - 60000 }).catch(() => null) : null;
-        legs.push({ ...l, headsign: "", via: c && Math.abs(c.dep - p0) <= 60000 ? KLRT_DIR(c.dir) : null });
-      }
-      out.push({ ...r, legs }); continue;
+    if (r.src === "google") {   // v2.22：Google 的路線也依官方時刻表校正（同 TDX）；註記裡的來源改成 Google
+      let x; try { x = await planRetime(r, stOf, opt); } catch (e) { console.warn("planRetime", e); x = r; }
+      out.push(x.ttNote ? { ...x, ttNote: x.ttNote.replace(/TDX/g, "Google") } : x); continue;
     }
     try { out.push(await planRetime(r, stOf, opt)); } catch (e) { console.warn("planRetime", e); out.push(r); }
   }
@@ -2319,7 +2338,8 @@ async function planRetime(r, stOf, opt) {
       res.push(legsNew[0]);
       if (legsNew[1]) { pushWait(legsNew[1], picks[0].arr, picks[1].dep); res.push(legsNew[1]); }
       const atA = Math.abs(nd - p0) >= 60000 ? await tripDepAt(op, A.ids, p0).catch(() => null) : null;
-      const why = atA ? `是往${op === "KLRT" ? KLRT_DIR(atA.dir) : atA.dest}的車，不會到${leg.to.name || "下車站"}` : "不在時刻表上";
+      const sameWay = atA && (op === "KLRT" ? atA.dir === picks[0].dir : atA.dest === picks[0].dest);   // 那班車也會到，只是比較晚到（改搭更早到的）
+      const why = sameWay ? "比較晚到" : atA ? `是往${op === "KLRT" ? KLRT_DIR(atA.dir) : atA.dest}的車，不會到${leg.to.name || "下車站"}` : "不在時刻表上";
       if (Math.abs(nd - p0) >= 60000) notes.push(`TDX 給的 ${hmTpe(p0)} 班次${why}，改搭 ${hmTpe(nd)} ${lab(picks[0])}${legsNew[1] ? `，在${picks[2].name || "中途站"}轉 ${hmTpe(picks[1].dep)} ${lab(picks[1])}` : ""}`);
       else if (legsNew[1]) notes.push(`${hmTpe(nd)} ${lab(picks[0])}，在${picks[2].name || "中途站"}轉 ${hmTpe(picks[1].dep)} ${lab(picks[1])}`);
       else if (Math.abs(na - a0) >= 60000) notes.push(`${hmTpe(nd)} ${lab(picks[0])}，${hmTpe(na)} 到${leg.to.name || ""}（TDX 估 ${hmTpe(a0)}）`);
