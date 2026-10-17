@@ -359,10 +359,27 @@ const isFavBus = f => S.favs.bus.some(x => busKey(x) === busKey(f));
 const isFavBike = uid => S.favs.bike.some(x => x.uid === uid);
 
 /* ---------- render ---------- */
+// 頂部標題（圖示＋文字）：點分頁時立即淡入淡出換成新分頁；手指滑動時依進度交叉淡化
+let brandK = null, brandT = 0, brandLock = false;   // 動畫／拖曳中，資料更新觸發的重繪不要動標題
+function showBrand(k, fade) {
+  const b = $('.brand'); if (!b) return;
+  const set = () => { const titles = { home:'首頁', bus:'公車', bike:'YouBike', rail:'軌道', settings:'設定' };
+    $('#title').textContent = titles[k]; $('#titleIco').innerHTML = k === 'home' ? I.home : k === 'bike' ? I.bike : k === 'rail' ? I.train : k === 'settings' ? I.gear : I.busFill; brandK = k; };
+  clearTimeout(brandT);
+  if (!fade || reduceMotion()) { if (brandK !== k) set(); b.style.transition = ''; b.style.opacity = ''; return; }
+  if (brandK === k) { b.style.transition = 'opacity .12s ease'; b.style.opacity = ''; return; }
+  b.style.transition = 'opacity .08s ease'; b.style.opacity = '0';
+  brandT = setTimeout(() => { set(); b.style.transition = 'opacity .14s ease'; b.style.opacity = ''; }, 80);
+}
+function brandProgress(from, to, p) {   // p：0～1 滑動進度
+  const b = $('.brand'); if (!b || reduceMotion()) return;
+  clearTimeout(brandT); b.style.transition = 'none';
+  if (p < 0.5) { if (brandK !== from) showBrand(from); b.style.opacity = String(1 - p * 2); }
+  else { if (brandK !== to) showBrand(to); b.style.opacity = String(p * 2 - 1); }
+  b.style.transition = 'none';
+}
 function renderChrome() {
-  const titles = { home:'首頁', bus:'公車', bike:'YouBike', rail:'軌道', settings:'設定' };
-  $('#title').textContent = titles[S.tab];
-  $('#titleIco').innerHTML = S.tab === 'home' ? I.home : S.tab === 'bike' ? I.bike : S.tab === 'rail' ? I.train : S.tab === 'settings' ? I.gear : I.busFill;
+  if (!brandLock) showBrand(S.tab);
   $('#searchBar').hidden = S.tab === 'settings';
   $('#searchIco').innerHTML = I.search;
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
@@ -1370,11 +1387,12 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     const d = j > i ? 1 : -1, w = innerWidth, ms = 300;
     const ind = document.querySelector('#tabbar .tab-ind'), tbs = [...document.querySelectorAll('#tabbar .tab')];
     for (const b of tbs) b.classList.toggle('on', b.dataset.v === k);
+    showBrand(k, true); brandLock = true;
     pillSettle(ind, tbs[j], ms);
     dropGhost(); ghost = mkGhost(j, d); gDir = d;
     main.classList.add('swipe'); main.style.transition = 'none'; main.style.transform = ''; main.offsetWidth;
     main.style.transition = `transform ${ms}ms cubic-bezier(.25,.8,.3,1)`; main.style.transform = `translateX(${-d * w}px)`;
-    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; main.classList.remove('swipe'); setTab(k); main.offsetWidth; main.style.transition = ''; busy = false; }, ms);
+    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; main.classList.remove('swipe'); brandLock = false; setTab(k); main.offsetWidth; main.style.transition = ''; busy = false; }, ms);
   };
   const dropGhost = () => { if (ghost) { ghost.remove(); ghost = null; gDir = 0; } };
   const blocked = el => el.closest('input,textarea,select,.tabbar,[data-noswipe]') || [...(function*(){ for (let e = el; e && e !== area; e = e.parentElement) yield e; })()].some(e => e.scrollWidth > e.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(e).overflowX));
@@ -1389,7 +1407,7 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     if (st === 1) {
       if (Math.abs(ddx) < 10 && Math.abs(ddy) < 10) return;
       if (Math.abs(ddx) < Math.abs(ddy) * 1.5) { st = 0; return; }   // 垂直為主：交給捲動
-      st = 2; main.classList.add('swipe'); main.style.transition = 'none';
+      st = 2; main.classList.add('swipe'); main.style.transition = 'none'; brandLock = true;
     }
     e.preventDefault();
     const i = TAB_ORDER.indexOf(S.tab), edge = (ddx > 0 && i === 0) || (ddx < 0 && i === TAB_ORDER.length - 1);
@@ -1399,7 +1417,8 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     if (edge) dropGhost();
     main.style.transform = `translateX(${dx}px)`;
     const tbs = [...document.querySelectorAll('#tabbar .tab')];
-    if (!edge) pillTrack(document.querySelector('#tabbar .tab-ind'), tbs[i], tbs[i + (dx < 0 ? 1 : -1)], Math.min(1, Math.abs(dx) / innerWidth));
+    if (!edge) { const pr = Math.min(1, Math.abs(dx) / innerWidth); pillTrack(document.querySelector('#tabbar .tab-ind'), tbs[i], tbs[i + (dx < 0 ? 1 : -1)], pr); brandProgress(S.tab, TAB_ORDER[i + (dx < 0 ? 1 : -1)], pr); }
+    else showBrand(S.tab, true);
   }, { passive:false });
   const end = () => {
     if (st !== 2) { st = 0; return; }
@@ -1407,14 +1426,15 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     const i = TAB_ORDER.indexOf(S.tab), v = Math.abs(dx) / Math.max(1, Date.now() - t0), w = innerWidth;
     const j = (Math.abs(dx) > w * 0.25 || (v > 0.4 && Math.abs(dx) > 30)) ? i + (dx < 0 ? 1 : -1) : i;
     const dur = reduceMotion() ? 0 : 200;
-    const done = () => { main.style.transition = ''; main.style.transform = ''; main.classList.remove('swipe'); };
+    const done = () => { main.style.transition = ''; main.style.transform = ''; main.classList.remove('swipe'); brandLock = false; };
     const ind = document.querySelector('#tabbar .tab-ind'), tbs = [...document.querySelectorAll('#tabbar .tab')];
+    showBrand(j >= 0 && j < TAB_ORDER.length && ghost ? TAB_ORDER[j] : S.tab, true);   // 放手：標題直接定在結果分頁
     if (j === i || j < 0 || j >= TAB_ORDER.length || !ghost) { main.style.transition = `transform ${dur}ms ease`; main.style.transform = ''; pillSettle(ind, tbs[i], dur); setTimeout(() => { done(); dropGhost(); }, dur); return; }
     const d2 = reduceMotion() ? 0 : Math.max(120, Math.min(260, (w - Math.abs(dx)) / Math.max(0.6, v)));
     pillSettle(ind, tbs[j], d2);
     const dir = dx < 0 ? -1 : 1;
     main.style.transition = `transform ${d2}ms ease`; main.style.transform = `translateX(${dir * w}px)`;   // 新分頁（ghost）剛好滑到定位
-    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; setTab(TAB_ORDER[j]); done(); }, d2);
+    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; brandLock = false; setTab(TAB_ORDER[j]); done(); }, d2);
   };
   area.addEventListener('touchend', end); area.addEventListener('touchcancel', end);
 })();
