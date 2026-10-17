@@ -279,9 +279,54 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .ropt button.on,.rbus button.on{border-color:var(--lime);color:var(--lime)}
 .rbus{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.rbus button{padding:10px 14px}
 .rlab{color:var(--muted);font-size:14px;margin-top:14px}
+
+/* 登入畫面（v2.12.1，依設計稿） */
+html.locked,html.locked body{overflow:hidden}
+#login{position:fixed;inset:0;z-index:9999;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch;
+  padding:calc(72px + env(safe-area-inset-top,0px)) 24px calc(36px + env(safe-area-inset-bottom,0px))}
+#login[hidden]{display:none}
+#login .lw{max-width:420px;margin:0 auto}
+#login .logo{width:72px;height:72px;border-radius:22px;background:var(--surface);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+#login h1{margin:18px 0 10px;font-size:46px;line-height:1;font-weight:900;letter-spacing:-1.5px;color:var(--lime)}
+#login .sub{margin:0;font-size:16px;line-height:1.5;color:var(--muted)}
+#login form{display:flex;flex-direction:column;gap:14px;margin-top:40px}
+#login .field{display:flex;flex-direction:column;gap:8px}
+#login label{font-size:14px;font-weight:700;padding-left:4px}
+#login .box{position:relative}
+#login .box .ico{position:absolute;left:20px;top:19px;width:22px;height:22px;color:var(--muted);pointer-events:none}
+#login input{width:100%;height:60px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;font-size:17px;padding:0 20px 0 54px;-webkit-appearance:none;appearance:none}
+#login input#lgPw{padding-right:64px}
+#login input:focus{outline:none;border-color:var(--lime)}
+#login input.bad{border-color:var(--bad)}
+#login .eye{position:absolute;right:8px;top:8px;width:44px;height:44px;border-radius:999px;border:0;background:var(--surface2);color:var(--lime);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+#login .eye svg{width:20px;height:20px}
+#login .err{display:none;align-items:center;gap:10px;background:#2A1615;border:1px solid #5A2522;color:#FF8A80;border-radius:18px;padding:12px 16px;font-size:15px}
+#login .err.show{display:flex}
+#login .err svg{width:20px;height:20px;flex:none}
+#login .submit{height:60px;border-radius:999px;border:0;background:var(--lime);color:var(--ink);font:inherit;font-size:18px;font-weight:800;cursor:pointer;margin-top:6px}
+#login .submit:disabled{background:#9DBF2A;cursor:default}
+#login button:focus-visible{outline:2px solid var(--lime);outline-offset:3px}
+.acct{display:flex;align-items:center;justify-content:space-between;gap:12px}.acct b{font-size:17px}.acct .role{font-size:13px;color:var(--muted);margin-left:8px}
+.btn.out{color:var(--bad)}
 </style>
 </head>
 <body>
+<div id="login" hidden><main class="lw">
+  <div class="logo"><svg width="44" height="44" viewBox="0 0 1024 1024" aria-hidden="true"><g transform="translate(512 512) scale(1.1) translate(-531 -506)" fill="none" stroke="#C6F135"><path d="M352 676 V520 a150 150 0 0 1 150-150 H600" stroke-width="96" stroke-linecap="round"/><circle cx="352" cy="672" r="74" fill="#1A1C1B" stroke-width="48"/><circle cx="680" cy="370" r="104" fill="#C6F135" stroke="none"/></g></svg></div>
+  <h1>極速通勤</h1>
+  <p class="sub">登入後同步你的收藏、設定和下車提醒</p>
+  <form id="loginForm" novalidate>
+    <div class="field"><label for="lgAcct">帳號</label><div class="box">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+      <input id="lgAcct" name="account" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false"></div></div>
+    <div class="field"><label for="lgPw">密碼</label><div class="box">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="3"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
+      <input id="lgPw" name="password" type="password" autocomplete="current-password">
+      <button type="button" class="eye" id="lgEye" aria-label="顯示密碼"></button></div></div>
+    <div class="err" id="lgErr" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg><span id="lgErrText"></span></div>
+    <button type="submit" class="submit" id="lgBtn">登入</button>
+  </form>
+</main></div>
 <div class="wrap">
   <header class="top">
     <div class="brand"><span class="ico" id="titleIco"></span><h1 id="title">極速通勤</h1></div>
@@ -481,7 +526,7 @@ function mountMap() {
 const skel = n => Array.from({length:n}, () => '<div class="sk"></div>').join('');
 function errBox() {
   if (S.error === 'NO_PROXY') return `<div class="empty" style="margin-top:6px"><div class="star">${I.bus}</div><h3>先設定資料來源</h3>
-    <p>即時資料經由你自己的 Cloudflare Worker 向交通部 TDX 取得。到「設定」填入 Worker 網址就能開始使用。</p>
+    <p>即時資料經由你自己的 Cloudflare Worker 向交通部 TDX 取得。請管理者到「設定 › 進階設定」填入 Worker 網址。</p>
     <div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="tab" data-v="settings">前往設定</button></div></div>`;
   return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
 }
@@ -708,19 +753,13 @@ function seg(key, opts, fmt) {
 }
 function vSettings() {
   const px = S.proxy || {};
-  return `<div class="sec"><h2>資料來源</h2></div>
-  <div class="set"><p>TDX 金鑰放在你的 Cloudflare Worker 裡，這裡只需要 Worker 網址。${px.fromConfig && px.url ? '目前使用 config.js 的預設網址。' : ''}</p>
-    <input class="inp" id="proxyUrl" placeholder="https://jisu-tdx.你的帳號.workers.dev" autocomplete="off" autocapitalize="off" inputmode="url" value="${esc(px.url)}">
-    <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="saveProxy">儲存並測試連線</button></div>
-    <div class="kmsg" id="keyMsg"></div></div>
-  <div class="sec"><h2>搜尋範圍</h2></div>
+  return `  <div class="sec"><h2>搜尋範圍</h2></div>
   <div class="set"><h3>公車站牌</h3><p>以目前位置為中心，找這個距離內的站牌。</p>${seg('busR',[200,300,500,800],v=>v+'m')}</div>
   <div class="set"><h3>YouBike 站點</h3><p>範圍越大，站點越多，讀取也越久。</p>${seg('bikeR',[300,500,800,1000],v=>v+'m')}</div>
   <div class="set"><h3>軌道：步行範圍</h3><p>只列出走得到的車站，距離以最近的出口計算。範圍內沒有車站時，改列最近的2站。</p>${seg('railWalk',[0.8,1.5,3],v=>v<1? v*1000+'m' : v+'公里')}</div>
   <div class="set"><h3>附上最近的台鐵、高鐵站</h3><p>即使不在步行範圍，也在清單最後列出最近的台鐵、高鐵站各一站。</p>${seg('railFar',[1,0],v=>v?'顯示':'不顯示')}</div>
   <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
     <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
-  ${vTimetable()}
   <div class="sec"><h2>自動更新</h2></div>
   <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+'秒':'關閉')}</div>
   <div class="sec"><h2>通知</h2></div>
@@ -738,8 +777,29 @@ function vSettings() {
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
   </dl></div>
+  ${vAccount()}
   <div class="sec"><h2>關於</h2></div>
   <div class="note">極速通勤${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
+}
+
+/* ---------- 帳號與進階設定（進階設定只有管理者看得到） ---------- */
+const ROLE_ZH = { admin:'管理者', user:'一般用戶' };
+function vAdvanced() {
+  if (DEMO || S.auth?.role !== 'admin') return '';
+  const px = S.proxy || {};
+  return `<div class="sec"><h2>進階設定</h2><span class="side">僅管理者</span></div>
+  <div class="set"><h3>Worker 網址</h3><p>TDX 金鑰放在你的 Cloudflare Worker 裡，這裡只需要 Worker 網址。${px.fromConfig && px.url ? '目前使用 config.js 的預設網址。' : ''}</p>
+    <input class="inp" id="proxyUrl" placeholder="https://jisu-tdx.你的帳號.workers.dev" autocomplete="off" autocapitalize="off" inputmode="url" value="${esc(px.url)}">
+    <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="saveProxy">儲存並測試連線</button></div>
+    <div class="kmsg" id="keyMsg"></div></div>
+  ${vTimetable()}`;
+}
+function vAccount() {
+  if (DEMO || !S.auth) return '';
+  return `<div class="sec"><h2>帳號</h2></div>
+  <div class="set"><div class="acct"><span><b>${esc(S.auth.name || '')}</b><span class="role">${ROLE_ZH[S.auth.role] || ''}</span></span></div>
+    <div class="btns" style="grid-template-columns:1fr;margin-top:12px"><button class="btn out" data-act="logout">登出</button></div></div>
+  ${vAdvanced()}`;
 }
 
 /* ---------- 時刻表（存在 Worker 雲端） ---------- */
@@ -754,20 +814,16 @@ const fmtKB = b => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1,
 function vTimetable() {
   if (DEMO) return '';
   if (!TT.meta && !TT.loading) ttLoadMeta();
-  const pass = localStorage.getItem(TT_PASS_KEY);
+  const pass = S.auth?.role === 'admin' ? S.auth.token : null;
   let h = `<div class="sec"><h2>更新時刻表</h2><span class="side">存在雲端</span></div><div class="set">
     <p>各系統完整時刻表（平日、週六、週日、假日）存在你的 Worker（Cloudflare KV），車站頁直接讀，不必每次向 TDX 查。不會自動更新；時刻表改版時勾選系統再按「更新」。國定假日依人事總處行事曆判斷。</p>`;
   if (!TT.sys) h += `<div class="ts">讀取中…</div>`;
   else for (const [op, name] of TT.sys) {
     const m = (TT.meta && TT.meta.systems || {})[op], st = TT.st[op], on = TT.sel.has(op);
-    const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}・${m.count} ${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
+    const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}・${m.count}${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
     h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
       <span class="tb"><div class="tn">${esc(name)}</div><div class="tm">${meta}</div>${st ? `<div class="ts ${st.c}">${esc(st.t)}</div>` : ''}</span></button>`;
   }
-  if (pass) h += `<div class="kmsg" style="margin:6px 0 10px">管理密碼已存在這台裝置。<button data-act="ttPassClear" style="color:var(--lime);font-weight:700">清除</button></div>`;
-  else h += `<p style="margin:10px 0 8px">更新需要管理密碼（只要輸入一次，會存在這台裝置）。</p>
-    <input class="inp" id="ttPass" type="password" placeholder="管理密碼" autocomplete="off" autocapitalize="off">
-    <div class="btns" style="grid-template-columns:1fr;margin:4px 0 10px"><button class="btn" data-act="ttPassSave">儲存密碼</button></div>`;
   const n = TT.sel.size;
   h += `<div class="btns" style="grid-template-columns:1fr 2fr"><button class="btn" data-act="ttAll" ${TT.busy ? 'disabled' : ''}>${TT.sys && n === TT.sys.length ? '全不選' : '全選'}</button>
     <button class="btn pri" data-act="ttRun" ${TT.busy || !n || !pass ? 'disabled' : ''}>${TT.busy ? '更新中…' : n ? `更新${n}個系統` : '先勾選系統'}</button></div>
@@ -775,7 +831,7 @@ function vTimetable() {
   return h;
 }
 async function ttRun() {
-  const pass = localStorage.getItem(TT_PASS_KEY); if (!pass || TT.busy) return;
+  const pass = S.auth?.role === 'admin' ? S.auth.token : null; if (!pass || TT.busy) return;
   TT.busy = true; TT.msg = ''; let total = 0, ok = 0;
   const ops = TT.sys.map(x => x[0]).filter(op => TT.sel.has(op));
   for (const op of ops) TT.st[op] = { c:'', t:'等待中' };
@@ -785,11 +841,11 @@ async function ttRun() {
     try {
       const r = await window.dataApi('ttRefresh', { op, pass, onStep: n => { TT.st[op] = { c:'run', t:`下載中…已呼叫 TDX ${n}次` }; render(); } });
       total += r.calls || 0; ok++;
-      TT.st[op] = { c:'ok', t:`完成：${op === 'HOLIDAY' ? '' : `用了${r.calls}次 TDX，`}${r.count} ${op === 'HOLIDAY' ? '天假日' : '筆'}，${fmtKB(r.bytes || 0)}${r.trips ? (r.trips.error ? `；串車次失敗：${r.trips.error}` : `；串成${r.trips.count}班車（${r.trips.rates}）`) : ''}` };
+      TT.st[op] = { c:'ok', t:`完成：${op === 'HOLIDAY' ? '' : `用了${r.calls}次 TDX，`}${r.count}${op === 'HOLIDAY' ? '天假日' : '筆'}，${fmtKB(r.bytes || 0)}${r.trips ? (r.trips.error ? `；串車次失敗：${r.trips.error}` : `；串成${r.trips.count}班車（${r.trips.rates}）`) : ''}` };
       TT.sel.delete(op);
     } catch (e) {
       TT.st[op] = { c:'bad', t:'失敗：' + (e.message || e) };
-      if (/密碼|401|403/.test(String(e.message))) { localStorage.removeItem(TT_PASS_KEY); TT.msg = '管理密碼不對，已清除，請重新輸入。'; break; }
+      if (/管理|401|403/.test(String(e.message))) { TT.msg = '需要管理者帳號：請登出後用管理者帳號重新登入。'; checkAuth(); break; }
     }
     render();
   }
@@ -1234,14 +1290,7 @@ document.addEventListener('click', e => {
     case 'ttSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
     case 'ttAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
     case 'ttRun': ttRun(); break;
-    case 'ttPassClear': localStorage.removeItem(TT_PASS_KEY); render(); break;
-    case 'ttPassSave': {
-      const v = ($('#ttPass') || {}).value; if (!v || !v.trim()) break;
-      el.disabled = true; el.textContent = '確認中…';
-      api('ttAuth', { pass: v.trim() }).then(() => { localStorage.setItem(TT_PASS_KEY, v.trim()); TT.msg = '管理密碼正確，已存在這台裝置。'; render(); })
-        .catch(e => { TT.msg = e.message || '管理密碼錯誤'; render(); });
-      break;
-    }
+    case 'logout': doLogout(); break;
     case 'rail': closeSheetQuiet(); if (o) openRail(o); break;
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
     case 'stop': if (o) stopSheet(o); break;
@@ -1595,11 +1644,72 @@ setInterval(() => {
 }, 2000);
 
 /* ---------- boot ---------- */
+/* ---------- 登入：沒有有效 session 就只顯示登入畫面 ---------- */
+const EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12C3.5 10.5 7 6 12 6s8.5 4.5 9.5 6c-1 1.5-4.5 6-9.5 6s-8.5-4.5-9.5-6Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.2A9.6 9.6 0 0 1 12 6c5 0 8.5 4.5 9.5 6a17 17 0 0 1-2.6 3.1M6.4 7.6A16.6 16.6 0 0 0 2.5 12c1 1.5 4.5 6 9.5 6a9 9 0 0 0 4.2-1"/><path d="M9.9 10a3 3 0 0 0 4.2 4.2"/></svg>';
+let appStarted = false;
+function showLogin(msg) {
+  document.documentElement.classList.add('locked');
+  const L = $('#login'); L.hidden = false;
+  $('#lgPw').value = ''; lgErr(msg || '', []);
+  if (!msg) $('#lgErr').classList.remove('show');
+}
+function lgErr(msg, fields) {
+  $('#lgErrText').textContent = msg; $('#lgErr').classList.toggle('show', !!msg);
+  [$('#lgAcct'), $('#lgPw')].forEach(el => el.classList.toggle('bad', fields.includes(el)));
+}
+(() => {
+  const acct = $('#lgAcct'), pw = $('#lgPw'), eye = $('#lgEye'), btn = $('#lgBtn');
+  eye.innerHTML = EYE;
+  eye.addEventListener('click', () => { const show = pw.type === 'password'; pw.type = show ? 'text' : 'password'; eye.innerHTML = show ? EYE_OFF : EYE; eye.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼'); });
+  acct.addEventListener('input', () => lgErr('', [])); pw.addEventListener('input', () => lgErr('', []));
+  $('#loginForm').addEventListener('submit', async e => {
+    e.preventDefault(); if (btn.disabled) return;
+    const a = acct.value.trim(), p = pw.value;
+    if (!a && !p) return lgErr('請輸入帳號和密碼', [acct, pw]);
+    if (!a) return lgErr('請輸入帳號', [acct]);
+    if (!p) return lgErr('請輸入密碼', [pw]);
+    lgErr('', []); btn.disabled = true; btn.textContent = '登入中…';
+    try {
+      S.auth = await api('authLogin', { account:a, password:p });
+      pw.value = ''; pw.blur(); acct.blur();
+      $('#login').hidden = true; document.documentElement.classList.remove('locked');
+      startApp();
+    } catch (ex) { lgErr(ex.message || '登入失敗，請稍後再試', /帳號或密碼/.test(ex.message || '') ? [acct, pw] : []); }
+    finally { btn.disabled = false; btn.textContent = '登入'; }
+  });
+})();
+// 背景向 Worker 確認 session（順便續期）；被登出（401）才回到登入畫面，連不上就照常使用
+async function checkAuth() {
+  if (DEMO) return;
+  const s = await api('authMe').catch(() => null);
+  if (!s) { S.auth = null; showLogin('登入已失效，請重新登入'); return; }
+  const changed = !S.auth || S.auth.role !== s.role || S.auth.name !== s.name;
+  S.auth = s; if (changed && S.tab === 'settings') render();
+}
+async function doLogout() {
+  if (!confirm('確定要登出嗎？')) return;
+  await api('authLogout').catch(() => {});
+  S.auth = null;
+  showLogin();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth(); });
+async function startApp() {
+  if (appStarted) { render(); refresh(); return; }
+  appStarted = true;
+  render(); refresh(); renderRemBar(); pollRemind();
+}
 async function boot() {
+  localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
   render();
   try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
-  render(); refresh(); renderRemBar(); pollRemind();
+  if (!DEMO) {
+    S.auth = await api('session').catch(() => null);
+    if (!S.auth) { showLogin(); return; }
+    checkAuth();
+  }
+  startApp();
 }
 boot();
 /* ---------- 更新：iOS 主畫面 app 只會被喚醒、不會重新載入，所以要主動檢查並自動重新整理 ---------- */

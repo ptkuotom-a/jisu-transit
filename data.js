@@ -750,7 +750,7 @@ const svcDate = (offsetDays = 0) => { const d = new Date(); if (d.getHours() < 3
 async function ttRefresh(op, pass, onStep) {
   const proxy = getProxy(); if (!proxy) throw new Error("尚未設定 Worker");
   if (op === "HOLIDAY") {
-    const r = await fetch(`${proxy}/tt/holidays`, { method: "POST", headers: { "x-admin": pass } });
+    const r = await fetch(`${proxy}/tt/holidays`, { method: "POST", headers: { "x-session": pass } });
     const j = await r.json(); if (!r.ok) throw new Error(j.message || r.status); ttMetaP = null; return { calls: 0, ...j };
   }
   let calls = 0, version = "", out;
@@ -813,7 +813,7 @@ async function ttRefresh(op, pass, onStep) {
   } else throw new Error("不支援的系統");
   const body = JSON.stringify(out);
   const count = out.rows ? out.rows.length : out.trains ? out.trains.length : (out.fl || []).length;
-  const r = await fetch(`${proxy}/tt/data/${op}`, { method: "PUT", headers: { "x-admin": pass, "content-type": "application/json", "x-tt-calls": String(calls), "x-tt-version": version, "x-tt-count": String(count) }, body });
+  const r = await fetch(`${proxy}/tt/data/${op}`, { method: "PUT", headers: { "x-session": pass, "content-type": "application/json", "x-tt-calls": String(calls), "x-tt-version": version, "x-tt-count": String(count) }, body });
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || "上傳失敗 " + r.status);
   ttMetaP = null;
   // 捷運／輕軌：同時串出每一班車的官方時刻，存成 TRIPS_系統（不用再呼叫 TDX）
@@ -822,7 +822,7 @@ async function ttRefresh(op, pass, onStep) {
     try {
       const T = buildTrips(out), tb = JSON.stringify(T);
       const rates = Object.entries(T.stats).map(([l, v]) => `${l} ${v.rate}%`).join("、");
-      const r2 = await fetch(`${proxy}/tt/data/TRIPS_${op}`, { method: "PUT", headers: { "x-admin": pass, "content-type": "application/json", "x-tt-calls": "0", "x-tt-version": version, "x-tt-count": String(T.trips.length) }, body: tb });
+      const r2 = await fetch(`${proxy}/tt/data/TRIPS_${op}`, { method: "PUT", headers: { "x-session": pass, "content-type": "application/json", "x-tt-calls": "0", "x-tt-version": version, "x-tt-count": String(T.trips.length) }, body: tb });
       trips = r2.ok ? { count: T.trips.length, rates } : { error: "車次上傳失敗 " + r2.status };
     } catch (e) { trips = { error: String(e.message || e) }; }
   }
@@ -1514,6 +1514,37 @@ async function pushCall(method, path, body) {
   return j;
 }
 
+// ---------- 登入（帳號存在 Worker；裝置只存 session token，登出前不必再登入） ----------
+const SESS_KEY = "jisu_session";
+function getSession() { try { const s = JSON.parse(localStorage.getItem(SESS_KEY)); return s && s.token ? s : null; } catch (e) { return null; } }
+async function authLogin({ account, password }) {
+  const proxy = getProxy(); if (!proxy) throw new Error("尚未設定資料來源");
+  let r, j = {};
+  try { r = await fetch(proxy + "/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account, password }) }); j = await r.json().catch(() => ({})); }
+  catch (e) { throw new Error("連不到伺服器，請確認網路後再試"); }
+  if (!r.ok || !j.token) throw new Error(j.message || "登入失敗，請稍後再試");
+  const s = { token: j.token, name: j.name, role: j.role };
+  localStorage.setItem(SESS_KEY, JSON.stringify(s));
+  return s;
+}
+// 向 Worker 確認 session（同時續期）；401 才登出，連不上就沿用裝置上的 session（離線也能開）
+async function authMe() {
+  const s = getSession(); if (!s) return null;
+  const proxy = getProxy(); if (!proxy) return { ...s, offline: true };
+  try {
+    const r = await fetch(proxy + "/auth/me", { headers: { "x-session": s.token }, cache: "no-store" });
+    if (r.status === 401) { localStorage.removeItem(SESS_KEY); return null; }
+    if (!r.ok) return { ...s, offline: true };
+    const j = await r.json(); const n = { ...s, name: j.name, role: j.role };
+    localStorage.setItem(SESS_KEY, JSON.stringify(n)); return n;
+  } catch (e) { return { ...s, offline: true }; }
+}
+async function authLogout() {
+  const s = getSession(); localStorage.removeItem(SESS_KEY);
+  const proxy = getProxy();
+  if (s && proxy) { try { await fetch(proxy + "/auth/logout", { method: "POST", headers: { "x-session": s.token } }); } catch (e) {} }
+}
+
 window.dataApi = async (action, p = {}) => {
   switch (action) {
     case "nearby": return nearby(p);
@@ -1521,6 +1552,10 @@ window.dataApi = async (action, p = {}) => {
     case "railBoard": return railBoard(tdx, p);
     case "loadState": return loadState();
     case "saveState": localStorage.setItem(STATE_KEY, JSON.stringify(p)); return true;
+    case "session": return getSession();
+    case "authLogin": return authLogin(p);
+    case "authMe": return authMe();
+    case "authLogout": return authLogout();
     case "getProxy": return { url: getProxy(), fromConfig: !localStorage.getItem(PROXY_KEY) };
     case "setProxy":
       if (p.url) localStorage.setItem(PROXY_KEY, p.url.trim()); else localStorage.removeItem(PROXY_KEY);
