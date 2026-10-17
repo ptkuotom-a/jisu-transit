@@ -130,13 +130,23 @@ async function memoTdx(profile, url, ms) {
   if (memoMap.size > 60) memoMap.delete(memoMap.keys().next().value);
   return v;
 }
-// 附近站牌、YouBike 站點：以約100公尺的格子（座標取到小數第3位）存30天
-const GEO_KEY = "jisu_geo", LONG_DAYS = 30, DAY_MS = 86400000;
-function lsGet(key, k) { try { const c = JSON.parse(localStorage.getItem(key) || "{}"); const e = c[k]; if (e && Date.now() - e.t < LONG_DAYS * DAY_MS) return e; } catch (e) {} return null; }
+// 附近站牌、YouBike 站點：以約100公尺的格子（座標取到小數第3位）永久保存（v2.12.3起不再過期）
+// 站牌異動靠「自動補救」：即時資料出現清單裡沒有的站、且清單超過一天，就略過快取重抓一次
+// 容量靠 LRU 上限控制：t＝抓取時間、u＝最近使用時間（每天最多記一次，避免一直重寫 localStorage）
+const GEO_KEY = "jisu_geo", DAY_MS = 86400000;
+const FRESH = "&__fresh=1";   // 請 Worker 略過共用快取重抓（Worker 端同一網址每天最多一次）
+const lastUse = e => Math.max(e.t || 0, e.u || 0);
+function lsGet(key, k) {
+  try {
+    const c = JSON.parse(localStorage.getItem(key) || "{}"); const e = c[k];
+    if (e && Date.now() - lastUse(e) > DAY_MS) { e.u = Date.now(); try { localStorage.setItem(key, JSON.stringify(c)); } catch (x) {} }
+    return e || null;
+  } catch (e) {} return null;
+}
 function lsSet(key, k, d, max) {
   let c = {}; try { c = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) {}
   c[k] = { t: Date.now(), d };
-  for (const x of Object.keys(c).sort((a, b) => c[b].t - c[a].t).slice(max)) delete c[x];
+  for (const x of Object.keys(c).sort((a, b) => lastUse(c[b]) - lastUse(c[a])).slice(max)) delete c[x];
   try { localStorage.setItem(key, JSON.stringify(c)); } catch (e) { try { localStorage.setItem(key, JSON.stringify({ [k]: c[k] })); } catch (e2) {} }
 }
 const stopPack = s => [s.StopUID || "", (s.StopName && s.StopName.Zh_tw) || "", s.StopPosition ? s.StopPosition.PositionLat : null, s.StopPosition ? s.StopPosition.PositionLon : null, s.StationID || "", s.Bearing || ""];
@@ -146,12 +156,12 @@ const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, Stati
 // 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
 async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
   const c = lsGet(GEO_KEY, key);
-  const fresh = async () => { const l = await tdx(profile, url); lsSet(GEO_KEY, key, l.map(pack), 40); return l; };
-  if (!c) return fresh();
+  const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); lsSet(GEO_KEY, key, l.map(pack), 40); return l; };
+  if (!c) return fresh(false);
   const list = c.d.map(unpack);
   if (liveUIDs && Date.now() - c.t > DAY_MS) {
     const have = new Set(list.map(x => x.StopUID || x.StationUID));
-    if ((await liveUIDs).some(u => u && !have.has(u))) return fresh().catch(() => list);
+    if ((await liveUIDs).some(u => u && !have.has(u))) return fresh(true).catch(() => list);
   }
   return list;
 }
@@ -178,6 +188,10 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] } }) {
 
   const [busR_, bikeR_, favLive, railR_] = await Promise.allSettled([busP, bikeP, favP, railP]);
   if (busR_.status === "rejected" && bikeR_.status === "rejected") throw busR_.reason;
+  try {   // 全市搜尋名單的自動補救（只比對、不額外呼叫；發現新站才重抓）
+    placeHeal(busR_.status === "fulfilled" ? busR_.value[0].map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw })) : [],
+      bikeR_.status === "fulfilled" ? bikeR_.value[1].map(a => a.StationUID) : []);
+  } catch (e) {}
 
   // 公車：依站名分組
   let busStops = [];
@@ -297,6 +311,7 @@ async function liveFavs(favs) {
   for (const [city, uids] of Object.entries(kg)) {
     const filter = uids.map(u => `StationUID eq '${u}'`).join(" or ");
     jobs.push(memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, 90000).then(list => {
+      try { placeHeal([], list.map(a => a.StationUID)); } catch (e) {}
       for (const a of list) {
         const det = a.AvailableRentBikesDetail || null;
         out.bike[a.StationUID] = {
@@ -319,19 +334,20 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (!k) throw new Error("缺少路線識別資訊");
   const name = enc(route);
   const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
-  // 站序存30天（jisu_sor）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
+  // 站序永久保存（jisu_sor，LRU 30條）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = lsGet(SOR_KEY, sorKey);
-  const sorFresh = async () => { const l = await tdx("route", u("StopOfRoute")); lsSet(SOR_KEY, sorKey, sorPack(l), 30); return l; };
+  const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); lsSet(SOR_KEY, sorKey, sorPack(l), 30); return l; };
   let [sor, etas, near] = await Promise.all([
-    sc ? sc.d : sorFresh(),
+    sc ? sc.d : sorFresh(false),
     tdx("route", u("EstimatedTimeOfArrival")),
     tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
   if (sc) {
     const have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
     const stale = !have.size || (Date.now() - sc.t > DAY_MS && etas.some(t => t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID)));
-    if (stale) sor = await sorFresh().catch(() => sor);
+    if (stale) sor = await sorFresh(true).catch(() => sor);
   }
+  try { placeHeal(etas.map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw }))); } catch (e) {}
   const mine = sor.filter(r => r.RouteUID === routeUID);
   const dirs = [...new Set((mine.length ? mine : sor).map(r => r.Direction === 1 ? 1 : 0))].sort();
   let cand = mine.filter(r => (r.Direction === 1 ? 1 : 0) === dirNum);
@@ -1436,43 +1452,84 @@ async function busIndex() {
   return { cities: c.cities, missing: all.filter(x => !c.cities[x]) };
 }
 
-// ---------- 全市站牌／YouBike 站點名單（搜尋用）：只抓所在縣市，Worker 與本機都存30天 ----------
+// ---------- 全市站牌／YouBike 站點名單（搜尋用）：只抓所在縣市，永久保存 ----------
 // 站牌：同名且相距300公尺內的併成一筆 [名稱, 緯度, 經度, 半徑]；YouBike：[UID, 名稱, 地址, 緯度, 經度, 柱數, 類型]
-const PLACE_KEY = "jisu_place_";
-const placeJobs = {};
+// ts／tb＝站牌／YouBike 抓取時間；最多保留3個縣市（LRU）。即時資料出現名單沒有的站名／站點，且名單超過一天 → 只重抓那一份
+const PLACE_KEY = "jisu_place_", PLACE_MAX = 3;
+const placeJobs = {}, placeMem = {}, placeSets = {}, healing = {};
+const r5 = x => Math.round(x * 1e5) / 1e5;
+function placeLoad(city) {
+  if (placeMem[city] !== undefined) return placeMem[city];
+  let c = null; try { c = JSON.parse(localStorage.getItem(PLACE_KEY + city)); } catch (e) {}
+  if (c && !c.ts) { c.ts = c.tb = c.t; }   // v2.12.0 舊格式
+  return placeMem[city] = c && c.stops ? c : null;
+}
+function placeSave(c) {
+  c.u = Date.now(); placeMem[c.city] = c; delete placeSets[c.city];
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(PLACE_KEY) && k !== PLACE_KEY + c.city);
+  const age = k => { try { const x = JSON.parse(localStorage.getItem(k)); return x.u || x.t || 0; } catch (e) { return 0; } };
+  for (const k of keys.sort((a, b) => age(b) - age(a)).slice(PLACE_MAX - 1)) { localStorage.removeItem(k); delete placeMem[k.slice(PLACE_KEY.length)]; }
+  try { localStorage.setItem(PLACE_KEY + c.city, JSON.stringify(c)); } catch (e) {}
+}
+async function placeStops(city, heal) {
+  const l = await tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON` + (heal ? FRESH : ""));
+  const byName = {}, stops = [];
+  for (const x of l) {
+    const n = x.StopName && x.StopName.Zh_tw, p = x.StopPosition; if (!n || !p || !p.PositionLat) continue;
+    const arr = byName[n] = byName[n] || [];
+    let g = arr.find(g => haversine(g.lat, g.lon, p.PositionLat, p.PositionLon) <= 300);
+    if (!g) arr.push(g = { lat: p.PositionLat, lon: p.PositionLon, pts: [] });
+    g.pts.push([p.PositionLat, p.PositionLon]);
+  }
+  for (const [n, arr] of Object.entries(byName)) for (const g of arr) {
+    const la = g.pts.reduce((a, q) => a + q[0], 0) / g.pts.length, lo = g.pts.reduce((a, q) => a + q[1], 0) / g.pts.length;
+    stops.push([n, r5(la), r5(lo), Math.round(Math.max(...g.pts.map(q => haversine(la, lo, q[0], q[1]))))]);
+  }
+  return stops;
+}
+async function placeBikes(city, heal) {
+  const l = await tdx("route", `${BASE}/basic/v2/Bike/Station/City/${city}?%24select=${enc("StationUID,StationName,StationAddress,StationPosition,BikesCapacity,ServiceType")}&%24top=5000&%24format=JSON` + (heal ? FRESH : ""));
+  return l.filter(x => x.StationPosition).map(x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
+    (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]);
+}
 function placeIndex({ city }) {
   if (!city || !UID_CITY_SET.has(city)) return Promise.resolve(null);
-  try { const c = JSON.parse(localStorage.getItem(PLACE_KEY + city)); if (c && Date.now() - c.t < LONG_DAYS * DAY_MS) return Promise.resolve(c); } catch (e) {}
+  const c0 = placeLoad(city); if (c0) return Promise.resolve(c0);
   if (placeJobs[city]) return placeJobs[city];
   return placeJobs[city] = (async () => {
-    const [st, bk] = await Promise.allSettled([
-      tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON`),
-      tdx("route", `${BASE}/basic/v2/Bike/Station/City/${city}?%24select=${enc("StationUID,StationName,StationAddress,StationPosition,BikesCapacity,ServiceType")}&%24top=5000&%24format=JSON`)]);
+    const [st, bk] = await Promise.allSettled([placeStops(city, false), placeBikes(city, false)]);
     if (st.status === "rejected" && bk.status === "rejected") throw st.reason;
-    const r5 = x => Math.round(x * 1e5) / 1e5;
-    const stops = [];
-    if (st.status === "fulfilled") {
-      const byName = {};
-      for (const x of st.value) {
-        const n = x.StopName && x.StopName.Zh_tw, p = x.StopPosition; if (!n || !p || !p.PositionLat) continue;
-        const arr = byName[n] = byName[n] || [];
-        let g = arr.find(g => haversine(g.lat, g.lon, p.PositionLat, p.PositionLon) <= 300);
-        if (!g) arr.push(g = { lat: p.PositionLat, lon: p.PositionLon, pts: [] });
-        g.pts.push([p.PositionLat, p.PositionLon]);
-      }
-      for (const [n, arr] of Object.entries(byName)) for (const g of arr) {
-        const la = g.pts.reduce((a, q) => a + q[0], 0) / g.pts.length, lo = g.pts.reduce((a, q) => a + q[1], 0) / g.pts.length;
-        const r = Math.max(...g.pts.map(q => haversine(la, lo, q[0], q[1])));
-        stops.push([n, r5(la), r5(lo), Math.round(r)]);
-      }
-    }
-    const bikes = bk.status === "fulfilled" ? bk.value.filter(x => x.StationPosition).map(x => [x.StationUID,
-      ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""), (x.StationAddress && x.StationAddress.Zh_tw) || "",
-      r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]) : [];
-    const c = { t: Date.now(), city, stops, bikes, part: st.status === "rejected" || bk.status === "rejected" };
-    if (!c.part) { try { localStorage.setItem(PLACE_KEY + city, JSON.stringify(c)); } catch (e) {} }
+    const now = Date.now();
+    const c = { t: now, ts: now, tb: now, city, stops: st.status === "fulfilled" ? st.value : [], bikes: bk.status === "fulfilled" ? bk.value : [],
+      part: st.status === "rejected" || bk.status === "rejected" };
+    if (!c.part) placeSave(c);
     return c;
   })().finally(() => { delete placeJobs[city]; });
+}
+// 自動補救：stops＝[{ uid, name }]（即時預估裡的站牌）、bikes＝[StationUID]；只檢查已存名單的縣市
+function placeHeal(stops = [], bikes = []) {
+  const want = {};
+  for (const x of stops) { const city = UID_CITY[(x.uid || "").slice(0, 3)]; if (city && x.name) (want[city] = want[city] || { s: new Set(), b: new Set() }).s.add(x.name); }
+  for (const u of bikes) { const city = UID_CITY[(u || "").slice(0, 3)]; if (city) (want[city] = want[city] || { s: new Set(), b: new Set() }).b.add(u); }
+  for (const [city, w] of Object.entries(want)) {
+    const c = placeLoad(city); if (!c) continue;
+    const S = placeSets[city] = placeSets[city] || { s: new Set(c.stops.map(x => x[0])), b: new Set(c.bikes.map(x => x[0])) };
+    const now = Date.now();
+    const needS = now - c.ts > DAY_MS && [...w.s].some(n => !S.s.has(n));
+    const needB = now - c.tb > DAY_MS && [...w.b].some(u => !S.b.has(u));
+    for (const [need, kind] of [[needS, "s"], [needB, "b"]]) {
+      if (!need || healing[city + kind]) continue;
+      healing[city + kind] = true;
+      (kind === "s" ? placeStops(city, true) : placeBikes(city, true)).then(l => {
+        const cur = placeLoad(city) || c;
+        if (kind === "s") { cur.stops = l; cur.ts = Date.now(); } else { cur.bikes = l; cur.tb = Date.now(); }
+        placeSave(cur);
+      }).catch(() => {
+        // 失敗也記時間，明天再試，避免一直重抓
+        const cur = placeLoad(city) || c; if (kind === "s") cur.ts = Date.now(); else cur.tb = Date.now(); placeSave(cur);
+      }).finally(() => { delete healing[city + kind]; });
+    }
+  }
 }
 const UID_CITY_SET = new Set(Object.values(UID_CITY));
 
@@ -1480,6 +1537,7 @@ const UID_CITY_SET = new Set(Object.values(UID_CITY));
 async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
   const rad = Math.min(Math.max(r + 60, 80), 400);
   const eta = await tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`);
+  try { placeHeal(eta.map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw }))); } catch (e) {}
   const routes = {};
   for (const it of eta) {
     if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
@@ -1498,6 +1556,7 @@ async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
   const city = UID_CITY[(uid || "").slice(0, 3)];
   let a = {};
   if (city) { try { a = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0] || {}; } catch (e) {} }
+  if (a.StationUID) try { placeHeal([], [a.StationUID]); } catch (e) {}
   const det = a.AvailableRentBikesDetail || null;
   return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
     rent: typeof a.AvailableRentBikes === "number" ? a.AvailableRentBikes : null, ret: typeof a.AvailableReturnBikes === "number" ? a.AvailableReturnBikes : null,
