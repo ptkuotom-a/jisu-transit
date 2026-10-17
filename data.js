@@ -1797,7 +1797,9 @@ async function planRoutes({ o, d, modes, gc, yb, when, time }) {
   if (when === "dep" && time) q.set("dep", time); if (when === "arr" && time) q.set("arr", time);
   const j = await authedGet("/plan?" + q.toString());
   if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
-  const out = planClean(j.data && j.data.routes, yb);
+  let out = planClean(j.data && j.data.routes, yb);
+  // 「現在出發」時 TDX 偶爾會給已經開走的班次（第一段車已過發車時間），趕不上的就不列
+  if (when === "now") { const now = Date.now(); out = out.filter(r => { const t = r.legs.find(l => l.kind === "transit"); return !t || tms(t.from.time) >= now - 60000; }); }
   // 最快：先到的排前面（指定抵達則是最晚出發的排前面）；最便宜維持 TDX 的順序
   if (gc) out.sort((a, b) => (a.approx - b.approx) || (when === "arr" ? b.start - a.start : a.end - b.end) || a.dur - b.dur);
   return out;

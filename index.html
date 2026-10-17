@@ -308,6 +308,7 @@ html.locked,html.locked body{overflow:hidden}
 #login button:focus-visible{outline:2px solid var(--lime);outline-offset:3px}
 .acct{display:flex;align-items:center;justify-content:space-between;gap:12px}.acct b{font-size:17px}.acct .role{font-size:13px;color:var(--muted);margin-left:8px}
 .btn.out{color:var(--bad)}
+#routePage .sec,#routePage .pr,#routePage .tn{scroll-margin-top:150px}
 .rhead.pdh h1{font-size:clamp(30px,10vw,44px);white-space:nowrap}
 /* 路線規劃（v2.13.0） */
 .srow{display:flex;align-items:center;gap:10px;margin-bottom:22px}.srow[hidden]{display:none}.srow .search{flex:1;min-width:0;margin-bottom:0}
@@ -1372,7 +1373,7 @@ function planHtml() {
   if (P.loading && !P.res) h += skel(3);
   else if (P.err) h += `<div class="note" style="margin-top:14px">${esc(P.err)}</div>`;
   else if (P.res) {
-    h += `<div class="sec"><h2>建議路線</h2><span class="side">${P.res.length}條</span></div>`;
+    h += `<div class="sec" id="planRes"><h2>建議路線</h2><span class="side">${P.res.length}條</span></div>`;
     h += P.res.length ? P.res.map((r, i) => planCard(r, i)).join('') : `<div class="note">找不到可行的路線。試著打開更多交通工具，或換個時間。</div>`;
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
@@ -1411,6 +1412,13 @@ function planCard(r, i) {
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span><span>步行${walk}分</span>${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
     ${segBar(r)}</button>`;
 }
+// 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
+const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
+function geoSub(g) {
+  const k = GEO_KIND[g.type], parts = [k, g.addr || g.area].filter(Boolean);
+  if (g.span) parts.push(`範圍約${g.span}公里，以中心點規劃`);
+  return parts.join('・');
+}
 async function planGo() {
   const P = S.plan; if (!P.o || !P.d) return;
   const modes = PLAN_MODES.filter(([k]) => P.modes[k]).map(x => x[2]);
@@ -1422,7 +1430,14 @@ async function planGo() {
   try { const res = await api('planRoutes', { o:P.o, d:P.d, modes, gc: P.pref === 'fast', yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))) }); if (tok === P.tok) { P.res = res; P.err = null; } }
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
   if (tok !== P.tok) return;
-  P.loading = false; if (S.page === 'plan') renderPage();
+  P.loading = false; if (S.page === 'plan') { renderPage(); if (P.res && P.res.length) planScrollRes(); }
+}
+// 結果出來時，把「建議路線」捲到浮動標題列正下方（不被標題列蓋住）；已經在更下面就不動
+function planScrollRes() {
+  const pg = document.getElementById('routePage'), sec = document.getElementById('planRes'), top = pg && pg.querySelector('.ptop');
+  if (!sec || !top) return;
+  const y = Math.round(pg.scrollTop + sec.getBoundingClientRect().top - pg.getBoundingClientRect().top - top.offsetHeight - 18);
+  if (y > pg.scrollTop + 4) pg.scrollTo({ top: y, behavior: 'smooth' });
 }
 function planChanged() { S.plan.res = null; S.plan.err = null; renderPage(); }
 
@@ -1454,7 +1469,7 @@ function pickResHtml() {
   stops.sort((a, b) => (a.x[0].toLowerCase() === ql ? 0 : a.x[0].toLowerCase().startsWith(ql) ? 1 : 2) - (b.x[0].toLowerCase() === ql ? 0 : b.x[0].toLowerCase().startsWith(ql) ? 1 : 2));
   if (stops.length) h += `<div class="tgrp">公車站牌</div><div class="board">` + stops.slice(0, 6).map(({ c, x }) => pickRow({ name:x[0], lat:x[1], lon:x[2], sub:'公車站牌・' + (CITY_ZH[c] || c) }, I.busFill, x[0], '公車站牌・' + (CITY_ZH[c] || c))).join('') + `</div>`;
   const geo = K.geoQ === q ? K.geo : null;
-  if (geo && geo.length) h += `<div class="tgrp">地址・地標</div><div class="board">` + geo.map(g => pickRow({ name:g.name, lat:g.lat, lon:g.lon, sub:g.addr }, I.pin, g.name, g.addr)).join('') + `</div>`;
+  if (geo && geo.length) h += `<div class="tgrp">地址・地標</div><div class="board">` + geo.map(g => { const sub = geoSub(g); return pickRow({ name:g.name, lat:g.lat, lon:g.lon, sub:g.area || g.addr }, I.pin, g.name, sub); }).join('') + `</div>`;
   if (K.geoLoading || (q.length >= 2 && K.geoQ !== q)) h += `<div class="sub" style="margin-top:12px">搜尋地址・地標中…</div>`;
   else if (K.geoErr) h += `<div class="sub" style="margin-top:12px">${esc(K.geoErr)}</div>`;
   if (!h) h = `<div class="note" style="margin-top:8px">${q.length < 2 ? '再多打一個字…' : `找不到「${esc(q)}」。`}</div>`;
