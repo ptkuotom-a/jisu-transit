@@ -1592,14 +1592,14 @@ function detailHtml() {
     const label = esc(legLabel(l));
     h += node(Date.parse(l.from.time + '+08:00'), l.from.name, `${MODE_ZH[l.mode]}・上車${(l.mode === 'tra' || l.mode === 'thsr') && l.number ? `・${esc((l.trainType || '').replace(/[(（].*$/, ''))}${esc(l.number)}次` : l.mode === 'tra' && l.trainType ? `・${esc(l.trainType)}` : ''}`, 'on', `border-color:${c}`);
     h += `<div class="tsg tr" style="--c:${c}"><span class="tt0"></span><span class="ln"><i></i></span><span class="bd">
-      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">${l.headsign ? `往 ${esc(l.headsign)}` : `到 ${esc(l.to.name || '')}`}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
+      <button class="legc" data-act="legOpen" data-i="${reg({ i })}"><span class="lc" style="${chipStyle(c)}">${label}</span><span class="lh">${l.via ? `${esc(l.via)}・到 ${esc(l.to.name || '')}` : l.headsign ? `往 ${esc(l.headsign)}` : `到 ${esc(l.to.name || '')}`}<small>${L ? (L.miss ? '找不到對應的站' : open ? (open.type === 'rail' ? '看車站即時看板' : '看公車路線') : '') : P.liveLoading ? '對應即時資料中…' : ''}</small></span>${legPill(l, L)}${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
       <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站'}</span>` : ''}</button>
       ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
       </span></div>`;
     h += node(Date.parse(l.to.time + '+08:00'), l.to.name, `${MODE_ZH[l.mode]}・下車`, 'on', `border-color:${c}`);
   });
   if (r.legs[r.legs.length - 1]?.kind !== 'transit') h += node(r.end, P.d?.name || '終點', '', 'end');
-  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : '時刻為 TDX 規劃結果'}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
+  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）' : (r.legs.some(l => l.tt) ? '時刻為 TDX 規劃結果，輕軌（及因此改搭的班次）依官方時刻表' : '時刻為 TDX 規劃結果')}；右側膠囊：即時＝目前動態、表定＝時刻表、規劃＝依規劃時間倒數。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
