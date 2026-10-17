@@ -576,11 +576,16 @@ async function trtcLive(st) {
   if (!j || !Array.isArray(j.stations)) return null;
   const here = new Set(ids), best = {};
   for (const s of j.stations) for (const it of (s.items || [])) {
-    const destId = String(it.destinationStationId || "").toUpperCase();
+    let destId = String(it.destinationStationId || "").toUpperCase();
     if (here.has(destId)) continue;                                        // 終點就是本站的列車不顯示
     const dest = (it.stationName && it.stationName.zh) || "?";
     const rn = (it.routeName && it.routeName.zh) || "";
-    const line = (TRTC_ROUTE.find(([k]) => rn.includes(k)) || [])[1] || (!rn ? "Y" : null) || (/^[A-Z]+/.exec(destId) || [])[0] || null;   // 環狀線沒有 routeName   // 終點代碼可能是轉乘站的另一條線（如大安 BR09）
+    // 文湖線與環狀線都沒有 routeName：終點或本站代碼是 BR 開頭＝文湖線，否則＝環狀線（環狀線往大坪林的終點代碼給的是 G04）
+    let line = (TRTC_ROUTE.find(([k]) => rn.includes(k)) || [])[1] || null;
+    if (!line && !rn) line = /^BR\d/.test(destId) || (/^BR\d/.test(s.id || "") && !/^Y\d/.test(destId)) ? "BR" : "Y";
+    if (!line) line = (/^[A-Z]+/.exec(destId) || [])[0] || null;
+    if (line === "Y" && destId && !/^Y\d/.test(destId) && TRTC_XFER[destId]) destId = TRTC_XFER[destId];
+    if (here.has(destId)) continue;
     const raw = String(it.estimateTime ?? "").trim();
     let sec = null, label = null;
     const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
@@ -607,11 +612,57 @@ async function destFixer(op) {
     return id ? { ...t, destId: id } : t;
   };
 }
+// ---------- 沒有站別時刻表的路線（北捷文湖線）：用 TDX 班距＋首末班推估整天班次 ----------
+const HW_LINES = { TRTC: ["BR"] };
+const hwPack = (freq, fl) => ({
+  freq: freq.map(f => ({ LineID: f.LineID || f.LineNo, ServiceDay: f.ServiceDay, Headways: (f.Headways || []).map(h => ({ StartTime: h.StartTime, EndTime: h.EndTime, MinHeadwayMins: h.MinHeadwayMins, MaxHeadwayMins: h.MaxHeadwayMins })) })),
+  fl: fl.map(r => ({ LineID: r.LineID || r.LineNo, StationID: r.StationID, DestinationStationID: r.DestinationStaionID || r.DestinationStationID || null, DestinationStationName: { Zh_tw: zh(r.DestinationStationName) }, FirstTrainTime: r.FirstTrainTime, LastTrainTime: r.LastTrainTime, ServiceDay: r.ServiceDay })),
+});
+const HW_KEY = "jisu_hw_";
+async function loadHw(get, op, stored) {
+  if (stored && stored.hw) return stored.hw;
+  try { const c = JSON.parse(localStorage.getItem(HW_KEY + op)); if (c && Date.now() - c.time < 7 * 86400000) return c.hw; } catch (e) {}
+  const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
+  const [freq, fl] = await Promise.all([get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`)]);
+  const hw = hwPack(freq || [], fl || []);
+  try { localStorage.setItem(HW_KEY + op, JSON.stringify({ time: Date.now(), hw })); } catch (e) {}
+  return hw;
+}
+// 依班距排出本站整天的估算班次（班距取最小與最大的平均）；今日已收班就列明日
+async function hwTimetable(hw, ids, op) {
+  const now = nowMin() < 180 ? nowMin() + 1440 : nowMin();
+  const mk = async (off) => {
+    const di = await dayInfo(svcDate(off)), key = di.hol ? "NationalHolidays" : di.key, out = [];
+    for (const r of hw.fl.filter(r => ids.includes(r.StationID) && (!r.ServiceDay || r.ServiceDay[key] !== false))) {
+      const plan = hw.freq.find(f => f.LineID === r.LineID && f.ServiceDay && f.ServiceDay[key]) || hw.freq.find(f => f.LineID === r.LineID); if (!plan) continue;
+      const bands = (plan.Headways || []).map(h => { const s = toMin(h.StartTime); let e = h.EndTime === "24:00" ? 1440 : toMin(h.EndTime); if (e <= s) e += 1440; return { s: s < 180 ? s + 1440 : s, e, hw: Math.max(1, Math.round(((h.MinHeadwayMins || h.MaxHeadwayMins) + (h.MaxHeadwayMins || h.MinHeadwayMins)) / 2)) }; }).sort((a, b) => a.s - b.s);
+      const hwAt = t => { const b = bands.find(b => t >= b.s && t < b.e) || (t >= (bands[bands.length - 1] || {}).e ? bands[bands.length - 1] : bands[0]); return b ? b.hw : 8; };
+      const first = toMin(r.FirstTrainTime); let last = toMin(r.LastTrainTime); if (last < 180) last += 1440;
+      const dest = zh(r.DestinationStationName) || "?", base = { dest, destId: r.DestinationStationID, line: r.LineID, dir: null, via: null, est: true };
+      const ts = []; for (let t = first; t < last; t += hwAt(t)) ts.push(t); ts.push(last);
+      ts.forEach((t, i) => { const tt = t + off * 1440; out.push({ ...base, time: String(Math.floor(t / 60) % 24).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"), t: tt, eta: tt - now, lastTrain: i === ts.length - 1 }); });
+    }
+    return out;
+  };
+  const today = (await mk(0)).filter(x => x.t >= now);
+  const lines = new Set(today.map(x => x.line + "|" + x.dest));
+  const tm = (await mk(1)).filter(x => !lines.has(x.line + "|" + x.dest));   // 這個方向今天收班了：列明日
+  return [...today, ...tm].sort((a, b) => a.t - b.t);
+}
 async function metroBoard(get, st) {
   const filter0 = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   const ttP = metroTimetable(get, st, filter0, true).catch(() => null);
   const b = await metroBoard0(get, st);
-  const tt = await ttP;
+  let tt = await ttP;
+  // 這站有沒有站別時刻表的路線（文湖線）：補上依班距估算的班次
+  const hwL = (HW_LINES[st.op] || []).filter(l => st.ids.some(i => stnPre(i) === l) && !(tt || []).some(t => t.line === l));
+  if (hwL.length) {
+    try {
+      const stored = await ttLoad(st.op).catch(() => null), hw = await loadHw(get, st.op, stored);
+      const est = (await hwTimetable(hw, st.ids, st.op)).filter(t => hwL.includes(t.line));
+      if (est.length) { tt = [...(tt || []), ...est].sort((a, b) => a.t - b.t); b.hasEst = true; }
+    } catch (e) { if (isRate(e)) throw e; }
+  }
   const fix = await destFixer(st.op);
   b.tt = (tt || []).map(fix).map(t => ({ ...t, side: metroSide(t, st.ids) })).filter(t => !(t.destId && st.ids.includes(t.destId)));
   b.ttKind = "official";
@@ -732,6 +783,10 @@ async function ttRefresh(op, pass, onStep) {
     }
     if (!rows.length) throw new Error("TDX 沒有這個系統的站別時刻表");
     out = { v: 1, op, kind: "metro", sd: sds, rows };
+    if (HW_LINES[op]) {   // 沒有站別時刻表的路線：一起存班距＋首末班（2 次呼叫）
+      const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
+      out.hw = hwPack(await get(`${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), await get(`${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`));
+    }
   } else if (sys === "tmrt") {
     const [freq, fl] = [await get(`${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`), await get(`${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/TMRT?%24format=JSON`)];
     if (!freq.length || !fl.length) throw new Error("TDX 沒有台中捷運班距資料");
@@ -969,6 +1024,9 @@ async function metroTimetable(get, st, filter, all) {
   const stored = await ttLoad(st.op).catch(() => null);
   if (stored && stored.rows) recs = ttMetroRecs(stored, st.ids);
   else { try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; } }
+  // 北捷與環狀線合併的轉乘站（板橋、大坪林、景安、頭前庄）：另一個系統的時刻表也要帶進來
+  const other = st.op === "TRTC" && st.ids.some(i => /^Y\d/.test(i)) ? "NTMC" : st.op === "NTMC" && st.ids.some(i => !/^(Y|LB)\d/.test(i)) ? "TRTC" : null;
+  if (other && stored && stored.rows) { const o2 = await ttLoad(other).catch(() => null); if (o2 && o2.rows) recs = recs.concat(ttMetroRecs(o2, st.ids)); }
   if (!recs.length) return null;
   const info = await dayInfo(svcDate(0)), infoT = await dayInfo(svcDate(1));
   const todays = pickDay(recs, info), tomorrows = pickDay(recs, infoT);
