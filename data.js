@@ -731,11 +731,12 @@ const hwPack = (freq, fl) => ({
 const HW_KEY = "jisu_hw_";
 async function loadHw(get, op, stored) {
   if (stored && stored.hw) { try { localStorage.removeItem(HW_KEY + op); } catch (e) {} return stored.hw; }
-  try { const c = JSON.parse(localStorage.getItem(HW_KEY + op)); if (c && Date.now() - c.time < 7 * 86400000) return c.hw; } catch (e) {}
+  try { const c = JSON.parse(localStorage.getItem(HW_KEY + op)); if (c && c.hw && await rgenOk(op, c)) return c.hw; } catch (e) {}
   const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
   const [freq, fl] = await Promise.all([get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`)]);
   const hw = hwPack(freq || [], fl || []);
-  try { localStorage.setItem(HW_KEY + op, JSON.stringify({ time: Date.now(), hw })); } catch (e) {}
+  const g = await rgenNow(op).catch(() => null);
+  try { localStorage.setItem(HW_KEY + op, JSON.stringify({ time: Date.now(), g: g || "", hw })); } catch (e) {}
   return hw;
 }
 // 依班距排出本站整天的估算班次（班距取最小與最大的平均）；今日已收班就列明日
@@ -833,6 +834,9 @@ async function ttMeta(force) {
   if (force || !ttMetaP) ttMetaP = fetch(`${proxy}/tt/meta${force ? "?t=" + Date.now() : ""}`).then(r => r.ok ? r.json() : { systems: {}, offline: true }).catch(() => (ttMetaP = null, { systems: {}, offline: true }));
   return ttMetaP;
 }
+// v2.27.4：軌道靜態資料（站序、站間時間、班距、首末班）手機端永久保存，直到伺服器那邊這個系統「換代」（/tt/meta 的 rgen：時刻表有新版時換）
+async function rgenNow(op) { const m = await ttMeta(); return m.offline ? null : ((m.rgen || {})[op] || ""); }
+async function rgenOk(op, hit) { const g = await rgenNow(op); return g === null || (hit && (hit.g || "") === g); }
 async function ttLoad(op) {
   const meta = await ttMeta(), m = meta.systems[op];
   if (!m) {   // 連不到 Worker：用本機存過的那份（不知道是不是最新版，但比沒有好）
@@ -944,8 +948,9 @@ async function ttRefresh(op, pass, onStep, opt = {}) {
     for (let i = 0; ; i++) {
       calls++; onStep && onStep(calls);
       try {
-        if (!raw) return await tdx("rail", url);
-        const r = await fetch(proxy + url.slice(TDX_ORIGIN.length) + "&__k=3"); const j = await r.json();
+        // v2.27.4：Worker 端這些資料永久存，手動更新要帶 __fresh=1 才會向 TDX 抓最新版並覆寫（同一網址每天一次，之後讀當天抓的那份）
+        if (!raw) return await tdx("rail", url + FRESH);
+        const r = await fetch(proxy + url.slice(TDX_ORIGIN.length) + FRESH + "&__k=3"); const j = await r.json();
         if (r.status === 429) { const e = new Error(RATE_MSG); e.rate = true; throw e; }
         if (!r.ok) throw new Error("資料讀取失敗 (" + r.status + ")"); return j;
       } catch (e) { if (!isRate(e) || i >= 3) throw e; await sleep(5000 * (i + 1)); }
@@ -1530,10 +1535,11 @@ async function railSearch(p) {
 const SOL_KEY = "jisu_sol";
 async function stationOfLine(get, op, heal) {   // heal：清單裡找不到要的站，且存了超過一天才重抓
   let c = {}; try { c = JSON.parse(localStorage.getItem(SOL_KEY)) || {}; } catch (e) {}
-  const hit = c[op]; if (hit && !(heal && Date.now() - hit.time > DAY_MS)) return hit.lines;
+  const hit = c[op]; if (hit && !(heal && Date.now() - hit.time > DAY_MS) && await rgenOk(op, hit)) return hit.lines;
+  const g = await rgenNow(op).catch(() => null);
   const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationOfLine/${op}?%24format=JSON`);
   const lines = (list || []).map(l => ({ line: l.LineID || l.LineNO, st: (l.Stations || []).slice().sort((a, b) => (a.Sequence ?? 0) - (b.Sequence ?? 0)).map(x => [x.StationID, zh(x.StationName) || x.StationID]) }));
-  if (lines.length) { c[op] = { time: Date.now(), lines }; try { localStorage.setItem(SOL_KEY, JSON.stringify(c)); } catch (e) {} }
+  if (lines.length) { c[op] = { time: Date.now(), g: g || "", lines }; try { localStorage.setItem(SOL_KEY, JSON.stringify(c)); } catch (e) {} }
   return lines;
 }
 // 依站序串成路網：帶字尾的支線站（G03A、R22A）若前一站不是本站則接到本站；蘆洲支線 O50接大橋頭 O12；高雄輕軌是環狀
@@ -1614,7 +1620,8 @@ async function s2sEdges(get, op) {
   const stored = await ttLoad(op).catch(() => null);
   if (stored && stored.s2s) { try { localStorage.removeItem(S2S_KEY); } catch (e) {} return stored.s2s; }
   let c = {}; try { c = JSON.parse(localStorage.getItem(S2S_KEY)) || {}; } catch (e) {}
-  const hit = c[op]; if (hit && (Object.keys(hit.e).length || Date.now() - hit.time < DAY_MS)) return hit.e;   // 有資料就永久；空的明天再試
+  const hit = c[op]; if (hit && (Object.keys(hit.e).length || Date.now() - hit.time < DAY_MS) && await rgenOk(op, hit)) return hit.e;   // 有資料就永久（直到換代）；空的明天再試
+  const g = await rgenNow(op).catch(() => null);
   const e = {};
   try {
     const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/S2STravelTime/${op}?%24format=JSON`);
@@ -1623,7 +1630,7 @@ async function s2sEdges(get, op) {
       for (const k of [x.FromStationID + "|" + x.ToStationID, x.ToStationID + "|" + x.FromStationID]) if (!e[k]) e[k] = sec;
     }
   } catch (err) { if (isRate(err)) throw err; }
-  c[op] = { time: Date.now(), e }; try { localStorage.setItem(S2S_KEY, JSON.stringify(c)); } catch (err) {}
+  c[op] = { time: Date.now(), g: g || "", e }; try { localStorage.setItem(S2S_KEY, JSON.stringify(c)); } catch (err) {}
   return e;
 }
 // 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約2分推估
@@ -1723,12 +1730,13 @@ async function trainView(get, p) {
 const TMRT_KEY = "jisu_tmrt";
 async function loadTmrt(get) {
   const stored = await ttLoad("TMRT").catch(() => null); if (stored && stored.freq) { try { localStorage.removeItem(TMRT_KEY); } catch (e) {} return stored; }
-  try { const c = JSON.parse(localStorage.getItem(TMRT_KEY)); if (c && Date.now() - c.time < 86400000 && c.freq && c.fl) return c; } catch (e) {}
+  try { const c = JSON.parse(localStorage.getItem(TMRT_KEY)); if (c && c.freq && c.fl && await rgenOk("TMRT", c)) return c; } catch (e) {}
+  const g = await rgenNow("TMRT").catch(() => null);
   const [freq, fl] = await Promise.all([
     get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`),
     get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/TMRT?%24format=JSON`),
   ]);
-  const c = { time: Date.now(), freq, fl };
+  const c = { time: Date.now(), g: g || "", freq, fl };
   try { localStorage.setItem(TMRT_KEY, JSON.stringify(c)); } catch (e) {}
   return c;
 }
