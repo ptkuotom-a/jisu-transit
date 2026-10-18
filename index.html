@@ -489,7 +489,7 @@ const I = {
 /* ---------- state ---------- */
 const S = {
   tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0, busAt:0, bikeAt:0, railNearAt:0, partErr:{},
-  settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},
+  settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},   // railFarTra／railFarThsr 在讀設定時補上
   railTab:{}, ttAll:{}, rail:null, railData:null, railLoading:false, railError:null, page:null,
   favs:{bus:[], bike:[]},
   route:null, routeData:null, routeLoading:false, routeError:null,
@@ -604,6 +604,7 @@ function render() {
   const v = viewOf(S.tab);
   $('#main').innerHTML = v();
   mountMap();
+  if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
 }
 /* ---------- 首頁地圖（MapLibre GL 自帶於 vendor/，OpenFreeMap 深色向量底圖，免金鑰） ---------- */
 let MAP = null, mapEl = null, mapMarks = [], meMark = null, mlP = null, mapKey = null, mapUserMoved = false;
@@ -688,11 +689,6 @@ function vHome() {
   else {
     const mix = [...d.busStops.slice(0,2).map(s => ({k:'s', d:s.dist ?? 9e9, o:s})), ...d.bikes.slice(0,2).map(b => ({k:'b', d:b.dist, o:b})), ...(d.rail || []).filter(r => !r.far && !r.fallback).slice(0,1).map(r => ({k:'r', d:r.dist, o:r}))].sort((a,b) => a.d - b.d);
     h += mix.length ? mix.map(x => x.k === 's' ? stopCard(x.o) : x.k === 'r' ? railCard(x.o) : bikeCard(x.o)).join('') : `<div class="note">附近${S.settings.busR}公尺內沒有公車站牌、${S.settings.bikeR}公尺內沒有 YouBike。到「設定」加大搜尋範圍。</div>`;
-    const routes = uniqRoutes(d).slice(0, 10);
-    if (routes.length) {
-      h += `<div class="sec"><h2 style="font-size:20px;color:var(--muted);font-weight:700">附近路線</h2></div><div class="chips">` +
-        routes.map(r => `<button class="chip" data-act="route" data-i="${reg(r)}">${esc(r.route)}</button>`).join('') + `</div>`;
-    }
   }
   h += `<div class="sec"><h2>我的收藏</h2><span class="live-tag">${I.signal}即時</span></div>`;
   h += vFavs();
@@ -837,7 +833,7 @@ function vSearch() {
   sec.bike = bikes.length || P.bikes ? `<div class="sec"><h2>YouBike</h2></div>` + bikes.map(bikeCard).join('') + P.bikes : '';
   const rails = (d.rail || []).filter(r => (r.name + r.sys).toLowerCase().includes(q));
   sec.rail = (rails.length ? `<div class="sec"><h2>附近車站</h2></div>` + rails.map(railCard).join('') : '') + railSearchHtml(S.q);
-  const order = { bike:['bike','stop','route','rail'], rail:['rail','route','stop','bike'], bus:['route','stop','bike','rail'] }[S.tab] || ['route','stop','bike','rail'];
+  const order = ['rail','stop','bike','route'];   // v2.29.0：一律 車站 → 公車站 → YouBike → 其他（路線）
   let h = order.map(k => sec[k]).join('');
   h += P.loading || '';
   if (!h) h = `<div class="note" style="margin-top:8px">找不到「${esc(S.q)}」。</div>`;
@@ -890,13 +886,18 @@ function vSettings() {
   <div class="set"><h3>公車站牌</h3><p>以目前位置為中心，找這個距離內的站牌。</p>${seg('busR',[200,300,500,800],v=>v+'m')}</div>
   <div class="set"><h3>YouBike 站點</h3><p>範圍越大，站點越多，讀取也越久。</p>${seg('bikeR',[300,500,800,1000],v=>v+'m')}</div>
   <div class="set"><h3>軌道：步行範圍</h3><p>只列出走得到的車站，距離以最近的出口計算。範圍內沒有車站時，改列最近的2站。</p>${seg('railWalk',[0.8,1.5,3],v=>v<1? v*1000+'m' : v+'公里')}</div>
-  <div class="set"><h3>附上最近的台鐵、高鐵站</h3><p>即使不在步行範圍，也在清單最後列出最近的台鐵、高鐵站各一站。</p>${seg('railFar',[1,0],v=>v?'顯示':'不顯示')}</div>
+  <div class="set"><h3>附上最近的台鐵站</h3><p>即使不在步行範圍，也在車站清單最後列出最近的台鐵站。</p>${seg('railFarTra',[1,0],v=>v?'顯示':'不顯示')}</div>
+  <div class="set"><h3>附上最近的高鐵站</h3><p>即使不在步行範圍，也在車站清單最後列出最近的高鐵站。</p>${seg('railFarThsr',[1,0],v=>v?'顯示':'不顯示')}</div>
   <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
     <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
   <div class="sec"><h2>通知</h2></div>
   <div class="set"><p>下車提醒用推播通知。iPhone 需 iOS 16.4以上，並從主畫面圖示開啟。目前權限：${'Notification' in window ? ({granted:'已允許',denied:'已拒絕（到 iPhone 設定 › 通知 › 極速通勤 開啟）',default:'尚未詢問'})[Notification.permission] : '這個環境不支援'}</p>
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
-  <div class="sec"><h2>資料來源</h2></div>
+  ${vAccount()}
+  ${!DEMO && S.auth?.role === 'admin' ? `<button class="card advrow" data-act="openAdv"><span class="body"><div class="title">進階設定</div><div class="desc">Worker 網址、更新時刻表、每日訪客檢查</div></span><span class="pill">僅管理者</span><span class="chev">${I.chev}</span></button>` : ''}
+  <div class="sec"><h2>關於</h2></div>
+  <div class="note">極速通勤${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>
+  <div class="sub" style="margin:16px 4px 8px;font-weight:700;color:var(--text)">資料來源</div>
   <div class="set src"><dl>
     <dt>公車、YouBike、軌道車站與時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
     <dt>北捷、環狀線即時到站</dt><dd>Bus+ 公開資料（非官方）；讀不到時改用 TDX 即時看板（只有進站中列車）＋時刻表</dd>
@@ -909,19 +910,26 @@ function vSettings() {
     <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖，Google 的路線同樣依官方時刻表校正、用校正後的時間比較；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
-  </dl></div>
-  ${vAccount()}
-  <div class="sec"><h2>關於</h2></div>
-  <div class="note">極速通勤${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
+  </dl></div>`;
 }
 
 /* ---------- 帳號與進階設定（進階設定只有管理者看得到） ---------- */
 const ROLE_ZH = { admin:'管理者', user:'一般用戶' };
+// v2.29.0：進階設定改成獨立一頁（設定 › 進階設定），只有管理者看得到入口
+function openAdv() {
+  if (DEMO || S.auth?.role !== 'admin') return;
+  S.back = []; S.page = 'adv';
+  const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0));
+  p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
+  renderPage();
+}
+function advHtml() {
+  return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}</div>`;
+}
 function vAdvanced() {
-  if (DEMO || S.auth?.role !== 'admin') return '';
+  if (DEMO || S.auth?.role !== 'admin') return '<div class="note">只有管理者可以使用進階設定。</div>';
   const px = S.proxy || {};
-  return `<div class="sec"><h2>進階設定</h2><span class="side">僅管理者</span></div>
-  <div class="set"><h3>Worker 網址</h3><p>TDX 金鑰放在你的 Cloudflare Worker 裡，這裡只需要 Worker 網址。${px.fromConfig && px.url ? '目前使用 config.js 的預設網址。' : ''}</p>
+  return `<div class="set"><h3>Worker 網址</h3><p>TDX 金鑰放在你的 Cloudflare Worker 裡，這裡只需要 Worker 網址。${px.fromConfig && px.url ? '目前使用 config.js 的預設網址。' : ''}</p>
     <input class="inp" id="proxyUrl" placeholder="https://jisu-tdx.你的帳號.workers.dev" autocomplete="off" autocapitalize="off" inputmode="url" value="${esc(px.url)}">
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="saveProxy">儲存並測試連線</button></div>
     <div class="kmsg" id="keyMsg"></div></div>
@@ -931,8 +939,7 @@ function vAccount() {
   if (DEMO || !S.auth) return '';
   return `<div class="sec"><h2>帳號</h2></div>
   <div class="set"><div class="acct"><span><b>${esc(S.auth.name || '')}</b><span class="role">${ROLE_ZH[S.auth.role] || ''}</span></span></div>
-    <div class="btns" style="grid-template-columns:1fr;margin-top:12px"><button class="btn out" data-act="logout">登出</button></div></div>
-  ${vAdvanced()}`;
+    <div class="btns" style="grid-template-columns:1fr;margin-top:12px"><button class="btn out" data-act="logout">登出</button></div></div>`;
 }
 
 /* ---------- 時刻表（存在 Worker 雲端） ---------- */
@@ -1602,8 +1609,8 @@ function openPlan() {
   renderPage();
   if (!P.o) api('locate').then(l => { if (!P.o) { P.o = { name:hereName(), lat:l.latitude, lon:l.longitude, here:true }; if (S.page === 'plan') renderPage(); } }).catch(() => {});
 }
-const PLAN_PAGES = ['plan','planPick','planDetail'];
-function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : ''; }
+const PLAN_PAGES = ['plan','planPick','planDetail','adv'];
+function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : ''; }
 function renderPage() {
   if (!PLAN_PAGES.includes(S.page)) return;
   const pg = $('#routePage'); pg.innerHTML = pageHtml(S.page);
@@ -1730,7 +1737,7 @@ function planScrollRes() {
 function planChanged() { S.plan.res = null; S.plan.err = null; renderPage(); }
 
 /* 選地點頁：車站、站牌（App 自己的清單）＋ OpenStreetMap 地址／地標 */
-function openPick(which) { stackPush(() => { S.page = 'planPick'; S.pick = { which, q:'', rail:null, geo:null, geoQ:'', geoLoading:false, geoErr:null }; $('#routePage').scrollTop = 0; renderPage(); setTimeout(() => { const i = $('#pickQ'); if (i) i.focus(); }, reduceMotion() ? 0 : NAV_MS + 20); }); }
+function openPick(which) { stackPush(() => { S.page = 'planPick'; S.pick = { which, q:'', rail:null, geo:null, geoQ:'', geoLoading:false, geoErr:null, near:null }; pickNearLoad(S.pick); $('#routePage').scrollTop = 0; renderPage(); setTimeout(() => { const i = $('#pickQ'); if (i) i.focus(); }, reduceMotion() ? 0 : NAV_MS + 20); }); }
 function recentPlaces() { try { return JSON.parse(localStorage.getItem(PLAN_RECENT_KEY)) || []; } catch (e) { return []; } }
 function pickHtml() {
   const K = S.pick || { which:'d', q:'' };
@@ -1746,6 +1753,7 @@ function pickResHtml() {
   if (!q) {
     const rec = recentPlaces();
     let h = `<div class="board">` + pickRow({ here:true }, I.nav, '目前位置', S.data?.lat ? '使用手機定位' : '定位中…') + `<button class="trow nrow" data-act="mapPick"><span class="pico">${I.pin}</span><span class="tmain"><div class="td">在地圖上選點</div></span><span class="chev">${I.chev}</span></button></div>`;
+    h += pickNearHtml(K);
     if (rec.length) h += `<div class="tgrp">最近使用</div><div class="board">` + rec.map(p => pickRow(p, I.clock, p.name, p.sub || '')).join('') + `</div>`;
     return h;
   }
@@ -1782,6 +1790,21 @@ function pickInput(v) {
       .finally(() => { if (S.pick === K) { K.geoLoading = false; pickRefresh(); } });
   }, 700);
   pickRefresh();
+}
+// v2.29.0 選地點頁的預設車站（依目前位置；只用手機存的車站清單，不另呼叫 TDX）
+function pickNearLoad(K) {
+  const go = (lat, lon) => api('railPickNear', { lat, lon }).then(r => { K.near = r || []; }).catch(() => { K.near = []; }).finally(() => { if (S.pick === K && !K.q.trim()) pickRefresh(); });
+  if (S.data?.lat) go(S.data.lat, S.data.lon);
+  else api('locate').then(l => go(l.latitude, l.longitude)).catch(() => { K.near = []; if (S.pick === K) pickRefresh(); });
+}
+function pickNearHtml(K) {
+  if (!K.near) return `<div class="tgrp">附近車站</div><div class="sub" style="margin:8px 6px 0">讀取中…</div>`;
+  if (!K.near.length) return '';
+  const fb = K.near[0].fallback;
+  return `<div class="tgrp">附近車站<span>${fb ? '1.5公里內沒有車站，最近的台鐵站' : '1.5公里內，各系統最近的一站'}</span></div><div class="board">` + K.near.map(r => {
+    const o = { name: r.name + (r.kind === 'metro' || /站$/.test(r.name) ? '' : '站'), lat:r.lat, lon:r.lon, sub:r.sys, st:1 };
+    return `<button class="trow nrow" data-act="pickSel" data-i="${reg(o)}"><span class="pico"><span class="pico-s">${sysIcon(r.op)}</span></span><span class="tmain"><div class="td">${esc(r.name)}</div><div class="tt">${esc(r.sys)} ${(r.lines || []).map(l => lineBadge(r.op, l)).join('')}</div></span><span class="pill">${distTxt(r.dist)}</span><span class="chev">${I.chev}</span></button>`;
+  }).join('') + `</div>`;
 }
 function pickRefresh() { const el = $('#pickRes'); if (el && S.page === 'planPick') el.innerHTML = pickResHtml(); }
 function pickSel(o) {
@@ -2155,12 +2178,13 @@ document.addEventListener('click', e => {
       saveState(); bikeSheet(o); render(); refreshFavsSoon(); break;
     }
     case 'saveProxy': saveProxy(); break;
+    case 'openAdv': openAdv(); break;
     case 'railSys': {
       const cur = new Set(S.settings.railSys || []); const k = el.dataset.v;
       cur.has(k) ? cur.delete(k) : cur.add(k);
       S.settings.railSys = cur.size ? [...cur] : null; saveState(); render(); refreshFavsSoon(); break;
     }
-    case 'set': S.settings[el.dataset.k] = +el.dataset.v; saveState(); render(); if (el.dataset.k !== 'auto') refresh(); break;
+    case 'set': S.settings[el.dataset.k] = +el.dataset.v; saveState(); render(); if (/^railFar/.test(el.dataset.k)) refresh(S.data ? 'rail' : null); else if (el.dataset.k !== 'auto') refresh(); break;   // 台鐵／高鐵開關只重算車站（用手機存的車站清單）
   }
 });
 async function saveProxy() {
@@ -2672,7 +2696,8 @@ async function gsyncRun(force) {
 async function boot() {
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
   render();
-  try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
+  try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); for (const k of ['railFarTra','railFarThsr']) if (S.settings[k] == null) S.settings[k] = S.settings.railFar === 0 ? 0 : 1;   // v2.29.0：舊的單一開關拆成台鐵、高鐵兩個
+  if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
   if (!DEMO) {
     S.auth = await api('session').catch(() => null);

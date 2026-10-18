@@ -260,7 +260,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const favP = liveFavs({ bus: doBus ? favs.bus : [], bike: doBike ? favs.bike : [] }, fresh).catch(() => ({ bus: {}, bike: {} }));
   const railP = !doRail ? SKIP : Promise.all([loadRailStations(), loadRailExits().catch(() => ({}))])
     .then(([st, ex]) => nearestRail(st, loc.latitude, loc.longitude,
-      { walkKm: settings.railWalk || 1.5, systems: settings.railSys || null, far: settings.railFar !== 0 }, ex));
+      { walkKm: settings.railWalk || 1.5, systems: settings.railSys || null, far: { TRA: (settings.railFarTra ?? settings.railFar ?? 1) !== 0, THSR: (settings.railFarThsr ?? settings.railFar ?? 1) !== 0 } }, ex));
 
   const [busR_, bikeR_, favLive, railR_] = await Promise.allSettled([busP, bikeP, favP, railP]);
   if (!only && busR_.status === "rejected" && bikeR_.status === "rejected") throw busR_.reason;
@@ -567,6 +567,7 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
   if (!near.length) out = all.slice(0, 2).map(s => ({ ...s, fallback: true }));
   if (opts.far) {
     for (const op of ["TRA", "THSR"]) {
+      if (opts.far !== true && !opts.far[op]) continue;   // v2.29.0：台鐵、高鐵分開開關
       if (allow && !allow.has(op)) continue;
       if (out.some(s => s.op === op)) continue;
       const n = all.find(s => s.op === op);
@@ -1521,6 +1522,17 @@ function metroSide(t, ids) {
 
 // 全台車站搜尋：重用永久保存的車站清單；完全找不到時（每天最多一次）重抓各系統清單再搜一次
 const normZh = x => String(x || "").replace(/臺/g, "台").toLowerCase();
+// v2.29.0 選地點頁的預設車站：1.5 公里內每個軌道系統（營運單位）最近的一站，由近而遠；1.5 公里內都沒有 → 最近的台鐵站
+// 只用手機已存的車站清單與出口座標（不另呼叫 TDX）
+async function railPickNear({ lat, lon }) {
+  if (lat == null || lon == null) return [];
+  const st = await loadRailStations();
+  const ex = {}; try { for (const s of Object.values(loadExitCache().systems || {})) Object.assign(ex, s.exits || {}); } catch (e) {}
+  const all = nearestRail(st, lat, lon, { all: true }, ex), out = [], seen = new Set();
+  for (const s of all) { if (s.dist > 1500) break; if (seen.has(s.op)) continue; seen.add(s.op); out.push(s); }
+  if (out.length) return out;
+  const t = all.find(s => s.op === "TRA"); return t ? [{ ...t, fallback: true }] : [];
+}
 async function railSearch(p) {
   const q = normZh(p.q).trim(); if (!q) return [];
   let st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
@@ -1884,7 +1896,7 @@ async function exitHealA(near) {
 // ---------- 設定 / 收藏 ----------
 function loadState() {
   try { const s = JSON.parse(localStorage.getItem(STATE_KEY)); if (s) return s; } catch (e) {}
-  return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
+  return { settings: { busR: 300, bikeR: 500, railWalk: 1.5, railFar: 1, railFarTra: 1, railFarThsr: 1, railSys: null, auto: 30 }, favs: { bus: [], bike: [] } };
 }
 
 // 全台公車路線索引：各縣市 + 公路客運，永久保存在 IndexedDB busidx（v2.12.6）；失敗的縣市下次再補
@@ -3050,6 +3062,7 @@ window.dataApi = async (action, p = {}) => {
     case "stopAt": return stopAt(p || {});
     case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
+    case "railPickNear": return railPickNear(p || {});
     case "lineView": return lineView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);
     case "trainView": return trainView(tdx, p);
     case "tripView": return tripView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);
