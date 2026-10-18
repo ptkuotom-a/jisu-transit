@@ -249,17 +249,14 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .shd-acts{display:flex;gap:8px;margin-top:10px}
 .navbtn.on{background:var(--lime);color:var(--ink);border-color:var(--lime)}
 .sttd{display:flex;gap:8px;align-items:center;margin:2px 0 0}.sttd .seg{flex:1.5;min-width:0;margin:0}.sttd .seg button{font-size:14.5px;padding:8px 4px}.sttd input{flex:1;min-width:0;height:44px;margin:0;color-scheme:dark;font-size:15px}
-.stpin{position:sticky;top:0;z-index:3;background:var(--bg);margin:0 -20px;padding:8px 20px 10px}
+/* 時刻表頁（v2.23.5）：整頁不捲動（iOS 也不會橡皮筋拉動標題）；標題＋控制區固定在原位，只有下面的清單自己捲動 */
+.page:has(> .ttw){overflow:hidden;overscroll-behavior:none}
+.page .wrap.ttw{height:100%;display:flex;flex-direction:column;padding-bottom:0}
+.stpin{flex:none;padding:8px 0 10px}
 .stpin .ptop{position:static;margin:0 -10px 10px}
-.stpin.cmp{box-shadow:0 10px 14px -10px rgba(0,0,0,.7)}
-.stpin.cmp .shd{display:flex;align-items:center;gap:8px;padding:5px 8px 5px 12px;margin-bottom:8px}
-.stpin.cmp .shd .back{flex:none;font-size:16px;padding:4px 0}
-.stpin.cmp .shd .shd-name,.stpin.cmp .shd .shd-name.long{flex:1;min-width:0;margin:0;font-size:22px;letter-spacing:0}
-.stpin.cmp .shd-row,.stpin.cmp .shd-info{display:none}
-.stpin.cmp .shd-acts{flex:none;margin:0;gap:6px}.stpin.cmp .shd-acts .navbtn{padding:7px 11px;font-size:13px}
 .stctl .rmeta{margin:8px 4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stctl .sttdir{margin-top:8px}.stctl .sttdir.seg{margin:8px 0 0}.stctl .sttf{margin:8px 2px 0}.stctl .sttf select{margin:0}
-.sttlist{min-height:50vh}
+.sttlist{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:calc(40px + env(safe-area-inset-bottom,0px))}
 .sttdir .seg button small{display:block;font-size:11.5px;font-weight:500;opacity:.8;margin-top:1px}
 .sttf{margin:10px 2px 0}.sttf .chips{gap:8px}.sttf .chip{padding:7px 13px;font-size:14px}.sttf select{height:44px;margin:10px 0 0;font-size:15px;color-scheme:dark}
 .sttrow.past{opacity:.38}.sttrow .ttime small{display:block;font-size:11px;font-weight:600;color:var(--muted)}
@@ -1242,28 +1239,24 @@ async function loadSttt() {
   renderSttt(first ? 'next' : '');
 }
 function stttLines(D) { const ls = []; for (const x of [...(D.groups || []), ...(D.hw || [])]) if (x.line && !ls.includes(x.line)) ls.push(x.line); return ls; }
+// 捲動位置：時刻表頁捲的是清單（.sttlist），其他頁捲整頁
+const pageScroller = sec => (sec && sec.querySelector(':scope > .ttw > .sttlist')) || sec;
+const getPageScroll = sec => { const e = pageScroller(sec); return e ? e.scrollTop : 0; };
+const setPageScroll = (sec, v) => { const e = pageScroller(sec); if (e) e.scrollTop = v || 0; };
 function renderSttt(scroll) {
   if (!S.sttt || S.page !== 'sttt') return;
-  const pg = $('#routePage'), top = pg.scrollTop, ow = pg.querySelector(':scope > .wrap'), oh = ow ? ow.offsetHeight : 0;
-  pg.innerHTML = stttHtml();
-  // 換日期／方向／篩選：保持原本的捲動位置；讀取中內容變短時先撐住高度，避免畫面往上跳
-  if (scroll !== 'next') { const w = pg.querySelector(':scope > .wrap'); if (w && !S.sttt.data && !S.sttt.err && oh) w.style.minHeight = oh + 'px'; pg.scrollTop = top; return; }
-  // 剛打開：把下一班捲到固定控制區正下方（標題先收合，清單才有空間）
-  const el = pg.querySelector('#stttNext'); if (!el) { pg.scrollTop = 0; stttCmp(); return; }
-  const fit = () => { const pin = pg.querySelector('.stpin'); pg.scrollTop += el.getBoundingClientRect().top - pin.getBoundingClientRect().bottom - 6; };
-  stttCmp(true); fit();
-  if (pg.scrollTop < 40) { stttCmp(false); fit(); }
-}
-// 時刻表頁標題收合：往下捲就把大標題縮成一列（名稱＋時刻表／導航），控制區和清單有更多空間；回到最上面再展開
-// 收合時固定區變矮，但固定區下緣那班車不會變（清單跟著一起上移），所以不會跳；捲動空間不夠就不收合，避免來回切換
-function stttCmp(force) {
-  const T = S.sttt, pg = $('#routePage'); if (!T || S.page !== 'sttt') return;
-  const pin = pg.querySelector('.stpin'); if (!pin) return;
-  const s = pg.scrollTop, hd = pin.querySelector('.shd');
-  let c = force !== undefined ? force : T.cmp ? s > 4 : s > 40;
-  if (c && !T.cmp && hd && pg.scrollHeight - pg.clientHeight - (hd.offsetHeight - 52) < 60) c = false;
-  if (c === !!T.cmp) return;
-  T.cmp = c; pin.classList.toggle('cmp', c);
+  const T = S.sttt, pg = $('#routePage'), ol = pg.querySelector('.sttlist'), cur = ol ? ol.scrollTop : 0;
+  if (!T.data && !T.err && T.keep == null) T.keep = cur;   // 讀取中清單變短會把捲動夾小；資料回來再還原，換日期不跳
+  pg.innerHTML = stttHtml(); pg.scrollTop = 0;
+  const list = pg.querySelector('.sttlist'); if (!list) return;
+  if (scroll === 'next') {   // 剛打開：只捲清單本身，讓下一班在清單最上面（同一個 frame 內，不會看到跳動；不用 scrollIntoView，免得 iOS 連整頁一起捲）
+    const el = list.querySelector('#stttNext');
+    list.scrollTop = el ? Math.max(0, el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 6) : 0;
+    T.keep = null; return;
+  }
+  const v = T.data && T.keep != null ? T.keep : cur;
+  if (T.data || T.err) T.keep = null;
+  list.scrollTop = v;
 }
 // 時刻表頁的分頁列（日期、方向）：和車站頁方向分頁同一個元件，點按／左右滑都會翻頁
 function stSeg(k, tabs, sel) {
@@ -1285,7 +1278,7 @@ function stttHtml() {
     <div class="rmeta">${meta}</div>${P.ctl}`;
   let body = new Date().getHours() < 3 && T.date === d0 ? '<div class="rmeta" style="margin:8px 4px 0">凌晨 3 點前算前一天的營運日（「今天」是昨天的班表）</div>' : '';
   body += !D ? (T.err ? '' : `<div>${skel(5)}</div>`) : D.none ? `<div class="note" style="margin-top:12px">${D.kind === 'train' ? '這一天沒有可用的時刻表（雲端還沒有涵蓋這天的班表）。' : D.hwMissing ? '雲端還沒有這條線的班距資料，請到設定更新時刻表。' : '查無這一站這天的時刻表。'}</div>` : P.body;
-  return `<div class="wrap"><div class="stpin${T.cmp ? ' cmp' : ''}">${stationHead(R, 'sttt')}<div class="stctl">${ctl}</div></div><div class="lblk sttlist">${body}</div></div>`;
+  return `<div class="wrap ttw"><div class="stpin">${stationHead(R, 'sttt')}<div class="stctl">${ctl}</div></div><div class="lblk sttlist">${body}</div></div>`;
 }
 const tClk = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const stttDone = (D, list) => D.today && list.length && list.every(t => t.t < D.now) ? `<div class="note" style="margin:10px 0 0">今天的班次都已開出。<button class="navbtn" style="margin-left:6px" data-act="stttDay" data-v="1">看明天</button></div>` : '';
@@ -1341,7 +1334,7 @@ function stttMetro(R, T, D) {
 
 /* ---------- 捷運路線／火車車次 停靠站頁 ---------- */
 function openLine(req) {
-  if (S.page === 'sttt') { S.lineFrom = 'sttt'; S.stttScroll = $('#routePage').scrollTop; }
+  if (S.page === 'sttt') { S.lineFrom = 'sttt'; S.stttScroll = getPageScroll($('#routePage')); }
   else if (S.page === 'rail') { S.lineFrom = 'rail'; S.railScroll = $('#routePage').scrollTop; }
   pushAnim(() => { S.page = 'line'; S.line = { req, data:null, err:null }; $('#routePage').scrollTop = 0; renderLine(); });
   loadLine(true);
@@ -1359,7 +1352,7 @@ function pushAnim(renderNew) {
   const pg = $('#routePage');
   if (reduceMotion() || !pg.classList.contains('open')) { renderNew(); return; }
   const snap = document.createElement('section'); snap.className = 'page under'; snap.innerHTML = pg.innerHTML;
-  const top = pg.scrollTop; pg.before(snap); snap.scrollTop = top;
+  const top = getPageScroll(pg); pg.before(snap); setPageScroll(snap, top);
   renderNew();
   pg.classList.add('drag');
   slideEls([pg], innerWidth, 0, NAV_MS, () => pg.classList.remove('drag'));
@@ -1369,7 +1362,7 @@ function popAnim() {   // 返回按鍵：停靠站頁 → 車站頁
   const pg = $('#routePage');
   if (reduceMotion()) { closeRoute(true); return; }
   const u = railUnder(), under = document.createElement('section'); under.className = 'page under'; under.innerHTML = u.html;
-  pg.before(under); under.scrollTop = u.scroll;
+  pg.before(under); setPageScroll(under, u.scroll);
   pg.classList.add('drag');
   slideEls([under], -innerWidth * PARA, 0, NAV_MS);
   slideEls([pg], 0, innerWidth, NAV_MS, () => {
@@ -1435,7 +1428,7 @@ function openRoute(r) {
 function closeRoute(quiet) {
   if ((S.page === 'line' || S.page === 'sttt') && S.rail) {
     if (!quiet) { popAnim(); return; }
-    if (S.page === 'line' && S.lineFrom === 'sttt' && S.sttt) { S.page = 'sttt'; S.line = null; S.lineFrom = null; renderSttt(); $('#routePage').scrollTop = S.stttScroll || 0; return; }
+    if (S.page === 'line' && S.lineFrom === 'sttt' && S.sttt) { S.page = 'sttt'; S.line = null; S.lineFrom = null; renderSttt(); setPageScroll($('#routePage'), S.stttScroll); return; }
     S.page = 'rail'; S.line = null; S.sttt = null; S.lineFrom = null; renderRail(); $('#routePage').scrollTop = S.railScroll || 0; return;
   }
   if (S.back && S.back.length) { stackPop(quiet); return; }   // 路線規劃的頁面堆疊：回到上一頁
@@ -2005,7 +1998,6 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   sh.addEventListener('touchend', end); sh.addEventListener('touchcancel', end);
 
   const pg = $('#routePage'), dim = $('#pageDim');
-  pg.addEventListener('scroll', () => stttCmp(), { passive:true });
   // 滑動規則：從左邊緣（24px 內）往右滑＝返回上一頁；在車站頁的方向分頁區塊上左右滑＝切換方向（往左＝下一個、往右＝上一個），
   // 已在第一個方向時往右滑＝返回；其他地方往右滑＝返回
   let pgK, x0 = 0, yy0 = 0, tt = 0, dx = 0, st = 0, mode = '', blk = null, tabBtns = [], tabIdx = 0, under = null, ghost = null, ghostDir = 0, paraEls = [];   // st: 0無1判斷中2拖曳中
@@ -2038,7 +2030,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       if (mode === 'back') {
         pg.classList.add('drag'); dim.style.transition = 'none';
         const u = underPage();   // 從下一層返回：底下先墊好上一頁（車站頁、路線規劃的上一頁），避免露出第一頁
-        if (u) { under = document.createElement('section'); under.className = 'page under'; under.innerHTML = u.html; pg.before(under); under.scrollTop = u.scroll; }
+        if (u) { under = document.createElement('section'); under.className = 'page under'; under.innerHTML = u.html; pg.before(under); setPageScroll(under, u.scroll); }
         paraEls = under ? [under] : baseEls();
         for (const e of paraEls) e.style.transition = 'none';
       }
