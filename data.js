@@ -2233,7 +2233,22 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
   const walkOf = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
   // 起點是車站：在這一站直接上車的路線，抵達時間差2分鐘以內也排前面（不用先走到別站）
   const oName = so ? so.name : o.name, atO = r => { if (!planIsStation(o)) return 0; const t = r.legs.find(l => l.kind === "transit"); return t && nameHit(t.from.name, oName) ? 120000 : 0; };
-  out.sort((a, b) => (!!a.missed - !!b.missed) || (a.approx - b.approx) || (when === "arr" ? (b.start + atO(b)) - (a.start + atO(a)) : (a.end - atO(a)) - (b.end - atO(b))) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
+  const cmpR = (a, b) => (!!a.missed - !!b.missed) || (a.approx - b.approx) || (when === "arr" ? (b.start + atO(b)) - (a.start + atO(a)) : (a.end - atO(a)) - (b.end - atO(b))) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b);
+  out.sort(cmpR);
+  // v2.27.2：現在出發：只對排第一的路線查第一段公車的即時動態（每次規劃最多 2 次：查完被拿掉或掉出第一名，才再查新的第一名）
+  if (when === "now" && ref) {
+    for (let n = 0; n < 2; n++) {
+      const top = out.find(r => !r.missed && !r.approx); if (!top || !top._lv) break;
+      let x = null;
+      try { x = (await planTtFix([top._src], { when, ref, arrBy, live: true }))[0]; } catch (e) { console.warn("plan live", e); }
+      x = x && !x.broken ? planStartNorm({ ...x, ...(top.note ? { note: top.note } : {}) }) : null;
+      if (x && x.start < ref - 60000) x = null;
+      out = out.filter(r => r !== top); if (x) { delete x._lv; out.push(x); }
+      out.sort(cmpR);
+      if (out.find(r => !r.missed && !r.approx) === x) break;
+    }
+  }
+  for (const r of out) { delete r._lv; delete r._src; }
   // 去重：①同一種走法、同時出發又同時抵達 ②每段車都同時刻 ③同一班火車同時抵達 ④主要那段車（最久的一段）同一班、同時抵達，只是前面接駁不同（例如兩條都搭同一班1839）；最多列8條
   const seen = new Set(), real = new Set(out.filter(r => !r.shifted).map(r => planShape(r) + "|" + r.end));
   const tsig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + "@" + (l.from.time || "").slice(0, 16) + ">" + (l.to.time || "").slice(0, 16)).join("|");
@@ -2576,7 +2591,7 @@ const KLRT_DIR = d => d === 1 ? "順行" : "逆行";   // 高雄輕軌 Direction
 const NTD_LINE = { V11: "紅樹林－崁頂", V26: "紅樹林－淡水漁人碼頭" };
 async function planTtFix(routes, opt = {}) {
   const stMemo = new Map();
-  opt = { ...opt, avoid: new Set(), liveN: { n: 0 } };
+  opt = { ...opt, avoid: new Set() };
   const stOf = (leg, end) => { const p = leg[end] || {}, k = leg.mode + "|" + (p.name || "") + "|" + p.lat + "," + p.lon;
     if (!stMemo.has(k)) stMemo.set(k, planRailStation(leg, end).catch(() => null)); return stMemo.get(k); };
   const out = [];
@@ -2619,10 +2634,8 @@ async function firstLegFix(leg, ready, when, opt) {
   const next = (t0, why) => { const dep = t0 + Math.ceil((ready - t0) / hw) * hw; return { dep, est: true, note: `${why}，${hmTpe(ready)} 才走得到${at}，依班距估計搭 ${hmTpe(dep)} 左右的${nm}` }; };
   let L = null;
   // 現在出發、20 分鐘內要搭（或已經趕不上）的公車才查即時（同一條公車共用；每次規劃最多查 5 條）
-  if (when === "now" && leg.mode === "bus" && p0 - ready <= 20 * 60000) {
-    const k = leg.name + "|" + (leg.from.name || "") + "|" + (leg.to.name || "");
-    if (planBusLiveMemo.has(k) || opt.liveN.n++ < 5) L = await planBusNext(leg);
-  }
+  // v2.27.2：只有排第一的路線才查即時（opt.live，由 planRoutes 決定）；其他路線只用班距估計
+  if (opt.live && when === "now" && leg.mode === "bus" && p0 - ready <= 20 * 60000) L = await planBusNext(leg);
   if (L && L.gone) return { gone: L.gone };
   if (L && L.at) {
     const tag = L.live ? "即時動態" : "預定發車";
@@ -2657,7 +2670,7 @@ async function planRetime(r, stOf, opt) {
   const stopsOf = async c => { if (!c.stops || !c.stops.length) return [];
     if (!stIx) { stIx = {}; try { for (const x of await railAll()) if (x.id) stIx[x.op + "|" + x.id] = x; } catch (e) {} }
     return c.stops.map(([id, ms]) => { const x = stIx[c.op + "|" + id] || {}; return { name: x.name || id, type: "station", lat: x.lat ?? null, lon: x.lon ?? null, time: isoTpe(ms) }; }); };
-  let cursor = null, origCursor = null, first = true, start = r.start, firstFixed = false, broken = null;
+  let cursor = null, origCursor = null, first = true, start = r.start, firstFixed = false, broken = null, lvCand = false;
   const pre = [];
   const walkSum = ls => ls.reduce((a, l) => a + (l.kind === "wait" ? 0 : l.dur * 1000), 0);
   const pushWait = (leg, at, dep) => { if (dep - at > 30000) res.push({ kind: "wait", from: { ...leg.from, time: isoTpe(at) }, to: { ...leg.from, time: isoTpe(dep) }, dur: Math.round((dep - at) / 1000) }); };
@@ -2751,6 +2764,7 @@ async function planRetime(r, stOf, opt) {
     if (first) {
       // v2.27.1：第一段是公車等沒有時刻表的車：TDX 常給「出發時間已經過了」的班次（例如 11:40 查、要 11:33 出門走 9 分鐘去搭 11:42 的公車）。
       // 現在出發：用公車即時動態（最近一班的預估到站）決定搭哪班；走到站牌前就開走了→依班距估計下一班。指定出發：依班距往後推。後面的車照樣往後校正
+      if (when === "now" && leg.mode === "bus" && ref != null && p0 - (ref + walkSum(pre)) <= 20 * 60000 && !opt.live) lvCand = true;
       const fx = ref != null && when !== "arr" ? await firstLegFix(base, ref + walkSum(pre), when, opt).catch(e => { console.warn("firstLegFix", e); return null; }) : null;
       if (fx && fx.gone) {   // 末班已過／今日停駛
         warns.push(`${leg.name || "公車"}在${leg.from.name || "上車站"}${fx.gone}`); broken = broken || leg.name || "公車";
@@ -2812,6 +2826,7 @@ async function planRetime(r, stOf, opt) {
   const tr = res.filter(l => l.kind === "transit");
   const o = { ...r, legs: res, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), ttNote: [r.ttNote, ttNote].filter(Boolean).join("；") || undefined, ...(warns.length ? { ttWarn: true } : {}), ...(broken ? { broken } : {}) };
   if (firstFixed) { delete o.shifted; delete o.missed; }
+  if (lvCand) { o._lv = true; o._src = r; } else { delete o._lv; delete o._src; }
   return o;
 }
 const MODE_NAME = { bus: "公車", mrt: "捷運", lrt: "輕軌", tra: "台鐵", thsr: "高鐵" };
