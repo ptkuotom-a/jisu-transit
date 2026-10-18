@@ -2768,7 +2768,7 @@ async function startApp() {
 const gsDay = () => new Date().toISOString().slice(0, 10);
 function gsyncAuto() {
   if (DEMO || S.auth?.role !== 'admin' || TT.gbusy) return;
-  if (localStorage.getItem('jisu_gsync_day') === gsDay()) return;
+  if (localStorage.getItem('jisu_gsync_qday') === gsDay()) return;
   gsyncRun(false);
 }
 function gsRedraw() { if (S.page === 'adv') renderPage(); else if (S.tab === 'settings') render(); }
@@ -2779,7 +2779,7 @@ async function gsyncRun(force) {
   try {
     const r = await window.dataApi('guestSync', { pass: S.auth.token, force, onProgress: p => { TT.gp = p; gsRedraw(); } });
     TT.gs = r.state || r; if (r.changed?.length) { TT.meta = null; }
-    if (!(TT.gs.status === 'stopped' && /連不到/.test(TT.gs.err || ''))) localStorage.setItem('jisu_gsync_day', day);   // 斷線的話下次打開再試
+    if (!(TT.gs.status === 'stopped' && /連不到/.test(TT.gs.err || ''))) localStorage.setItem('jisu_gsync_qday', day);   // 斷線的話下次打開再試
   }
   catch (e) { TT.gs = { status:'stopped', err: String(e.message || e) }; }
   TT.gbusy = false; TT.gp = null; gsRedraw();
