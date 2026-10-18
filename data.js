@@ -1084,15 +1084,31 @@ async function rail7Run(op, pass, get, src7, gen, o = {}) {
 // ---------- v2.27 每日訪客同步：管理者手機每天第一次打開 app 時，在背景用 TDX「訪客」額度檢查各系統時刻表，有變才下載 ----------
 // 訪客＝不帶金鑰直接向 TDX 抓（真的 Safari，用手機自己的 IP，每個 IP 每天 20 次），完全不吃我們的金鑰額度；
 // 瀏覽器讀不到 TDX 的剩餘次數標頭（沒開放 CORS），所以自己數：一天最多用 GUEST_MAX 次，留 3 次緩衝。遇到 401／429 就停，明天再來
-const GUEST_MAX = 17, GUEST_DAY = 20;
+// v2.30.1：TDX 訪客的「一天」是 UTC 日（RateLimit-Reset 指到 UTC 午夜＝台北 08:00），不是台北日期；
+//   以前用台北日期計算，00:00–08:00 跑的檢查會和前一天下午共用同一份 20 次 → 429。額度與「今天跑過沒」都改用 UTC 日（guestDay）。
+//   TDX 對訪客只有每日上限（標頭只有 X-RateLimit-Limit-Day），沒有每秒限制；仍然每次請求間隔 3 秒，遇到 429 等 45 秒重試一次，再 429 才停。
+const GUEST_MAX = 17, GUEST_DAY = 20, GUEST_GAP = 3000, GUEST_BACKOFF = 45000;
+const guestDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);   // TDX 訪客額度的日子（UTC）
+const untilVisible = () => (typeof document === "undefined" || !document.hidden) ? Promise.resolve() : new Promise(res => {   // App 在背景時先暫停，回到前景再繼續
+  const f = () => { if (!document.hidden) { document.removeEventListener("visibilitychange", f); res(); } }; document.addEventListener("visibilitychange", f); });
 function guestFetcher(st) {
+  const prog = w => { try { st.onProgress && st.onProgress({ n: st.used - st.used0, total: Math.max(1, GUEST_MAX - st.used0), wait: w || null }); } catch (e) {} };
   return async (url, raw) => {
     if (st.used >= GUEST_MAX) { const e = new Error("今天的訪客額度已用到上限"); e.budget = true; throw e; }
-    st.used++;
     let r;
-    try { r = await fetch(url, { cache: "no-store", credentials: "omit" }); }   // 不加自訂標頭：簡單請求，不會有 CORS 預檢
-    catch (e) { const x = new Error("連不到 TDX"); x.stop = "net"; throw x; }
-    if (r.status === 401 || r.status === 403 || r.status === 429) { const e = new Error("TDX 訪客 " + r.status); e.stop = r.status; throw e; }
+    for (let attempt = 0; ; attempt++) {
+      await untilVisible();
+      const gap = (st.last || 0) + GUEST_GAP - Date.now(); if (gap > 0) { await sleep(gap); await untilVisible(); }
+      st.used++; st.last = Date.now(); prog();
+      try { r = await fetch(url, { cache: "no-store", credentials: "omit" }); }   // 不加自訂標頭：簡單請求，不會有 CORS 預檢
+      catch (e) { const x = new Error("連不到 TDX"); x.stop = "net"; throw x; }
+      st.last = Date.now();
+      if (r.status === 429 && attempt === 0 && !st.retried && st.used < GUEST_MAX) {   // 可能是短時間太密：等 45 秒重試一次（整次檢查只重試一次）
+        st.retried = true; prog("TDX 回 429，45 秒後重試一次"); await sleep(GUEST_BACKOFF); continue;
+      }
+      break;
+    }
+    if (r.status === 401 || r.status === 403 || r.status === 429) { const e = new Error("TDX 訪客 " + r.status + (r.status === 429 ? (st.retried ? "（等 45 秒重試仍是 429，可能是同一個 IP 今天的 20 次已用完，例如行動網路共用 IP）" : "") : "")); e.stop = r.status; throw e; }
     if (!r.ok) throw new Error("TDX " + r.status);
     st.bytes += +(r.headers.get("content-length") || 0);
     const j = await r.json();
@@ -1111,12 +1127,15 @@ const newer = (ut, stored) => !!ut && (!stored || Date.parse(ut) > Date.parse(st
 // 高鐵每日時刻表沒有 SrcUpdateTime，它的 UpdateTime 不會天天變，就用它
 const srcT = x => (x && (x.SrcUpdateTime || x.UpdateTime)) || "";
 async function guestSync(p = {}) {
-  const pass = p.pass, today = taipeiDay();
+  const pass = p.pass, today = taipeiDay(), qday = guestDay();
   if (!pass || !getProxy()) return { skipped: "no-admin" };
   const prev = await gsyncCall("GET", pass).catch(() => ({}));
-  if (!p.force && prev.day === today) return { skipped: "done-today", state: prev };
-  const st = { used: prev.day === today ? (prev.used || 0) : 0, bytes: 0 }, gget = guestFetcher(st);   // 同一天再跑一次（手動）時接著算
-  const S = { day: today, at: new Date().toISOString(), status: "running", used: 0, bytes: 0, changed: [], deferred: [], checked: [], notes: [], ptr: prev.ptr || 0, hol: prev.hol || {}, sig: { ...(prev.sig || {}) }, dry: !!p.dry };
+  const prevQ = prev.qday || (prev.at ? guestDay(Date.parse(prev.at)) : "");   // 舊紀錄沒有 qday：用開始時間換算 UTC 日
+  const resume = prev.status === "running" || (prev.status === "stopped" && /連不到/.test(prev.err || ""));   // 上次中途被關掉／斷線：同一天接著跑
+  if (!p.force && prevQ === qday && !resume) return { skipped: "done-today", state: prev };
+  const used0 = prevQ === qday ? (prev.used || 0) : 0;
+  const st = { used: used0, used0, bytes: 0, onProgress: p.onProgress }, gget = guestFetcher(st);   // 同一個 TDX 日再跑一次（手動）時接著算
+  const S = { day: today, qday, at: new Date().toISOString(), status: "running", used: 0, bytes: 0, changed: [], deferred: [], checked: [], notes: [], ptr: prev.ptr || 0, hol: prev.hol || {}, sig: { ...(prev.sig || {}) }, dry: !!p.dry };
   // sig：每個系統上次看到的來源時間；沒有的話拿雲端那份的存放時間比（來源時間比它新＝我們還沒有）
   const isNew = (key, t, storedAt) => newer(t, S.sig[key] || storedAt), seen = (key, t) => { if (t && !p.dry) S.sig[key] = t; };
   if (!p.dry) await gsyncCall("PUT", pass, S).catch(() => {});

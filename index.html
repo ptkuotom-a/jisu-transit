@@ -1068,19 +1068,19 @@ function vGsync() {
   if (!TT.gs && !TT.gfetch) { TT.gfetch = true; window.dataApi('gsyncGet', { pass: S.auth.token }).then(g => { TT.gs = g; }).catch(() => { TT.gs = {}; }).finally(() => { if (S.tab === 'settings') render(); }); }
   const g = TT.gs || {};
   const t = g.end || g.at ? new Date(g.end || g.at).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }) : '';
-  const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
-  const used = g.day === day ? (g.used || 0) : 0;
-  let s = TT.gbusy ? '檢查中…' : !g.day ? '還沒執行過' : g.status === 'running' ? `${t} 開始，尚未完成` : `${t} 檢查完`;
+  const qd = new Date().toISOString().slice(0, 10), gq = g.qday || (g.at ? new Date(g.at).toISOString().slice(0, 10) : '');   // TDX 訪客額度以 UTC 日計（台北 08:00 換日）
+  const used = gq === qd ? (g.used || 0) : 0, gp = TT.gp;
+  let s = TT.gbusy ? (gp ? (gp.wait ? gp.wait : `檢查中 ${gp.n}/${gp.total}`) : '檢查中…') : !g.day ? '還沒執行過' : g.status === 'running' ? `${t} 開始，尚未完成` : g.status === 'stopped' ? `${t} 中途停止` : `${t} 檢查完`;
   if (g.day) {
     const ch = (g.changed || []).map(c => sysN(c.op) + ' ' + c.what);
     s += `・${ch.length ? '已更新：' + ch.join('、') : '沒有新版'}`;
     if (g.deferred?.length) s += `・留到明天：${g.deferred.map(x => sysN(x)).join('、')}`;
   }
-  s += `・今天用了訪客 ${used} 次（約剩 ${Math.max(0, 20 - used)} 次）`;
+  s += `・今天用了訪客 ${used} 次（約剩 ${Math.max(0, 20 - used)} 次，台北 08:00 重新計算）`;
   const err = g.status === 'stopped' || g.status === 'budget' ? `<div class="ts bad">${g.status === 'budget' ? '額度用到上限，其餘明天再檢查' : '已停止：' + esc(g.err || '')}</div>` : '';
   const notes = g.notes?.length ? `<div class="tm">${esc(g.notes.slice(0, 4).join('；'))}</div>` : '';
   return `<div class="ttrow" style="cursor:default"><span class="tb"><div class="tn">每日訪客檢查</div><div class="tm">${esc(s)}</div>${notes}${err}
-    <button class="btn" style="margin-top:8px;padding:6px 12px;font-size:14px" data-act="gsyncNow" ${TT.gbusy ? 'disabled' : ''}>${TT.gbusy ? '檢查中…' : '現在檢查一次'}</button></span></div>`;
+    <button class="btn" style="margin-top:8px;padding:6px 12px;font-size:14px" data-act="gsyncNow" ${TT.gbusy ? 'disabled' : ''}>${TT.gbusy ? (gp && !gp.wait ? `檢查中 ${gp.n}/${gp.total}` : '檢查中…') : '現在檢查一次'}</button></span></div>`;
 }
 async function ttRun() {
   const pass = S.auth?.role === 'admin' ? S.auth.token : null; if (!pass || TT.busy) return;
@@ -2764,19 +2764,25 @@ async function startApp() {
   setTimeout(gsyncAuto, 8000);
 }
 // v2.27：管理者每天（台北日期）第一次打開 app，背景用 TDX 訪客額度檢查時刻表；安靜執行，不擋畫面
+// v2.30.1：「一天」改用 TDX 訪客額度的日子（UTC，台北 08:00 換日）；跑完（或被 TDX 擋）才記下，中途被關掉下次打開會接著跑
+const gsDay = () => new Date().toISOString().slice(0, 10);
 function gsyncAuto() {
   if (DEMO || S.auth?.role !== 'admin' || TT.gbusy) return;
-  const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
-  if (localStorage.getItem('jisu_gsync_day') === day) return;
-  localStorage.setItem('jisu_gsync_day', day);
+  if (localStorage.getItem('jisu_gsync_day') === gsDay()) return;
   gsyncRun(false);
 }
+function gsRedraw() { if (S.page === 'adv') renderPage(); else if (S.tab === 'settings') render(); }
 async function gsyncRun(force) {
   if (TT.gbusy || S.auth?.role !== 'admin') return;
-  TT.gbusy = true; if (S.tab === 'settings') render();
-  try { const r = await window.dataApi('guestSync', { pass: S.auth.token, force }); TT.gs = r.state || r; if (r.changed?.length) { TT.meta = null; } }
+  TT.gbusy = true; TT.gp = null; gsRedraw();
+  const day = gsDay();
+  try {
+    const r = await window.dataApi('guestSync', { pass: S.auth.token, force, onProgress: p => { TT.gp = p; gsRedraw(); } });
+    TT.gs = r.state || r; if (r.changed?.length) { TT.meta = null; }
+    if (!(TT.gs.status === 'stopped' && /連不到/.test(TT.gs.err || ''))) localStorage.setItem('jisu_gsync_day', day);   // 斷線的話下次打開再試
+  }
   catch (e) { TT.gs = { status:'stopped', err: String(e.message || e) }; }
-  TT.gbusy = false; if (S.tab === 'settings') render();
+  TT.gbusy = false; TT.gp = null; gsRedraw();
 }
 // v2.30.0：深層連結 ?station=系統:代碼（Siri 捷徑通知）→ 直接打開車站頁；App 已開著時由 Service Worker postMessage 帶進來
 let pendingStation = (() => { const m = /[?&]station=([^&#]+)/.exec(location.search); return m ? decodeURIComponent(m[1]) : null; })();
