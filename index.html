@@ -536,7 +536,7 @@ function setTab(k) { S.tab = k; window.scrollTo(0,0); render(); }
 function renderStatus() {
   const st = $('#status');
   st.className = 'live' + (S.error ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.error ? '更新失敗' : S.lastFetch ? `${hhmm(S.lastFetch)}更新${window.idlePaused ? '・已暫停，點螢幕繼續' : ''}` : '') + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.error ? '更新失敗' : S.lastFetch ? `${hhmm(S.lastFetch)}更新${window.idlePaused && (S.rail || S.route) ? '・已暫停，點螢幕繼續' : ''}` : '') + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -836,7 +836,7 @@ function vSettings() {
   <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
     <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
   <div class="sec"><h2>自動更新</h2></div>
-  <div class="set"><p>開著 app 時，每隔一段時間重新抓到站時間和車位。</p>${seg('auto',[0,30,60],v=>v? v+'秒':'關閉')}</div>
+  <div class="set"><p>開著車站頁、公車路線頁時，每隔一段時間重新抓到站時間（4 分鐘沒碰螢幕就暫停）。首頁只在打開 app（或離開超過 2 分鐘再回來）時更新一次，要再更新請按右上角「重新整理」。</p>${seg('auto',[0,30,60],v=>v? v+'秒':'關閉')}</div>
   <div class="sec"><h2>通知</h2></div>
   <div class="set"><p>下車提醒用推播通知。iPhone 需 iOS 16.4以上，並從主畫面圖示開啟。目前權限：${'Notification' in window ? ({granted:'已允許',denied:'已拒絕（到 iPhone 設定 › 通知 › 極速通勤 開啟）',default:'尚未詢問'})[Notification.permission] : '這個環境不支援'}</p>
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
@@ -988,7 +988,7 @@ function openRail(r) {
 }
 async function loadRail() {
   if (!S.rail || S.railLoading) return;
-  S.railLoading = true;
+  S.railLoading = true; pageAt = Date.now();
   const want = S.rail;
   try { const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name }); if (S.rail === want) { S.railData = r; S.railError = null; } }
   catch (e) { if (S.rail === want) S.railError = e.message; }
@@ -1434,9 +1434,11 @@ function closeRoute(quiet) {
   if (S.back && S.back.length) { stackPop(quiet); return; }   // 路線規劃的頁面堆疊：回到上一頁
   S.back = []; clearTimeout(typeof planLiveT === 'number' ? planLiveT : 0);
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
-  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
+  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render();
+  if (homeStale) { homeStale = false; refresh(); } }   // 在車站頁時 app 曾離開超過 2 分鐘：回到首頁才更新首頁（v2.24.0）
 async function loadRoute(scroll) {
   if (!S.route) return;
+  pageAt = Date.now();
   const R = S.route, tok = S.routeTok = (S.routeTok || 0) + 1;   // 只採用最新一次請求的結果，避免切換路線時卡在骨架畫面
   S.routeLoading = true; renderRoute();
   let data = null, err = null;
@@ -1744,7 +1746,8 @@ async function planLoadLive() {
   P.liveLoading = false;
   if (tok === P.liveTok && S.page === 'planDetail') renderPage();
   clearTimeout(planLiveT);
-  planLiveT = setTimeout(() => { if (S.page === 'planDetail' && document.visibilityState === 'visible') planLoadLive(); }, 40000);
+  // 4 分鐘沒碰螢幕或 app 在背景就停（v2.24.0）；回來時由 resumePage() 立刻更新一次並重新開始
+  planLiveT = setTimeout(() => { if (S.page === 'planDetail' && document.visibilityState === 'visible' && Date.now() - lastTouch <= IDLE_MS) planLoadLive(); else if (S.page === 'planDetail') { idlePaused = true; } }, 40000);
 }
 function legPill(l, L) {
   const m0 = Math.round((Date.parse(l.from.time + '+08:00') - Date.now()) / 60000);
@@ -2262,17 +2265,30 @@ $('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadR
 $('#q').addEventListener('input', e => { S.q = e.target.value; $('#qClear').hidden = !S.q; $('#main').innerHTML = viewOf(S.tab)(); });
 $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#q').value = ''; $('#qClear').hidden = true; render(); });
 
-// 自動更新暫停：在「設定」分頁（沒開路線／車站頁時）、或10分鐘沒碰螢幕，直到下次觸碰
-const IDLE_MS = 10 * 60 * 1000;
-var lastTouch = Date.now(), idlePaused = false;
-const markTouch = () => { lastTouch = Date.now(); if (idlePaused) { idlePaused = false; renderStatus(); } };
+// v2.24.0 省 TDX：首頁不再定時更新，只在打開 app、離開超過 2 分鐘再回來、或按「重新整理」時抓一次附近到站／車位／收藏。
+// 定時更新（設定的秒數）只用在車站頁、公車路線頁（行程結果頁另有 40 秒的即時資訊）；4 分鐘沒碰螢幕就暫停，碰一下或回到 app 立刻更新一次
+const IDLE_MS = 4 * 60 * 1000, AWAY_MS = 2 * 60 * 1000;
+var lastTouch = Date.now(), idlePaused = false, homeStale = false, hiddenAt = 0, pageAt = 0;
+function pageOpen() { return !!(S.rail || S.route); }
+function resumePage() {   // 車站頁／路線頁／行程結果頁：立刻更新一次（定時器之後照常接手）
+  if (S.page === 'planDetail') { planLoadLive(); return; }
+  if (S.route) { pageAt = Date.now(); loadRoute(false); }
+  if (S.rail && S.page === 'rail') { pageAt = Date.now(); loadRail(); }
+}
+const markTouch = () => { lastTouch = Date.now(); if (idlePaused) { idlePaused = false; renderStatus(); resumePage(); } };
 for (const ev of ['touchstart','pointerdown','keydown','wheel']) addEventListener(ev, markTouch, { passive:true, capture:true });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') { hiddenAt = Date.now(); return; }
+  const away = hiddenAt && Date.now() - hiddenAt > AWAY_MS; hiddenAt = 0;
+  lastTouch = Date.now(); idlePaused = false;
+  if (!appStarted || !S.auth) return;
+  if (away) { if (pageOpen() || S.page) homeStale = true; else refresh(); }   // 當作重新打開 app；開著別的頁面時等回到首頁再更新首頁
+  if (pageOpen() || S.page === 'planDetail') resumePage();
+});
 setInterval(() => {
-  if (!S.settings.auto || document.hidden) return;
-  if (S.tab === 'settings' && !S.route && !S.rail && !S.line) return;
+  if (!S.settings.auto || document.hidden || !pageOpen() || (S.page !== 'rail' && S.page !== 'route')) return;   // 首頁永遠不定時更新
   if (Date.now() - lastTouch > IDLE_MS) { if (!idlePaused) { idlePaused = true; renderStatus(); } return; }
-  const due = Date.now() - S.lastFetch > S.settings.auto * 1000;
-  if (due && !S.loading) { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); }
+  if (Date.now() - pageAt > S.settings.auto * 1000) { pageAt = Date.now(); if (S.route) loadRoute(false); if (S.rail) loadRail(); }
 }, 2000);
 
 /* ---------- boot ---------- */

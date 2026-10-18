@@ -466,6 +466,8 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
 // ---------- 軌道（台鐵、高鐵、捷運、輕軌） ----------
 // get(profile, url) 需回傳陣列（v3的物件容器要先拆成陣列）
 const RAIL_BASE = "https://tdx.transportdata.tw/api/basic";
+// 淡海／安坑／高雄輕軌：TDX 沒有出口資料（StationExit 一律回 400），不抓（v2.24.0）
+const NO_EXIT = new Set(["NTDLRT", "NTALRT", "KLRT"]);
 const RAIL_SYSTEMS = [
   { key: "TRA",    label: "台鐵",     kind: "tra",  url: `${RAIL_BASE}/v3/Rail/TRA/Station?%24top=1000&%24format=JSON` },
   { key: "THSR",   label: "高鐵",     kind: "thsr", url: `${RAIL_BASE}/v2/Rail/THSR/Station?%24top=100&%24format=JSON` },
@@ -577,6 +579,8 @@ const SEAT = { Available: "ok", Limited: "few", Full: "full" };
 
 const TRA_ALL_LIVE = `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`;
 const traAllLive = () => memoTdx("rail", TRA_ALL_LIVE, 60000);
+// v2.24.0：車站頁不再抓全台列車動態（只有點進某一班車才抓）；60 秒內抓過就順便拿來補誤點
+const traAllPeek = () => { const h = memoMap.get(TRA_ALL_LIVE); return h && Date.now() - h.t < 60000 ? h.v : null; };
 async function traBoard(get, st) {
   const id = st.ids[0];
   const filter = encodeURIComponent(`StationID eq '${id}'`);
@@ -586,7 +590,7 @@ async function traBoard(get, st) {
     storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
       .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
-    traAllLive(),
+    traAllPeek() || Promise.reject(new Error("skip")),
   ]);
   if (tlive.status === "fulfilled") railHeal("TRA", tlive.value.map(t => t.StationID));
   const delay = {};
@@ -1600,7 +1604,7 @@ async function loadRailStations() {
 function loadExitCache() { try { const c = JSON.parse(localStorage.getItem(EXIT_KEY)); if (c && c.systems) return c; } catch (e) {} return { systems: {} }; }
 async function loadRailExits() {
   const cache = loadExitCache(), now = Date.now();
-  const metros = RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional);
+  const metros = RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional && !NO_EXIT.has(s.key));
   const todo = metros.filter(s => { const c = cache.systems[s.key]; return !(c && (Object.keys(c.exits || {}).length || now - c.time < DAY_MS)); });   // 有資料就永久；空的／失敗的明天再試
   for (let i = 0; i < todo.length; i += 3) {
     await Promise.all(todo.slice(i, i + 3).map(async s => {
@@ -1650,7 +1654,7 @@ async function railHealAll() {
 // 附近捷運站沒有出口資料：重抓那個系統的出口清單
 function exitHeal(near) { exitHealA(near || []).catch(() => {}); }
 async function exitHealA(near) {
-  const metros = new Set(RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional).map(s => s.key));
+  const metros = new Set(RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional && !NO_EXIT.has(s.key)).map(s => s.key));
   const want = {};
   for (const s of near) if (metros.has(s.op) && !s.exit) (want[s.op] = want[s.op] || []).push(...(s.ids || [s.id]));
   for (const [op, ids] of Object.entries(want)) {
