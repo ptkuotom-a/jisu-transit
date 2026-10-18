@@ -492,6 +492,15 @@ const toMin = s => { const [h, m] = s.split(":").map(Number); return h * 60 + m;
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const shortType = s => (s || "").replace(/\(.*?\)|（.*?）/g, "").trim();
+// 北捷支線（v2.27.3）：臺北捷運路線資料 LineID R-3 新北投支線、G-3 小碧潭支線（IsBranch=1，LineGroup R／G），路線圖另用淺粉紅／淺綠色。
+// TDX 時刻表與即時都把支線算在 R／G；這裡改成 app 內的 RA／GA 當獨立路線顯示、分組；查站序等 TDX 資料時再換回 R／G（BR_BASE）
+const BR_STN = { TRTC: { R22A: "RA", G03A: "GA" } }, BR_BASE = { RA: "R", GA: "G" }, BR_HUB = { TRTC: { R22: "RA", G03: "GA" } };
+const BR_DEST = { "新北投": "RA", "小碧潭": "GA" };
+function brLine(op, line, sid, did, dname) {
+  const m = BR_STN[op]; if (!m || !line || BR_BASE[line]) return line;
+  const b = m[String(sid || "").toUpperCase()] || m[String(did || "").toUpperCase()] || BR_DEST[dname] || null;
+  return b && BR_BASE[b] === line ? b : line;
+}
 const lineOf = (op, id) => { if (op === "TRA" || op === "THSR") return null; const m = String(id || "").match(/^[A-Z]+/); return m ? m[0] : null; };
 
 function mapRailStations(list, sys) {
@@ -522,14 +531,14 @@ function nearestRail(stations, lat, lon, opts = {}, exits = {}) {
     }
     if (exit) d = Math.min(d, exit.d);
     const k = s.op + "|" + s.name;
-    const l = lineOf(s.op, s.id);
+    const l = (BR_STN[s.op] || {})[s.id] || lineOf(s.op, s.id), hub = (BR_HUB[s.op] || {})[s.id];
     const g = groups[k];
     if (!g) {
-      groups[k] = { ...s, ids: [s.id], dist: d, lines: l ? [l] : [], exit: exit ? exit.name : null,
+      groups[k] = { ...s, ids: [s.id], dist: d, lines: [l, hub].filter(Boolean), exit: exit ? exit.name : null,
         navLat: exit ? exit.lat : s.lat, navLon: exit ? exit.lon : s.lon };
     } else {
       g.ids.push(s.id);
-      if (l && !g.lines.includes(l)) g.lines.push(l);
+      for (const x of [l, hub]) if (x && !g.lines.includes(x)) g.lines.push(x);
       if (d < g.dist) Object.assign(g, { dist: d, exit: exit ? exit.name : g.exit, navLat: exit ? exit.lat : s.lat, navLon: exit ? exit.lon : s.lon });
     }
   }
@@ -658,7 +667,7 @@ async function thsrBoard(get, st) {
 }
 
 // 北捷即時到站（經 Worker /trtc-eta，來源 Bus+）；失敗或沒資料回傳 null
-const TRTC_ROUTE = [["淡水信義", "R"], ["松山新店", "G"], ["中和新蘆", "O"], ["板南", "BL"], ["文湖", "BR"], ["環狀", "Y"], ["新北投", "R"], ["小碧潭", "G"]];
+const TRTC_ROUTE = [["淡水信義", "R"], ["松山新店", "G"], ["中和新蘆", "O"], ["板南", "BL"], ["文湖", "BR"], ["環狀", "Y"], ["新北投", "RA"], ["小碧潭", "GA"]];
 // 北捷與環狀線的轉乘站：查詢時一併帶入另一系統的站碼
 // 只列同名轉乘站；新埔（BL08）與新埔民生（Y17）名稱不同，分開顯示
 const TRTC_XFER = { BL07: "Y16", G04: "Y07", O02: "Y11", O17: "Y18" };
@@ -686,6 +695,7 @@ async function trtcLive(st) {
     if (!line) line = (/^[A-Z]+/.exec(destId) || [])[0] || null;
     if (line === "Y" && destId && !/^Y\d/.test(destId) && TRTC_XFER[destId]) destId = TRTC_XFER[destId];
     if (here.has(destId)) continue;
+    line = brLine("TRTC", line, s.id, destId, dest);
     const raw = String(it.estimateTime ?? "").trim();
     let sec = null, label = null;
     const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
@@ -708,7 +718,7 @@ async function destFixer(op) {
   return t => {
     if (t.destId) return t;
     const ids = m[normZh(t.dest).replace(/站$/, "")] || [];
-    const id = ids.find(i => stnPre(i) === t.line) || null;
+    const id = ids.find(i => stnPre(i) === (BR_BASE[t.line] || t.line)) || null;
     return id ? { ...t, destId: id } : t;
   };
 }
@@ -784,7 +794,7 @@ async function metroBoard0(get, st) {
     const vals = live.map(t => t.EstimateTime).filter(v => typeof v === "number");
     const isSec = vals.some(v => v > 120);
     const trains = live.map(t => ({
-      line: t.LineNO || t.LineID || lineOf(st.op, t.StationID),
+      line: brLine(st.op, t.LineNO || t.LineID || lineOf(st.op, t.StationID), t.StationID, t.DestinationStationID, zh(t.DestinationStaionName) || zh(t.DestinationStationName)),
       dest: zh(t.DestinationStaionName) || zh(t.DestinationStationName) || zh(t.TripHeadSign) || "?",
       destId: t.DestinationStationID || null,
       via: (/(順行|逆行)/.exec(zh(t.TripHeadSign) || "") || [])[1] || null,   // 環狀線（高雄輕軌）起訖同站，用順／逆行區分
@@ -1428,7 +1438,7 @@ async function metroTimetable(get, st, filter, all) {
   const build = list => { const byKey = {};
   for (const r of list) {
     const dest = zh(r.DestinationStaionName) || zh(r.DestinationStationName) || `方向${r.Direction ?? "?"}`;
-    const line = r.LineID || r.LineNO || lineOf(st.op, r.StationID);
+    const line = brLine(st.op, r.LineID || r.LineNO || lineOf(st.op, r.StationID), r.StationID, r.DestinationStationID, dest);
     const dir = r.Direction ?? null;
     const k = dest + "|" + line + "|" + dir;
     const set = byKey[k] = byKey[k] || { dest, destId: r.DestinationStationID || null, line, dir, times: new Set() };
@@ -2460,7 +2470,7 @@ async function stationTTMetro(p, day, di, base) {
     recs = recs.length ? pickDay(recs, { ...di }) : [];
     const fix = await destFixer(op), seen = new Set(), dirsOf = {}, list = [];
     for (const r of recs) {
-      const dest = zh(r.DestinationStationName) || `方向${r.Direction ?? "?"}`, line = r.LineID || lineOf(op, r.StationID), dir = r.Direction ?? null;
+      const dest = zh(r.DestinationStationName) || `方向${r.Direction ?? "?"}`, line = brLine(op, r.LineID || lineOf(op, r.StationID), r.StationID, r.DestinationStationID, dest), dir = r.Direction ?? null;
       (dirsOf[dest + "|" + line] = dirsOf[dest + "|" + line] || new Set()).add(dir);
       for (const x0 of (r.Timetables || [])) {
         const x = hm(x0.DepartureTime || x0.ArrivalTime); if (!x) continue;
@@ -3030,9 +3040,9 @@ window.dataApi = async (action, p = {}) => {
     case "stopAt": return stopAt(p || {});
     case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
-    case "lineView": return lineView(tdx, p);
+    case "lineView": return lineView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);
     case "trainView": return trainView(tdx, p);
-    case "tripView": return tripView(tdx, p);
+    case "tripView": return tripView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);
     case "stationTT": return stationTT(p || {});
     case "ttMeta": return ttMeta(true);
     case "buildTrips": return buildTrips(p.tt);
