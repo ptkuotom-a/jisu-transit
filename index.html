@@ -383,7 +383,7 @@ html.locked,html.locked body{overflow:hidden}
 .lstp{display:flex;gap:10px;align-items:center;padding:8px 2px 0;color:var(--muted);font-size:14px}.lstp span{color:var(--lime);font-weight:600}
 .istops{margin:4px 0 0 2px;border-left:2px solid var(--line);padding-left:12px}.istops div{display:flex;gap:10px;padding:4px 0;font-size:14px;color:var(--text)}.istops div span{width:42px;flex:none;color:var(--muted)}
 /* v2.28.0 路線詳情（A 案）：灰底車站列＋每段粗色線；轉乘＝虛線＋萊姆色 ⇄ 圓環；斜切＝同車續坐 */
-.xr{margin:14px -20px 0}
+.xr{margin:14px -20px 0;position:relative;z-index:0;isolation:isolate}   /* v2.28.1：自成堆疊層，轉乘圓環／續坐斜切不會蓋到浮動標題卡 */
 .xst{display:flex;align-items:center;min-height:50px;background:var(--surface);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .xst.xo{background:transparent;border-color:transparent}
 .xst .t{width:62px;flex:none;text-align:center;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -395,7 +395,7 @@ html.locked,html.locked body{overflow:hidden}
 .xsg .rl:before{content:"";position:absolute;left:72px;top:0;bottom:0;width:7px;background:var(--c,transparent)}
 .xsg .by{flex:1;min-width:0;padding:11px 16px 11px 26px;border-bottom:1px solid var(--line)}
 .xln{display:flex;align-items:center;gap:8px;width:100%;text-align:left;font-size:16px;font-weight:700;line-height:1.3;min-height:28px}
-.xln .ic{width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--c)}.xln .ic svg{width:22px;height:22px}
+.xln .ic{width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--c)}.xln .ic svg{width:22px;height:22px}.xln .ic img{width:24px;height:24px;display:block}
 .xln .rd{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;letter-spacing:-.3px}
 .xln .lc{flex:none;max-width:40%;padding:3px 8px;border-radius:8px;font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xln .nmx{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1847,6 +1847,21 @@ function legPill(l, L) {
   return '';
 }
 // v2.28.0 路線詳情（A 案）
+// v2.28.1 車種圖示：依 TDX 車種原名（TrainTypeName，例如「自強(3000)(EMU3000 型電車)」）判斷；只有簡稱（自強號）時退回 EMU3000
+function trainIco(l) {
+  if (l.mode === 'thsr') return '04_hsr_700t';
+  if (l.mode !== 'tra') return null;
+  const t = [l.trainTypeFull, l.trainType].filter(Boolean).join(' ') || (/[區自莒復普觀]/.test(l.name || '') && !/-/.test(l.name || '') ? l.name : '');
+  if (!t) return null;
+  if (/3000/.test(t)) return '02_emu3000';
+  if (/普悠瑪/.test(t)) return '07_puyuma';
+  if (/太魯閣/.test(t)) return '05_taroko';
+  if (/推拉/.test(t)) return '03_e500';
+  if (/自強/.test(t)) return '02_emu3000';
+  if (/區間快/.test(t)) return '01_emu500';
+  if (/區間/.test(t)) return '06_emu900';
+  return '03_e500';   // 莒光、復興、普快、觀光／專開等機車頭牽引列車與其他
+}
 const stNorm = n => String(n || '').replace(/臺/g, '台').replace(/\s/g, '').replace(/(火車站|車站|站)$/, '');
 // 捷運／輕軌路段的 [營運單位, 路線代碼]（支線優先）
 const legLine = l => { const br = legBr(l); if (br) return ['TRTC', br]; return NAME2LINE[l.name] || NAME2LINE[(l.name || '').replace(/線$/, '') + '線'] || null; };
@@ -1900,7 +1915,7 @@ function xChips(l, L, c) {
 function xLeg(l, i, L, c) {
   const P = S.plan, m = Math.max(1, Math.round(l.dur / 60)), stops = l.stops || [], open2 = P.open[i];
   let ic, title;
-  if (l.mode === 'tra' || l.mode === 'thsr') { ic = `<span class="ic">${I.trainG}</span>`; const ty = l.mode === 'thsr' ? '高鐵' : (l.trainType || '').replace(/[(（].*$/, '') || '台鐵'; title = l.number ? `${ty} ${l.number}次` : MODE_ZH[l.mode]; }
+  if (l.mode === 'tra' || l.mode === 'thsr') { const ti = trainIco(l); ic = `<span class="ic">${ti ? `<img src="icons/train/${ti}.svg" alt="">` : I.trainG}</span>`; const ty = l.mode === 'thsr' ? '高鐵' : (l.trainType || '').replace(/[(（].*$/, '') || '台鐵'; title = l.number ? `${ty} ${l.number}次` : MODE_ZH[l.mode]; }
   else if (l.mode === 'bus') { ic = `<span class="ic">${I.busG}</span>`; title = l.name || '公車'; }
   else { const ln = legLine(l); if (ln) { ic = xRound(ln[0], ln[1]); title = (LINE_NAME[ln[0]] || {})[ln[1]] || l.name || MODE_ZH[l.mode]; } else { ic = `<span class="lc" style="${chipStyle(c)}">${esc(legLabel(l))}</span>`; title = ''; } }
   const dir = l.via ? `${l.via}・到 ${l.to.name || ''}` : l.headsign ? `往 ${l.headsign}` : `到 ${l.to.name || ''}`;

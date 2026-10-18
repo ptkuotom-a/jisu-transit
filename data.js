@@ -903,7 +903,7 @@ function rail7Build(op, dailyList, src7, gen) {
   const exp = gen && gen.exp && src7.every(d => d < gen.exp.slice(0, 10)) ? gen.exp : null;   // 取的日期都在定期表有效期內才沿用它的到期日
   return src7.map((ds, i) => {   // i：0＝星期一 … 6＝星期日
     const mask = "00000000".split("").map((c, k) => k === i ? "1" : "0").join(""), j = dailyList[i];
-    const list = op === "TRA" ? ((j && j.TrainTimetables) || []).map(x => { const t = x.TrainInfo || {}; return [String(t.TrainNo), shortType(zh(t.TrainTypeName)), t.Direction ?? "", zh(t.StartingStationName) || "", zh(t.EndingStationName) || "", mask, stops(x.StopTimes)]; })
+    const list = op === "TRA" ? ((j && j.TrainTimetables) || []).map(x => { const t = x.TrainInfo || {}; return [String(t.TrainNo), zh(t.TrainTypeName), t.Direction ?? "", zh(t.StartingStationName) || "", zh(t.EndingStationName) || "", mask, stops(x.StopTimes)]; })
       : (Array.isArray(j) ? j : []).map(x => { const t = x.DailyTrainInfo || {}; return [String(t.TrainNo), "高鐵", t.Direction ?? "", zh(t.StartingStationName) || "", zh(t.EndingStationName) || "", mask, stops(x.StopTimes)]; });
     return [DOW[(i + 1) % 7], { v: 1, op, kind: op.toLowerCase(), dow: DOW[(i + 1) % 7], src: ds, src7, trains: list, eff: (gen && gen.eff) || null, exp }];
   });
@@ -998,7 +998,7 @@ async function ttRefresh(op, pass, onStep, opt = {}) {
     const list = j.TrainTimetables || [];
     version = String(j.VersionID || (j.EffectiveDate || j.UpdateTime || "").slice(0, 10));
     const trains = list.map(t => { const i = t.TrainInfo || {};
-      return [String(i.TrainNo), shortType(zh(i.TrainTypeName)), i.Direction ?? "", zh(i.StartingStationName) || "", zh(i.EndingStationName) || "", sdMask(t.ServiceDay || i.ServiceDay || { Monday: 1, Tuesday: 1, Wednesday: 1, Thursday: 1, Friday: 1, Saturday: 1, Sunday: 1, NationalHolidays: 1 }),
+      return [String(i.TrainNo), zh(i.TrainTypeName), i.Direction ?? "", zh(i.StartingStationName) || "", zh(i.EndingStationName) || "", sdMask(t.ServiceDay || i.ServiceDay || { Monday: 1, Tuesday: 1, Wednesday: 1, Thursday: 1, Friday: 1, Saturday: 1, Sunday: 1, NationalHolidays: 1 }),
         (t.StopTimes || []).map(x => [x.StationID, (hm(x.ArrivalTime) || "").replace(":", ""), (hm(x.DepartureTime) || "").replace(":", "")].join(",")).join(";")]; });
     if (!trains.length) throw new Error("TDX 沒有台鐵定期時刻表");
     out = { v: 1, op, kind: "tra", trains, eff: j.EffectiveDate || null, exp: j.ExpireDate || null };
@@ -1421,7 +1421,7 @@ async function ttTrainRows(op, id, info) {
     const stops = t[6].split(";"), si = stops.findIndex(x => x.startsWith(id + ","));
     if (si < 0 || si === stops.length - 1) continue;            // 終點站不列
     const [, a, d] = stops[si].split(",");
-    rows.push({ no: t[0], type: D.daily ? shortType(t[1]) : t[1], dir: t[2] === "" ? null : +t[2], dest: t[4], time: hhmm4(d || a) });
+    rows.push({ no: t[0], type: shortType(t[1]), dir: t[2] === "" ? null : +t[2], dest: t[4], time: hhmm4(d || a) });
   }
   return rows;
 }
@@ -2367,7 +2367,7 @@ async function trainPick(op, A, B, ready) {
     for (const t of P.trains) {
       const i = t.pts.findIndex(x => As.has(x[0])); if (i < 0) continue;
       const j = t.pts.findIndex((x, k) => k > i && Bs.has(x[0])); if (j < 0) continue;
-      const c = { dep: P.base + t.pts[i][2] * 60000, arr: P.base + t.pts[j][1] * 60000, no: t.no, type: shortType(t.type), dest: t.dest };
+      const c = { dep: P.base + t.pts[i][2] * 60000, arr: P.base + t.pts[j][1] * 60000, no: t.no, type: shortType(t.type), tf: t.type, dest: t.dest };
       if (c.dep >= ready && (!best || c.arr < best.arr)) best = c;
     }
     if (best) break;
@@ -2764,7 +2764,7 @@ async function planRetime(r, stOf, opt) {
       if (rf && rf.c) {
         const c = rf.c, st = c.shift != null ? (base.stops || []).map(x => ({ ...x, time: x.time && isoTpe(tms(x.time) + c.shift) })) : await stopsOf(c);
         const extra = leg.mode === "mrt" ? { tt: true, headsign: headNew(base, c.dest), ...(c.op === "TYMC" ? { trainType: c.skip ? "直達車" : "普通車" } : {}) }
-          : { tt: true, number: c.no, trainType: leg.mode === "tra" ? TRA_TYPE(c.type) : "", headsign: c.dest, ...(c.start && c.dest ? { name: `${c.start}-${c.dest}`, longName: `${c.start}-${c.dest}` } : {}) };
+          : { tt: true, number: c.no, trainType: leg.mode === "tra" ? TRA_TYPE(c.type) : "", ...(leg.mode === "tra" && c.type ? { trainTypeFull: c.tf || c.type } : {}), headsign: c.dest, ...(c.start && c.dest ? { name: `${c.start}-${c.dest}`, longName: `${c.start}-${c.dest}` } : {}) };
         const nl = retimed(base, c.dep, c.arr, { ...extra, ...(st.length ? { stops: st, stopCount: st.length + 1 } : {}) });
         if (first) {
           const w = pre.filter(l => l.kind !== "wait"); let t = c.dep - walkSum(w);
@@ -2806,9 +2806,9 @@ async function planRetime(r, stOf, opt) {
       if (A && B && A.op === B.op) c = leg.mode === "mrt" ? await tripPick(A.op, A.ids, B.ids, { ready }) : await trainPick(A.op, A.ids, B.ids, ready);
     }
     if (c) {
-      const nl = retimed(base, c.dep, c.arr, leg.mode === "mrt" ? { tt: true, headsign: c.dest || base.headsign, stops: await stopsOf(c) } : { tt: true, number: c.no, trainType: c.type || base.trainType, headsign: c.dest || base.headsign });
+      const nl = retimed(base, c.dep, c.arr, leg.mode === "mrt" ? { tt: true, headsign: c.dest || base.headsign, stops: await stopsOf(c) } : { tt: true, number: c.no, trainType: leg.mode === "tra" && c.type ? TRA_TYPE(c.type) : c.type || base.trainType, ...(leg.mode === "tra" && c.type ? { trainTypeFull: c.tf || c.type } : {}), headsign: c.dest || base.headsign });
       pushWait(nl, cursor, c.dep); res.push(nl);
-      notes.push(`接不上原本 ${hmTpe(p0)} 的${leg.mode === "tra" || leg.mode === "thsr" ? (c.type || leg.name) : leg.name}，改搭 ${hmTpe(c.dep)}${leg.mode === "tra" || leg.mode === "thsr" ? ` ${c.no}次` : ""}`);
+      notes.push(`接不上原本 ${hmTpe(p0)} 的${leg.mode === "tra" || leg.mode === "thsr" ? (TRA_TYPE(c.type) || leg.name) : leg.name}，改搭 ${hmTpe(c.dep)}${leg.mode === "tra" || leg.mode === "thsr" ? ` ${c.no}次` : ""}`);
       cursor = c.arr; origCursor = a0;
     } else if (leg.mode === "mrt" && /文湖|烏日|中捷/.test((leg.name || "") + (leg.agency || ""))) {
       // 文湖線、台中捷運沒有站別時刻表（班距 2–10 分）：依班距估計下一班，行駛時間照 TDX
