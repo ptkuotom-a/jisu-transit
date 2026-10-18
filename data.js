@@ -1533,6 +1533,29 @@ async function railPickNear({ lat, lon }) {
   if (out.length) return out;
   const t = all.find(s => s.op === "TRA"); return t ? [{ ...t, fallback: true }] : [];
 }
+// v2.30.0：通知的深層連結（?station=系統:代碼）→ 找回 App 自己的車站卡（同名轉乘站合併後的那張），用本機車站清單
+async function railStationRef({ op, id, lat, lon }) {
+  if (!op || !id) return null;
+  const st = await loadRailStations(), s = st.find(x => x.op === op && String(x.id) === String(id));
+  if (!s) return null;
+  const ex = {}; try { for (const c of Object.values(loadExitCache().systems || {})) Object.assign(ex, c.exits || {}); } catch (e) {}
+  const here = lat != null && lon != null, all = nearestRail(st, here ? lat : s.lat, here ? lon : s.lon, { all: true }, ex);   // 有目前位置才顯示距離
+  const g = all.find(g => g.ids.includes(s.id) && (g.op === op || (op === "NTMC" && g.op === "TRTC")));
+  return g ? (here ? g : { ...g, dist: null, exit: null }) : null;
+}
+// v2.30.0：Siri 捷徑（個人捷徑金鑰）：需要登入
+async function scCall(method, path, body) {
+  const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+  const s = getSession(); let r, j = null;
+  try { r = await fetch(proxy + path, { method, headers: { ...(s ? { "x-session": s.token } : {}), ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined }); j = await r.json().catch(() => null); }
+  catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  if (!r.ok) { const m = j && j.message; throw new Error(r.status === 401 && !/捷徑/.test(m || "") ? "請重新登入" : m || ("錯誤 " + r.status)); }
+  return j;
+}
+async function scTry({ token, lat, lon }) {   // 從 App 內試跑一次捷徑（和捷徑打同一個網址）
+  const r = await fetch(getProxy() + "/shortcut/nearest?t=" + encodeURIComponent(token), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lat, lon }) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || ("錯誤 " + r.status)); return j;
+}
 async function railSearch(p) {
   const q = normZh(p.q).trim(); if (!q) return [];
   let st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
@@ -3063,6 +3086,12 @@ window.dataApi = async (action, p = {}) => {
     case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
     case "railPickNear": return railPickNear(p || {});
+    case "railStationRef": return railStationRef(p || {});
+    case "scStatus": return scCall("GET", "/shortcut/status");
+    case "scToken": return scCall("POST", "/shortcut/token", { sub: p.sub });
+    case "scSub": return scCall("POST", "/shortcut/sub", { sub: p.sub });
+    case "scRevoke": return scCall("POST", "/shortcut/revoke", {});
+    case "scTry": return scTry(p || {});
     case "lineView": return lineView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);
     case "trainView": return trainView(tdx, p);
     case "tripView": return tripView(tdx, p && BR_BASE[p.line] ? { ...p, line: BR_BASE[p.line] } : p);

@@ -1,5 +1,5 @@
 // 極速通勤 Service Worker：介面檔一律先走網路（略過 HTTP 快取），離線才用快取；即時資料不攔截
-const VERSION = "jisu-v2.29.0";
+const VERSION = "jisu-v2.30.0";
 const SHELL = [
   "./", "./index.html", "./data.js", "./config.js", "./manifest.webmanifest",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png",
@@ -45,11 +45,17 @@ self.addEventListener("push", e => {
   }));
 });
 
+// v2.30.0：通知帶 ?station=系統:代碼（Siri 捷徑）→ App 已開著就切到前景並請它打開車站頁；沒開就用深層連結開啟
 self.addEventListener("notificationclick", e => {
   e.notification.close();
-  const target = new URL((e.notification.data && e.notification.data.url) || "./", self.registration.scope).href;
-  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
-    for (const c of list) if (c.url.startsWith(self.registration.scope) && "focus" in c) return c.focus();
-    return self.clients.openWindow(target);
+  const target = new URL((e.notification.data && e.notification.data.url) || "./", self.registration.scope);
+  const station = target.searchParams.get("station");
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async list => {
+    for (const c of list) if (c.url.startsWith(self.registration.scope) && "focus" in c) {
+      const w = await c.focus().catch(() => c) || c;
+      if (station) w.postMessage({ type: "openStation", station });
+      return w;
+    }
+    return self.clients.openWindow(target.href);
   }));
 });

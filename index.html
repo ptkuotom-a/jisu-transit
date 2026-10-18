@@ -282,6 +282,7 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .inp{width:100%;height:50px;border-radius:16px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:16px;padding:0 14px;margin-bottom:8px;outline:none}
 .inp:focus{border-color:var(--lime)}
 .src dl{margin:0} .src dt{font-weight:700;font-size:15px;margin-top:12px} .src dt:first-child{margin-top:0} .src dd{margin:2px 0 0;color:var(--muted);font-size:14px;line-height:1.45}
+.scurl{margin-top:10px;padding:12px;border-radius:12px;background:rgba(255,255,255,.06);font:13px/1.45 ui-monospace,Menlo,monospace;word-break:break-all;user-select:all;-webkit-user-select:all}.scsteps ol{margin:0;padding-left:22px;display:grid;gap:10px;font-size:15px;line-height:1.55}.scsteps code{font-size:13px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,.08)}.scsteps p{margin-top:12px}
 .kmsg{margin-top:10px;font-size:14px;color:var(--muted)} .kmsg.ok{color:var(--lime)} .kmsg.bad{color:var(--bad)}
 .sseg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;background:var(--bg);border-radius:999px;padding:5px}
 .sseg button{padding:10px 0;border-radius:999px;font-weight:700;font-size:15px;color:var(--muted)}
@@ -893,6 +894,7 @@ function vSettings() {
   <div class="sec"><h2>通知</h2></div>
   <div class="set"><p>下車提醒用推播通知。iPhone 需 iOS 16.4以上，並從主畫面圖示開啟。目前權限：${'Notification' in window ? ({granted:'已允許',denied:'已拒絕（到 iPhone 設定 › 通知 › 極速通勤 開啟）',default:'尚未詢問'})[Notification.permission] : '這個環境不支援'}</p>
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
+  ${!DEMO && S.auth ? `<button class="card advrow" data-act="openSiri"><span class="body"><div class="title">Siri 捷徑</div><div class="desc">說「嘿 Siri，最近車站」，推播最近車站的下一班</div></span><span class="chev">${I.chev}</span></button>` : ''}
   ${vAccount()}
   ${!DEMO && S.auth?.role === 'admin' ? `<button class="card advrow" data-act="openAdv"><span class="body"><div class="title">進階設定</div><div class="desc">Worker 網址、更新時刻表、每日訪客檢查</div></span><span class="pill">僅管理者</span><span class="chev">${I.chev}</span></button>` : ''}
   <div class="sec"><h2>關於</h2></div>
@@ -925,6 +927,83 @@ function openAdv() {
 }
 function advHtml() {
   return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}</div>`;
+}
+// ---------- Siri 捷徑（v2.30.0）：個人捷徑金鑰＋最近車站推播 ----------
+const SC_KEY = 'jisu_sc_tok';
+const scUrl = t => `${getProxyUI()}/shortcut/nearest?t=${t}`;
+function getProxyUI() { return ((S.proxy && S.proxy.url) || (window.JISU_CONFIG && window.JISU_CONFIG.proxy) || '').replace(/\/+$/, ''); }
+function openSiri() {
+  if (DEMO || !S.auth) return;
+  S.back = []; S.page = 'siri'; S.sc = S.sc || { st: null, msg: '', bad: false };
+  const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0));
+  p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
+  renderPage(); scLoad();
+}
+async function scLoad() {
+  try { S.sc.st = await api('scStatus'); } catch (e) { S.sc.st = { err: e.message }; }
+  if (S.sc.st && !S.sc.st.has) localStorage.removeItem(SC_KEY);
+  if (S.page === 'siri') renderPage();
+}
+function scSay(t, bad) { S.sc.msg = t; S.sc.bad = !!bad; if (S.page === 'siri') renderPage(); }
+async function scGen(btn) {
+  const had = S.sc.st && S.sc.st.has;
+  if (had && !confirm('重新產生後，舊的捷徑網址會立刻失效，要在捷徑 App 換成新網址。確定嗎？')) return;
+  btn.disabled = true; scSay('產生中…');
+  try {
+    const sub = await getPushSub(null); if (!sub) return scSay('這台裝置還不能推播：請先在上面的「通知」按「傳送測試通知」，允許通知後再回來。', true);
+    const j = await api('scToken', { sub }); localStorage.setItem(SC_KEY, j.token);
+    S.sc.st = { has: true, at: j.at, devices: j.devices, today: 0 }; scSay(had ? '已重新產生，請在捷徑 App 換成新網址。' : '已產生，按「複製網址」貼到捷徑 App。');
+  } catch (e) { scSay('失敗：' + e.message, true); }
+}
+async function scCopy() {
+  const t = localStorage.getItem(SC_KEY); if (!t) return;
+  try { await navigator.clipboard.writeText(scUrl(t)); toast('已複製捷徑網址'); }
+  catch (e) { const el = $('#scUrl'); if (el) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } toast('請長按網址手動複製'); }
+}
+async function scSubThis(btn) {
+  btn.disabled = true; scSay('設定中…');
+  try { const sub = await getPushSub(null); if (!sub) return scSay('這台裝置還不能推播：請先允許通知。', true);
+    const j = await api('scSub', { sub }); S.sc.st = { ...(S.sc.st || {}), devices: j.devices }; scSay(j.same ? '這台裝置已經會收到。' : '這台裝置之後也會收到最近車站通知。'); }
+  catch (e) { scSay('失敗：' + e.message, true); }
+}
+async function scTryNow(btn) {
+  const t = localStorage.getItem(SC_KEY); if (!t) return;
+  btn.disabled = true; scSay('定位中…');
+  try { const p = await api('locate'); scSay('查詢中…');
+    const j = await api('scTry', { token: t, lat: p.latitude, lon: p.longitude });
+    S.sc.st = { ...(S.sc.st || {}), today: (S.sc.st?.today || 0) + 1 };
+    scSay(`${j.title}　${j.body}` + (j.pushed ? '（已推播）' : j.message ? `（${j.message}）` : '')); }
+  catch (e) { scSay('失敗：' + e.message, true); }
+}
+async function scRevoke() {
+  if (!confirm('停用後，捷徑會無法使用（之後可以再產生新的網址）。確定嗎？')) return;
+  try { await api('scRevoke'); localStorage.removeItem(SC_KEY); S.sc.st = { has: false }; scSay('已停用。'); } catch (e) { scSay('失敗：' + e.message, true); }
+}
+function siriHtml() {
+  const sc = S.sc || {}, st = sc.st, tok = localStorage.getItem(SC_KEY);
+  const head = `<div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">Siri 捷徑</h1></div></div>`;
+  let h = `<div class="note">對 Siri 說「最近車站」（或按捷徑），極速通勤會找出離你最近的車站，推播下一班車的表定時間。點通知就會打開這個車站的頁面。只用雲端時刻表計算，不查即時資料。</div>`;
+  if (!st) h += `<div class="set"><p>讀取中…</p></div>`;
+  else if (st.err) h += `<div class="set"><p class="kmsg bad">${esc(st.err)}</p></div>`;
+  else {
+    h += `<div class="sec"><h2>你的捷徑網址</h2></div><div class="set">`;
+    if (st.has && tok) h += `<p>這個網址等同你的捷徑鑰匙，請不要分享給別人。</p><div class="scurl" id="scUrl">${esc(scUrl(tok))}</div>
+      <div class="btns" style="grid-template-columns:1fr 1fr;margin-top:10px"><button class="btn pri" data-act="scCopy">複製網址</button><button class="btn" data-act="scTry">現在試一次</button></div>`;
+    else if (st.has) h += `<p>已經有捷徑網址，但這台裝置沒有存（例如是在別台裝置產生的）。要在這台顯示網址，請重新產生；舊網址會失效。</p>`;
+    else h += `<p>還沒有捷徑網址。產生時會一併讓這台裝置接收通知（需要先允許通知）。</p>`;
+    h += `<div class="btns" style="grid-template-columns:1fr;margin-top:10px"><button class="btn${st.has ? '' : ' pri'}" data-act="scGen">${st.has ? '重新產生網址' : '產生捷徑網址'}</button></div>`;
+    if (st.has) h += `<p style="margin-top:12px">接收通知的裝置：${st.devices || 0} 台・今天已用 ${st.today || 0}／100 次</p>
+      <div class="btns" style="grid-template-columns:1fr 1fr;margin-top:8px"><button class="btn" data-act="scSub">讓這台裝置接收</button><button class="btn" data-act="scRevoke">停用捷徑</button></div>`;
+    h += `<div class="kmsg${sc.bad ? ' bad' : sc.msg ? ' ok' : ''}">${esc(sc.msg || '')}</div></div>`;
+  }
+  h += `<div class="sec"><h2>在 iPhone 設定捷徑</h2></div><div class="set scsteps"><ol>
+    <li>打開「捷徑」App，按右上角「＋」新增捷徑。</li>
+    <li>加入動作「<b>取得目前位置</b>」。</li>
+    <li>加入動作「<b>取得 URL 內容</b>」：網址貼上上面複製的捷徑網址；按「顯示更多」，方法選「<b>POST</b>」，要求本文選「<b>JSON</b>」，新增兩個欄位（類型都選「數字」）：<br>・<code>lat</code>：點值選「目前位置」，再點一下改成「<b>緯度</b>」<br>・<code>lon</code>：同上，改成「<b>經度</b>」</li>
+    <li>（可省略）加入「<b>取得字典值</b>」取「<code>text</code>」，再加「<b>顯示結果</b>」，Siri 就會念出車站和下一班車。</li>
+    <li>把捷徑命名為「<b>最近車站</b>」。之後說「嘿 Siri，最近車站」就會收到通知。</li>
+  </ol><p>需要：iOS 16.4 以上，從主畫面圖示開啟極速通勤並允許通知；第一次執行時捷徑會詢問能否使用位置、能否連到 workers.dev，請選「允許」。每 10 秒最多 1 次、每天最多 100 次。</p></div>`;
+  return `<div class="wrap">${head}${h}</div>`;
 }
 function vAdvanced() {
   if (DEMO || S.auth?.role !== 'admin') return '<div class="note">只有管理者可以使用進階設定。</div>';
@@ -1609,8 +1688,8 @@ function openPlan() {
   renderPage();
   if (!P.o) api('locate').then(l => { if (!P.o) { P.o = { name:hereName(), lat:l.latitude, lon:l.longitude, here:true }; if (S.page === 'plan') renderPage(); } }).catch(() => {});
 }
-const PLAN_PAGES = ['plan','planPick','planDetail','adv'];
-function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : ''; }
+const PLAN_PAGES = ['plan','planPick','planDetail','adv','siri'];
+function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : pg === 'siri' ? siriHtml() : ''; }
 function renderPage() {
   if (!PLAN_PAGES.includes(S.page)) return;
   const pg = $('#routePage'); pg.innerHTML = pageHtml(S.page);
@@ -2150,6 +2229,12 @@ document.addEventListener('click', e => {
     case 'remStart': startRemind(el); break;
     case 'remCancel': cancelRemind(); break;
     case 'pushTest': pushTest(el); break;
+    case 'openSiri': openSiri(); break;
+    case 'scGen': scGen(el); break;
+    case 'scCopy': scCopy(); break;
+    case 'scSub': scSubThis(el); break;
+    case 'scTry': scTryNow(el); break;
+    case 'scRevoke': scRevoke(); break;
     case 'ttSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
     case 'ttAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
     case 'ttRun': ttRun(); break;
@@ -2673,9 +2758,9 @@ async function doLogout() {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth(); });
 async function startApp() {
-  if (appStarted) { render(); refresh(); return; }
+  if (appStarted) { render(); refresh(); stationLink(); return; }
   appStarted = true;
-  render(); refresh(); renderRemBar(); pollRemind();
+  render(); refresh(); renderRemBar(); pollRemind(); stationLink();
   setTimeout(gsyncAuto, 8000);
 }
 // v2.27：管理者每天（台北日期）第一次打開 app，背景用 TDX 訪客額度檢查時刻表；安靜執行，不擋畫面
@@ -2692,6 +2777,17 @@ async function gsyncRun(force) {
   try { const r = await window.dataApi('guestSync', { pass: S.auth.token, force }); TT.gs = r.state || r; if (r.changed?.length) { TT.meta = null; } }
   catch (e) { TT.gs = { status:'stopped', err: String(e.message || e) }; }
   TT.gbusy = false; if (S.tab === 'settings') render();
+}
+// v2.30.0：深層連結 ?station=系統:代碼（Siri 捷徑通知）→ 直接打開車站頁；App 已開著時由 Service Worker postMessage 帶進來
+let pendingStation = (() => { const m = /[?&]station=([^&#]+)/.exec(location.search); return m ? decodeURIComponent(m[1]) : null; })();
+if (pendingStation) { try { history.replaceState(null, '', location.pathname + location.search.replace(/([?&])station=[^&#]*&?/, '$1').replace(/[?&]$/, '') + location.hash); } catch (e) {} }
+async function stationLink(ref) {
+  if (ref) pendingStation = ref;
+  if (!pendingStation || !appStarted || DEMO) return;
+  const r = pendingStation; pendingStation = null;
+  const m = /^([A-Z]+):([A-Za-z0-9-]+)$/.exec(r); if (!m) return;
+  try { const g = await api('railStationRef', { op: m[1], id: m[2], lat: S.data?.lat, lon: S.data?.lon }); if (g) { closeSheetQuiet(); openRail(g); } else toast('找不到這個車站'); }
+  catch (e) { toast('車站資料讀取失敗：' + e.message); }
 }
 async function boot() {
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
@@ -2734,6 +2830,7 @@ if ('serviceWorker' in navigator && !DEMO) {
   }).catch(() => {});
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) doReload(); else askVersion(); });
   navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.type === 'openStation' && e.data.station) { stationLink(e.data.station); return; }
     const v = e.data && e.data.version; if (!v) return;
     S.version = v.replace(/^jisu-/, '');
     const old = localStorage.getItem('jisu_ver');
