@@ -987,8 +987,8 @@ function vRail() {
   return h;
 }
 function openRail(r) {
-  // v2.25.0：10 分鐘內看過的車站先顯示上次的資料（停留 2 秒以上才更新）；沒看過或太舊才立刻載入
-  const ck = 'rail:' + r.op + (r.ids || []).join(','), c = (S.liveCache || {})[ck], hit = c && Date.now() - c.at < 10 * 60000;
+  // v2.25.1：這次 session 看過（或 10 分鐘內看過）的車站先顯示上次的資料；沒看過或太舊才立刻載入
+  const ck = 'rail:' + r.op + (r.ids || []).join(','), c = (S.liveCache || {})[ck], hit = c && (c.at >= sessStart || Date.now() - c.at < 10 * 60000);
   S.page = 'rail'; S.rail = r; S.railData = hit ? c.data : null; S.railAt = hit ? c.at : 0; S.railError = null;
   const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0)); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderRail(); if (!hit) loadRail();
@@ -1428,7 +1428,7 @@ function renderLine() {
 function openRoute(r) {
   S.page = 'route';
   S.route = { routeUID:r.routeUID, route:r.route, dirNum:r.dirNum ?? 0, stopUID:r.stopUID, stopName:r.stopName, dest:r.dest };
-  const ck = 'route:' + r.routeUID + '|' + (r.dirNum ?? 0) + '|' + (r.stopUID || ''), c = (S.liveCache || {})[ck], hit = c && Date.now() - c.at < 10 * 60000;
+  const ck = 'route:' + r.routeUID + '|' + (r.dirNum ?? 0) + '|' + (r.stopUID || ''), c = (S.liveCache || {})[ck], hit = c && (c.at >= sessStart || Date.now() - c.at < 10 * 60000);
   S.routeData = hit ? c.data : null; S.routeAt = hit ? c.at : 0; S.routeError = null;
   const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0)); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderRoute(); if (!hit) loadRoute(true); else requestAnimationFrame(() => { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); });
@@ -1750,7 +1750,7 @@ async function planLoadLive() {
   try { const L = await api('planLive', { legs:r.legs }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); } } catch (e) {}
   P.liveLoading = false;
   if (tok === P.liveTok && S.page === 'planDetail') renderPage();
-  // v2.25.0：不再每 40 秒更新；離開再回來停 2 秒才更新一次，或下拉更新
+  // v2.25.0：不再每 40 秒更新；同一個行程每次 session 只自動更新一次，之後下拉更新
 }
 function legPill(l, L) {
   const m0 = Math.round((Date.parse(l.from.time + '+08:00') - Date.now()) / 60000);
@@ -2270,11 +2270,13 @@ $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#
 
 // v2.25.0 省 TDX：所有即時資料頁（首頁各分頁、車站頁、公車路線頁、行程結果頁）都不再定時更新。
 // ① 第一次打開某頁、還沒有資料：立刻載入（那就是這次的更新，不會 2 秒後再抓一次）
-// ② 切換回已經有資料的頁面（回到首頁、從時刻表／車次頁回車站頁、換分頁），或 app 離開超過 2 分鐘再回來：停留 2 秒以上才更新一次，2 秒內離開就取消；
-//    資料是 30 秒內抓的（Worker 快取也是 30 秒，抓了也只會拿到同一份）就不抓
+// ② v2.25.1：同一次使用（session）裡，每一頁（首頁、每個車站、每條公車路線、每個行程）最多自動更新一次：
+//    第一次進去沒有資料就立刻載入；有上次的資料就停留 2 秒以上才更新（2 秒內離開就取消，下次進來還算第一次）。
+//    之後再回到同一頁只顯示已存的資料，不再自動更新（沒有資料的話還是會載入，不會留白）。
+//    新的 session＝冷啟動，或 app 離開超過 2 分鐘再回來（當下那一頁停 2 秒更新一次，各頁的紀錄重新計算）
 // ③ 下拉更新（每一個即時資料頁）、首頁的「重新整理」按鈕：隨時手動更新
-const AWAY_MS = 2 * 60 * 1000, DWELL_MS = 2000, FRESH_MS = 30 * 1000;
-var hiddenAt = 0, navKey = null, dwellT = 0;
+const AWAY_MS = 2 * 60 * 1000, DWELL_MS = 2000;
+var hiddenAt = 0, navKey = null, dwellT = 0, sessStart = Date.now(), seenPages = new Set();
 function liveKey() {   // 目前畫面是哪一個即時資料頁（null＝不是）
   if (!$('#sheetWrap').hidden) return null;
   if (!S.page) return S.tab === 'settings' ? null : 'home';   // 首頁、公車、YouBike、車站四個分頁共用同一份附近資料
@@ -2283,29 +2285,32 @@ function liveKey() {   // 目前畫面是哪一個即時資料頁（null＝不�
   if (S.page === 'planDetail') return 'plan:' + S.plan.sel;
   return null;
 }
-function liveState() {   // { at: 資料時間, busy: 載入中, run: 更新函式 }
+function liveState() {   // { at: 資料時間, busy: 載入中, has: 有資料, run: 更新函式 }
   if (!S.page) return { at: S.lastFetch, busy: S.loading, has: !!S.data, run: refresh };
   if (S.page === 'rail') return { at: S.railAt || 0, busy: S.railLoading, has: !!S.railData, run: loadRail };
   if (S.page === 'route') return { at: S.routeAt || 0, busy: S.routeLoading, has: !!S.routeData, run: () => loadRoute(false) };
   if (S.page === 'planDetail') return { at: S.plan.liveAt || 0, busy: S.plan.liveLoading, has: !!S.plan.live, run: planLoadLive };
   return null;
 }
-function armDwell(force) {
+function armDwell() {   // 剛進到某一頁時呼叫
   clearTimeout(dwellT);
-  const k = liveKey(); if (!k || !appStarted || !S.auth) return;
+  const k = liveKey(); if (!k) return;
+  const L = liveState(); if (!L) return;
+  if (L.busy) { seenPages.add(k); return; }                    // 打開時已經在載入了，這就是這一頁的那一次
+  if (!L.has) { seenPages.add(k); L.run(); return; }           // 沒有資料：一定要載入，不留白
+  if (seenPages.has(k) || (L.at && L.at >= sessStart)) { seenPages.add(k); return; }   // 這次 session 已經更新過
   dwellT = setTimeout(() => {
     if (liveKey() !== k || document.hidden) return;
-    const L = liveState(); if (!L || L.busy || !L.has) return;   // 還沒有資料的頁面打開時已經在載入了
-    if (!force && Date.now() - L.at < FRESH_MS) return;
-    L.run();
+    const M = liveState(); if (!M || M.busy) return;
+    seenPages.add(k); M.run();
   }, DWELL_MS);
 }
 // 換頁偵測：每 250 毫秒比一次目前的頁面（只比對狀態，不連網）
-setInterval(() => { const k = liveKey(); if (k !== navKey) { navKey = k; armDwell(false); } }, 250);
+setInterval(() => { if (!appStarted || !S.auth || document.hidden) return; const k = liveKey(); if (k !== navKey) { navKey = k; armDwell(); } }, 250);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { hiddenAt = Date.now(); clearTimeout(dwellT); return; }
   const away = hiddenAt && Date.now() - hiddenAt > AWAY_MS; hiddenAt = 0;
-  if (away) armDwell(true);   // 當作重新打開：停在這頁 2 秒以上就更新一次
+  if (away) { sessStart = Date.now(); seenPages.clear(); armDwell(); }   // 當作重新打開 app：停在這頁 2 秒以上就更新一次
 });
 /* ---------- 下拉更新（v2.25.0）：iOS 風格轉圈；在捲到最上面時往下拉，超過門檻放開就更新一次 ---------- */
 (() => {
