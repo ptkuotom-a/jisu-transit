@@ -141,6 +141,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
   padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);transform:translateX(100%);transition:transform .28s ease}
 .page.open{transform:none}
 .page{overscroll-behavior-y:contain}
+.pupd{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:6px}.pupd i{width:7px;height:7px;border-radius:50%;background:var(--lime);display:inline-block}.pupd.err i{background:var(--bad)}.shd-info .pupd{margin-top:0}
 #main.ptrm{transform:translateY(var(--ptr,0px));transition:transform var(--ptrT,0s) cubic-bezier(.3,.7,.3,1)}
 #routePage.ptrm > *{transform:translateY(var(--ptr,0px));transition:transform var(--ptrT,0s) cubic-bezier(.3,.7,.3,1)}
 .ptr{position:fixed;left:50%;top:0;width:30px;height:30px;z-index:60;display:none;pointer-events:none;transform:translateX(-50%)}
@@ -443,7 +444,7 @@ const I = {
 
 /* ---------- state ---------- */
 const S = {
-  tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0,
+  tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0, busAt:0, bikeAt:0, railNearAt:0, partErr:{},
   settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},
   railTab:{}, ttAll:{}, rail:null, railData:null, railLoading:false, railError:null, page:null,
   favs:{bus:[], bike:[]},
@@ -540,10 +541,16 @@ function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕�
 }
 const TAB_ORDER = ['home','bus','bike','rail','settings'];
 function setTab(k) { S.tab = k; window.scrollTo(0,0); render(); }
+// v2.26.0：更新時間各頁分開：首頁＝打開 app／首頁更新的時間；公車、YouBike、軌道分頁＝各自那份資料的時間（打開 app 時三者同時更新，所以一樣）
+const TAB_PART = { bus:'bus', bike:'bike', rail:'rail' };
+function tabAt() { return { bus:S.busAt, bike:S.bikeAt, rail:S.railNearAt }[S.tab] ?? S.lastFetch; }
+function refreshTab(manual) { const part = S.data && !S.error ? TAB_PART[S.tab] || null : null; return refresh(part, manual); }
+const updTxt = (at, err) => err ? '更新失敗' : at ? `${hhmm(at)}更新` : '';
+function pupd(at, err) { const t = updTxt(at, err); return t ? `<div class="pupd${err ? ' err' : ''}"><i></i>${t}</div>` : ''; }
 function renderStatus() {
-  const st = $('#status');
-  st.className = 'live' + (S.error ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.error ? '更新失敗' : S.lastFetch ? `${hhmm(S.lastFetch)}更新` : '') + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  const st = $('#status'), pe = !S.error && S.partErr[TAB_PART[S.tab]];
+  st.className = 'live' + (S.error || pe ? ' err' : '');
+  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -1191,11 +1198,12 @@ function selectRailTab(btn, fromSwipe) {
 }
 function stationHead(R, cur) {
   const codes = (R.ids || []).filter(i => /^[A-Z]/i.test(i));
+  const up = cur === 'rail' ? pupd(S.railAt, S.railError && S.railData) : '';
   const info = [codes.join('・'), R.dist != null ? distTxt(R.dist) : '', R.exit ? (R.dist != null ? '最近出口 ' : '出口 ') + R.exit : ''].filter(Boolean).map(esc).join('　');
   return `<div class="ptop shd"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <h1 class="shd-name ${[...R.name].length > 7 ? 'long' : ''}">${esc(R.name)}</h1>
     <div class="shd-row"><span class="sys">${esc(R.sys)}</span>${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}</div>
-    <div class="shd-info">${info || '&nbsp;'}</div>
+    <div class="shd-info">${info || up || '&nbsp;'}</div>${info ? up : ''}
     <div class="shd-acts"><button class="navbtn ${cur === 'sttt' ? 'on' : ''}" ${cur === 'sttt' ? 'aria-current="page"' : 'data-act="stttOpen"'}>${I.clock}時刻表</button><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div></div>`;
 }
 function renderRail() { if (S.rail && S.page === 'rail') $('#routePage').innerHTML = railHtml(); }
@@ -1462,7 +1470,7 @@ function renderRoute() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1>${esc(R.route)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="swapDir">${I.swap}<span>${esc(dest ? '往 ' + dest : '切換方向')}</span></button>` : (dest ? `<span class="dirbtn"><span>往 ${esc(dest)}</span></span>` : '')}</div>
-    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div></div>`;
+    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div>${D ? pupd(S.routeAt, S.routeError) : ''}</div>`;
   if (!D) h += skel(5);
   else {
     h += `<div class="line">` + D.stops.map((s, i) => {
@@ -1739,7 +1747,7 @@ async function mapPickOk(btn) {
 
 /* 路線詳情：分段清單（上下車站、沿途停靠站、出入口）＋地圖＋即時到站 */
 function openPlanDetail(i) {
-  const P = S.plan; P.sel = i; P.live = {}; P.open = {};
+  const P = S.plan; P.sel = i; P.live = {}; P.open = {}; P.liveAt = 0; P.liveErr = null;
   stackPush(() => { S.page = 'planDetail'; planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); });
   planLoadLive();
 }
@@ -1747,7 +1755,7 @@ async function planLoadLive() {
   const P = S.plan, r = P.res && P.res[P.sel]; if (!r) return;
   const tok = P.liveTok = (P.liveTok || 0) + 1;
   P.liveLoading = true;
-  try { const L = await api('planLive', { legs:r.legs }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); } } catch (e) {}
+  try { const L = await api('planLive', { legs:r.legs }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); P.liveErr = null; } } catch (e) { if (tok === P.liveTok) P.liveErr = e.message || 'err'; }
   P.liveLoading = false;
   if (tok === P.liveTok && S.page === 'planDetail') renderPage();
   // v2.25.0：不再每 40 秒更新；同一個行程每次 session 只自動更新一次，之後下拉更新
@@ -1767,7 +1775,7 @@ function detailHtml() {
   if (!r) return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button></div></div>`;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead pdh"><h1>${minTxt(r.dur)}</h1><span class="dirbtn"><span>${hmOf(r.start)}–${hmOf(r.end)}</span></span></div>
-    <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${P.liveLoading ? '・讀取即時資料中…' : ''}</div></div>
+    <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${P.liveLoading ? '・讀取即時資料中…' : ''}</div>${pupd(P.liveAt, P.liveErr)}</div>
     <div id="planMapSlot" class="mapslot"></div>${segBar(r)}${r.ttNote ? `<div class="sub pnote" style="margin:8px 0 0">${esc(r.ttNote)}</div>` : ''}<div class="tl">`;
   const node = (time, name, sub, cls = '', style = '') => `<div class="tn ${cls}"><span class="tt0">${time ? hmOf(time) : ''}</span><i class="nd" style="${style}"></i><span class="nm">${esc(name || '')}${sub ? `<small>${sub}</small>` : ''}</span></div>`;
   const legs = r.legs;
@@ -1876,13 +1884,21 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => { if (e.target.id === 'pickQ' && e.key === 'Enter') e.target.blur(); });
 
 /* ---------- data ---------- */
-async function refresh() {
+async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只更新那一份（該分頁的下拉更新）；不給＝全部（打開 app、首頁）
   if (S.loading) return;
+  if (!S.data) part = null;
   S.loading = true; renderStatus();
   try {
-    S.data = await api('nearby', { settings:S.settings, favs:S.favs });
-    S.error = null; S.lastFetch = Date.now();
-  } catch (e) { S.error = e.message; }
+    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual });
+    const now = Date.now();
+    if (!part) { S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; }
+    else {
+      const D = S.data; D.lat = d.lat; D.lon = d.lon; D.accuracy = d.accuracy; S.partErr[part] = null;
+      if (part === 'bus') { D.busStops = d.busStops; D.busError = null; D.favs = { ...D.favs, bus:d.favs.bus }; S.busAt = now; }
+      if (part === 'bike') { D.bikes = d.bikes; D.bikeError = null; D.favs = { ...D.favs, bike:d.favs.bike }; S.bikeAt = now; }
+      if (part === 'rail') { D.rail = d.rail; D.railError = null; S.railNearAt = now; }
+    }
+  } catch (e) { if (part) S.partErr[part] = e.message; else S.error = e.message; }
   S.loading = false;
   if (S.tab === 'settings') { renderStatus(); return; }
   if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = viewOf(S.tab)(); renderStatus(); }
@@ -2264,7 +2280,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 function closeSheetQuiet() { if (!$('#sheetWrap').hidden) closeSheet(); }
 let favT; function refreshFavsSoon() { clearTimeout(favT); favT = setTimeout(refresh, 600); }
-$('#refreshBtn').addEventListener('click', () => { refresh(); if (S.route) loadRoute(false); if (S.rail) loadRail(); });
+$('#refreshBtn').addEventListener('click', () => refreshTab(true));
 $('#q').addEventListener('input', e => { S.q = e.target.value; $('#qClear').hidden = !S.q; $('#main').innerHTML = viewOf(S.tab)(); });
 $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#q').value = ''; $('#qClear').hidden = true; render(); });
 
@@ -2286,7 +2302,7 @@ function liveKey() {   // 目前畫面是哪一個即時資料頁（null＝不�
   return null;
 }
 function liveState() {   // { at: 資料時間, busy: 載入中, has: 有資料, run: 更新函式 }
-  if (!S.page) return { at: S.lastFetch, busy: S.loading, has: !!S.data, run: refresh };
+  if (!S.page) return { at: tabAt(), busy: S.loading, has: !!S.data, run: () => refreshTab(true) };
   if (S.page === 'rail') return { at: S.railAt || 0, busy: S.railLoading, has: !!S.railData, run: loadRail };
   if (S.page === 'route') return { at: S.routeAt || 0, busy: S.routeLoading, has: !!S.routeData, run: () => loadRoute(false) };
   if (S.page === 'planDetail') return { at: S.plan.liveAt || 0, busy: S.plan.liveLoading, has: !!S.plan.live, run: planLoadLive };
@@ -2299,6 +2315,7 @@ function armDwell() {   // 剛進到某一頁時呼叫
   if (L.busy) { seenPages.add(k); return; }                    // 打開時已經在載入了，這就是這一頁的那一次
   if (!L.has) { seenPages.add(k); L.run(); return; }           // 沒有資料：一定要載入，不留白
   if (seenPages.has(k) || (L.at && L.at >= sessStart)) { seenPages.add(k); return; }   // 這次 session 已經更新過
+  if (k === 'home' && (S.tab === 'bus' || S.tab === 'bike')) return;   // v2.26.0：公車、YouBike 分頁用打開 app 時抓的資料，不另外停 2 秒更新
   dwellT = setTimeout(() => {
     if (liveKey() !== k || document.hidden) return;
     const M = liveState(); if (!M || M.busy) return;
@@ -2306,11 +2323,21 @@ function armDwell() {   // 剛進到某一頁時呼叫
   }, DWELL_MS);
 }
 // 換頁偵測：每 250 毫秒比一次目前的頁面（只比對狀態，不連網）
-setInterval(() => { if (!appStarted || !S.auth || document.hidden) return; const k = liveKey(); if (k !== navKey) { navKey = k; armDwell(); } }, 250);
+var navTab = null, partTried = new Set();
+setInterval(() => {
+  if (!appStarted || !S.auth || document.hidden) return;
+  const k = liveKey(); if (k !== navKey) { navKey = k; navTab = S.tab; armDwell(); return; }
+  if (k === 'home' && S.tab !== navTab) {   // 換分頁（首頁／公車／YouBike／軌道共用打開 app 時抓的資料，不重抓）；只有那一份沒有資料時補抓一次，不留白
+    navTab = S.tab; const p = TAB_PART[S.tab], D = S.data;
+    if (S.loading) return;
+    if (!D) { if (!partTried.has('all')) { partTried.add('all'); refresh(); } }
+    else if ((p === 'bus' && D.busError && !D.busStops.length) || (p === 'bike' && D.bikeError && !D.bikes.length)) { if (!partTried.has(p)) { partTried.add(p); refresh(p); } }
+  }
+}, 250);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { hiddenAt = Date.now(); clearTimeout(dwellT); return; }
   const away = hiddenAt && Date.now() - hiddenAt > AWAY_MS; hiddenAt = 0;
-  if (away) { sessStart = Date.now(); seenPages.clear(); armDwell(); }   // 當作重新打開 app：停在這頁 2 秒以上就更新一次
+  if (away) { sessStart = Date.now(); seenPages.clear(); partTried.clear(); if (liveKey() === 'home' && (S.tab === 'bus' || S.tab === 'bike')) { seenPages.add('home'); refresh(); } else armDwell(); }   // 當作重新打開 app：停在這頁 2 秒以上就更新一次
 });
 /* ---------- 下拉更新（v2.25.0）：iOS 風格轉圈；在捲到最上面時往下拉，超過門檻放開就更新一次 ---------- */
 (() => {
