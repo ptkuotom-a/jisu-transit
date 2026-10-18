@@ -2833,7 +2833,9 @@ async function planRetime(r, stOf, opt) {
     if (L._note != null && notes[L._note]) { const n0 = notes[L._note], n1 = n0.replace(`（${hmTpe(tms(L.to.time))} 到）`, `（${hmTpe(tms(M.to.time))} 到${M.to.name || ""}）`);
       notes[L._note] = n1 !== n0 ? n1 : `${n0}（${L.to.name || "中途站"}），續坐到${M.to.name || "下車站"} ${hmTpe(tms(M.to.time))}`; }
     if (M._note != null) notes[M._note] = null;
-    res.splice(k, j - k + 1, { ...L, to: M.to, dur: Math.round((tms(M.to.time) - tms(L.from.time)) / 1000), stops: st, stopCount: st.length + 1 });
+    // v2.28.0：記下續坐點（路線詳情顯示「免轉乘 ○○ HH:MM・同一班車，不用下車」）
+    const thru = [...(L.thru || []), { name: L.to.name, time: L.to.time, dep: M.from.time }, ...(M.thru || [])];
+    res.splice(k, j - k + 1, { ...L, to: M.to, dur: Math.round((tms(M.to.time) - tms(L.from.time)) / 1000), stops: st, stopCount: st.length + 1, thru });
     k--;
   }
   for (let k = notes.length - 1; k >= 0; k--) if (!notes[k]) notes.splice(k, 1);
