@@ -905,14 +905,15 @@ function vTimetable() {
   if (!TT.meta && !TT.loading) ttLoadMeta();
   const pass = S.auth?.role === 'admin' ? S.auth.token : null;
   let h = `<div class="sec"><h2>更新時刻表</h2><span class="side">存在雲端</span></div><div class="set">
-    <p>所有時刻表（台鐵、高鐵、捷運、輕軌，含平日、週六、週日、假日）只存一份在雲端（你的 Worker／Cloudflare KV），每支手機都從這裡下載，有新版才重新下載，不會各自向 TDX 抓。不會自動更新；時刻表改版時勾選系統再按「更新」，更新一次所有手機就都拿到新版。同一個系統一小時內只能更新一次。</p>
+    <p>所有時刻表（台鐵、高鐵、捷運、輕軌，含平日、週六、週日、假日）只存一份在雲端（你的 Worker／Cloudflare KV），每支手機都從這裡下載，有新版才重新下載，不會各自向 TDX 抓。每天管理者第一次打開 app 時，會在背景用 TDX 的<b>訪客額度</b>（不帶金鑰、用這支手機自己的網路，每天最多 17 次）自動檢查一次，有新版才下載並更新雲端，不吃金鑰額度；也可以勾選系統再按「更新」手動更新（用金鑰）。同一個系統一小時內只能更新一次。</p>
     <p><b>更新規則</b></p><ul class="rules">
       <li><b>台鐵、高鐵</b>：存成星期一～日 7 份（七天班表），取自同一個平常週的實際時刻表；這一週不含國定假日、連假或連假前一天，週六、週日也是平常的週末。下方會列出取自哪幾天。</li>
       <li>只有查<b>國定假日、連假的每一天、或連假前一天</b>，才會抓那一天的實際時刻表（含疏運加班、停駛，每個日期只抓一次）；平常的平日和週末一律用七天班表。連假＝國定假日（含補假）加上相連的週末；依人事總處辦公日曆表判斷。</li>
       <li><b>捷運、輕軌</b>：依各系統的平日／假日班表（國定假日用假日班表）。</li>
       <li><b>深夜直達車</b>：深夜（23:00～05:00，或下一班要 3 小時以後）TDX 查不到路線、起訖點都在台鐵／高鐵車站 300 公尺內時，用上面的時刻表列出接下來最多 6 班不用轉車的直達車（標「路線資料：官方時刻表」）；要轉車或不在車站旁的照舊改問 Google。</li>
-      <li>所有時刻表都存在雲端，只有按「更新」才會更新，沒有排程；每個系統一小時最多更新一次。有效期間取自時刻表本身；台鐵、高鐵的七天班表一直用到下次更新（不再看舊定期表的到期日），行程規劃判斷要不要改問 Google 也用同一個有效期間。</li>
-    </ul>`;
+      <li><b>每日訪客檢查</b>：每天管理者第一次打開 app 時執行，順序是台鐵、高鐵優先，再來捷運、輕軌。台鐵查定期表的更新時間、高鐵比對定期表內容、捷運和輕軌查版本號，各只用 1 次；有新版才整份下載（台鐵一份約 0.3 MB）。七天班表的那一週過了就換到下一個平常週，日期沒變的日子沿用雲端那份，只下載新的日子。國定假日、連假或前一天（3 天內）的實際時刻表也由手機先抓好存到雲端。額度不夠的項目留到明天；TDX 拒絕（401／429）就停下來。只會由管理者手機執行，絕不改用金鑰。</li>
+      <li>所有時刻表都存在雲端，除了上面的每日訪客檢查，只有按「更新」才會更新；每個系統一小時最多更新一次。有效期間取自時刻表本身；台鐵、高鐵的七天班表一直用到下次更新（不再看舊定期表的到期日），行程規劃判斷要不要改問 Google 也用同一個有效期間。</li>
+    </ul>${pass ? vGsync() : ''}`;
   if (!TT.sys) h += `<div class="ts">讀取中…</div>`;
   else for (const [op, name] of TT.sys) {
     const m = (TT.meta && TT.meta.systems || {})[op], st = TT.st[op], on = TT.sel.has(op);
@@ -920,7 +921,7 @@ function vTimetable() {
     const m7 = (op === 'TRA' || op === 'THSR') ? (TT.meta && TT.meta.systems || {})[op + '_MON'] : null, s7 = m7 && m7.src7;
     const valid = s7 ? (m7.eff ? `・有效期間 ${md(m7.eff)}${m7.exp ? '–' + md(m7.exp, true) : ' 起（至下次更新）'}` : '・有效至下次更新') : m && m.exp ? `・有效期間 ${m.eff ? md(m.eff) : ''}–${md(m.exp, true)}` : '';
     const src7 = s7 ? `<div class="tm">七天班表取自 ${s7.every((d, i) => !i || Date.parse(d) - Date.parse(s7[i - 1]) === 86400000) ? md(s7[0]) + '–' + md(s7[6]) : s7.map(d => md(d)).join('、')}（平常週，不含國定假日／連假）</div>` : '';
-    const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version && !m.exp ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}${valid}・${m.count}${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
+    const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version && !m.exp ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}${valid}・${m.count}${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : m.guest ? `・訪客自動更新（${m.calls}次）` : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
     h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
       <span class="tb"><div class="tn">${esc(name)}</div><div class="tm">${meta}</div>${src7}${st ? `<div class="ts ${st.c}">${esc(st.t)}</div>` : ''}</span></button>`;
   }
@@ -929,6 +930,27 @@ function vTimetable() {
     <button class="btn pri" data-act="ttRun" ${TT.busy || !n || !pass ? 'disabled' : ''}>${TT.busy ? '更新中…' : n ? `更新${n}個系統` : '先勾選系統'}</button></div>
     <div class="kmsg" id="ttMsg">${esc(TT.msg || '')}</div></div>`;
   return h;
+}
+const SYSN = { TRA:'台鐵', THSR:'高鐵', TRTC:'北捷', NTMC:'環狀線', NTDLRT:'淡海輕軌', NTALRT:'安坑輕軌', TYMC:'機捷', TMRT:'中捷', KRTC:'高捷', KLRT:'高雄輕軌' };
+const sysN = op => { const [a, b] = String(op).split('_'); const n = SYSN[a] || a; return b ? n + '（' + '日一二三四五六'[DOW_ZH.indexOf(b)] + '）' : n; };
+const DOW_ZH = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+function vGsync() {
+  if (!TT.gs && !TT.gfetch) { TT.gfetch = true; window.dataApi('gsyncGet', { pass: S.auth.token }).then(g => { TT.gs = g; }).catch(() => { TT.gs = {}; }).finally(() => { if (S.tab === 'settings') render(); }); }
+  const g = TT.gs || {};
+  const t = g.end || g.at ? new Date(g.end || g.at).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }) : '';
+  const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  const used = g.day === day ? (g.used || 0) : 0;
+  let s = TT.gbusy ? '檢查中…' : !g.day ? '還沒執行過' : g.status === 'running' ? `${t} 開始，尚未完成` : `${t} 檢查完`;
+  if (g.day) {
+    const ch = (g.changed || []).map(c => sysN(c.op) + ' ' + c.what);
+    s += `・${ch.length ? '已更新：' + ch.join('、') : '沒有新版'}`;
+    if (g.deferred?.length) s += `・留到明天：${g.deferred.map(x => sysN(x)).join('、')}`;
+  }
+  s += `・今天用了訪客 ${used} 次（約剩 ${Math.max(0, 20 - used)} 次）`;
+  const err = g.status === 'stopped' || g.status === 'budget' ? `<div class="ts bad">${g.status === 'budget' ? '額度用到上限，其餘明天再檢查' : '已停止：' + esc(g.err || '')}</div>` : '';
+  const notes = g.notes?.length ? `<div class="tm">${esc(g.notes.slice(0, 4).join('；'))}</div>` : '';
+  return `<div class="ttrow" style="cursor:default"><span class="tb"><div class="tn">每日訪客檢查</div><div class="tm">${esc(s)}</div>${notes}${err}
+    <button class="btn" style="margin-top:8px;padding:6px 12px;font-size:14px" data-act="gsyncNow" ${TT.gbusy ? 'disabled' : ''}>${TT.gbusy ? '檢查中…' : '現在檢查一次'}</button></span></div>`;
 }
 async function ttRun() {
   const pass = S.auth?.role === 'admin' ? S.auth.token : null; if (!pass || TT.busy) return;
@@ -1944,6 +1966,7 @@ document.addEventListener('click', e => {
     case 'ttSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
     case 'ttAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
     case 'ttRun': ttRun(); break;
+    case 'gsyncNow': if (confirm('用這支手機的 TDX 訪客額度現在檢查一次時刻表？（不吃金鑰額度）')) gsyncRun(true); break;
     case 'logout': doLogout(); break;
     case 'rail': closeSheetQuiet(); if (o) openRail(o); break;
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
@@ -2465,6 +2488,22 @@ async function startApp() {
   if (appStarted) { render(); refresh(); return; }
   appStarted = true;
   render(); refresh(); renderRemBar(); pollRemind();
+  setTimeout(gsyncAuto, 8000);
+}
+// v2.27：管理者每天（台北日期）第一次打開 app，背景用 TDX 訪客額度檢查時刻表；安靜執行，不擋畫面
+function gsyncAuto() {
+  if (DEMO || S.auth?.role !== 'admin' || TT.gbusy) return;
+  const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  if (localStorage.getItem('jisu_gsync_day') === day) return;
+  localStorage.setItem('jisu_gsync_day', day);
+  gsyncRun(false);
+}
+async function gsyncRun(force) {
+  if (TT.gbusy || S.auth?.role !== 'admin') return;
+  TT.gbusy = true; if (S.tab === 'settings') render();
+  try { const r = await window.dataApi('guestSync', { pass: S.auth.token, force }); TT.gs = r.state || r; if (r.changed?.length) { TT.meta = null; } }
+  catch (e) { TT.gs = { status:'stopped', err: String(e.message || e) }; }
+  TT.gbusy = false; if (S.tab === 'settings') render();
 }
 async function boot() {
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
