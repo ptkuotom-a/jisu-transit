@@ -2589,7 +2589,7 @@ const rideKey = c => c.op + "|" + c.no + "|" + c.dep;
 const latest = (cs, limit) => cs.filter(c => c.arr <= limit).sort((a, b) => b.dep - a.dep || a.arr - b.arr)[0] || null;
 // 一段捷運／台鐵／高鐵：回傳 { c: 真實班次, note, sys } 或 { keep, warn }；null 表示這段沒有時刻表可對（照舊）
 // ready：最早能上車的時間（第一段＝指定時間＋前面的步行，之後＝前一段到站＋1分）；readyX：改搭「更早到」的班次時要求的轉乘餘裕；limit：指定抵達的第一段
-async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid }) {
+async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid, now, ref }) {
   if (leg.mode === "mrt" && /文湖/.test(leg.name || "")) return null;
   const A = await stOf(leg, "from"), B = await stOf(leg, "to");
   if (!A || !B || A.op !== B.op) return null;
@@ -2624,6 +2624,15 @@ async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid }
   const fresh = first && avoid ? all.filter(c => !avoid.has(rideKey(c))) : all, rides = fresh.length ? fresh : all;
   if (!all.length) return { keep: true, warn: `時刻表上找不到 ${hmTpe(p0)} 從${nmA}到${nmB}的${RAIL_SYS[leg.mode]}班次` };
   const sys = RAIL_SYS[leg.mode];
+  // v2.32.1：現在出發的第一段，TDX 給的班次在查詢時間（＋走到車站）前就開走：優先說明「已經開走」，等很久時加註空窗時段（只用手機已有的時刻表）
+  const goneFirst = now && first && limit == null && ready != null && p0 < ready - 1000;
+  const goneNote = (g, c) => {
+    const lab = x => x.op === "THSR" ? `高鐵${x.no}次` : trainLab(x);
+    const nd = all.filter(x => x.dep >= ready).sort((a, b) => a.dep - b.dep)[0];
+    let s = `TDX 給的 ${g ? `${hmTpe(g.dep)} ${lab(g)}` : `${hmTpe(p0)} 班次`}${ref != null && p0 < ref - 30000 ? "已經開走" : `走到${nmA}來不及搭`}，${nd && nd.no === c.no ? "下一班是" : "改搭最早到的"} ${hmTpe(c.dep)} ${lab(c)}（${hmTpe(c.arr)} 到）`;
+    if (nd && nd.dep - ready > 30 * 60000) { const pv = all.filter(x => x.dep < ready).sort((a, b) => b.dep - a.dep)[0]; s += `；${hmTpe(pv ? pv.dep : ready)}–${hmTpe(nd.dep)} ${nmA}沒有往${nmB}的車`; }
+    return s;
+  };
   if (leg.mode === "thsr") {
     const m = all.filter(c => Math.abs(c.dep - p0) <= 60000).sort((a, b) => Math.abs(a.arr - a0) - Math.abs(b.arr - a0))[0] || null;
     if (m && okR(m)) {
@@ -2635,6 +2644,7 @@ async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid }
     const c = limit != null ? latest(rides, limit) || latest(all, limit) : earliest(rides, ready, ready + 3 * 3600000) || earliest(all, ready, ready + 3 * 3600000);
     if (!c) return { keep: true, warn: `${hmTpe(ready || p0)} 以後 3 小時內時刻表上沒有從${nmA}到${nmB}的高鐵` };
     if (limit != null && m) return { c, sys, note: `TDX 給的 ${m.no}次 ${hmTpe(m.arr)} 才到，來不及，改搭 ${hmTpe(c.dep)} ${c.no}次（${hmTpe(c.arr)} 到）` };
+    if (goneFirst) return { c, sys, note: goneNote(m, c) };
     return { c, sys, note: `${p0 < (ready || 0) - 1000 ? (first ? `TDX 給的 ${hmTpe(p0)} 高鐵比出發時間早` : `接不上 ${hmTpe(p0)} 的高鐵`) : `TDX 給的 ${hmTpe(p0)} 高鐵不在時刻表上`}，改搭 ${hmTpe(c.dep)} ${c.no}次（${hmTpe(c.arr)} 到）` };
   }
   // 台鐵：上車站發車 ±3 分、下車站到站 ±3 分 → 同一班車（同分取沿途停靠站較吻合的）
@@ -2652,6 +2662,7 @@ async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid }
   const same = near.filter(x => Math.abs(x.arr - a0) > 180000).sort((a, b) => Math.abs(a.dep - p0) - Math.abs(b.dep - p0))[0];   // 那個時間確實有車，但 TDX 的到站時間是錯的（假快車）
   let why;
   if (same && same.no === c.no) why = `TDX 估 ${hmTpe(a0)} 到，${trainLab(c)}實際 ${hmTpe(c.arr)} 才到`;
+  else if (goneFirst) why = goneNote(m || same || near.slice().sort((a, b) => Math.abs(a.dep - p0) - Math.abs(b.dep - p0))[0] || null, c);
   else {
     const early = p0 < (ready || 0) - 1000;
     why = m && limit != null ? `${trainLab(m)} ${hmTpe(m.arr)} 才到，來不及` : m ? (early && first ? `TDX 給的 ${trainLab(m)}（${hmTpe(m.dep)} 開）比出發時間早` : `接不上 ${hmTpe(m.dep)} 的${trainLab(m)}`) : same ? `TDX 給的 ${hmTpe(p0)} 班次是${trainLab(same)}，實際 ${hmTpe(same.arr)} 才到` : early ? (first ? `TDX 給的 ${hmTpe(p0)} 班次比出發時間早` : `接不上 ${hmTpe(p0)} 的台鐵`) : `TDX 給的 ${hmTpe(p0)}–${hmTpe(a0)} 班次不在時刻表上`;
@@ -2814,7 +2825,7 @@ async function planRetime(r, stOf, opt) {
       const rdy = first ? (ref != null ? ref : start) + walkSum(pre) : cursor + 60000;
       let lim = null;
       if (first && when === "arr") { const nk = L0.findIndex((l, k) => k > li && l.kind === "transit"); lim = nk >= 0 ? tms(L0[nk].from.time) - walkSum(L0.slice(li + 1, nk)) - 60000 : (arrBy || a0) - walkSum(L0.slice(li + 1)); }
-      const rf = await railFix(base, { p0, a0, ready: rdy, readyX: first ? rdy : cursor + (leg.mode === "thsr" ? 180000 : 120000), limit: lim, stOf, first, avoid: opt.avoid }).catch(e => { console.warn("railFix", e); return null; });
+      const rf = await railFix(base, { p0, a0, ready: rdy, readyX: first ? rdy : cursor + (leg.mode === "thsr" ? 180000 : 120000), limit: lim, stOf, first, avoid: opt.avoid, now: opt.when === "now", ref: opt.ref }).catch(e => { console.warn("railFix", e); return null; });
       if (rf && rf.c) {
         const c = rf.c, st = c.shift != null ? (base.stops || []).map(x => ({ ...x, time: x.time && isoTpe(tms(x.time) + c.shift) })) : await stopsOf(c);
         const extra = leg.mode === "mrt" ? { tt: true, headsign: headNew(base, c.dest), ...(c.op === "TYMC" ? { trainType: c.skip ? "直達車" : "普通車" } : {}) }
