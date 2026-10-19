@@ -2363,7 +2363,11 @@ function planDedupe(out) {
   const legSig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + l.name + "@" + l.from.name + ">" + l.to.name + "@" + (l.from.time || "").slice(0, 16));
   const within = (a, b) => { for (let i = 0; i + a.length <= b.length; i++) if (a.every((x, k) => x === b[i + k])) return true; return false; };
   const sigs = out.map(legSig);
-  out = out.filter((r, i) => !out.some((y, j) => j !== i && !y.missed && !y.approx && sigs[j].length && sigs[j].length < sigs[i].length && within(sigs[j], sigs[i]) && r.end >= y.end && r.start <= y.start));
+  // v2.33.2：同時出發、同時到（各差2分內）時，步行少8分以上的優先：多繞不列不刪這種（例如坐公車到石牌站、不用走17分），去重時也排到前面留下
+  const walkMs = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? (l.dur || 0) * 1000 : 0), 0);
+  const lessWalk = (a, b) => !a.missed && !b.missed && Math.abs(a.start - b.start) <= 120000 && Math.abs(a.end - b.end) <= 120000 && walkMs(b) - walkMs(a) >= 8 * 60000;
+  out = out.filter((r, i) => !out.some((y, j) => j !== i && !y.missed && !y.approx && sigs[j].length && sigs[j].length < sigs[i].length && within(sigs[j], sigs[i]) && r.end >= y.end && r.start <= y.start && !lessWalk(r, y)));
+  { const ord = []; for (const r of out) { const i = ord.findIndex(y => lessWalk(r, y)); if (i >= 0) ord.splice(i, 0, r); else ord.push(r); } out = ord; }
   // v2.33.1：③④（同一班主幹車同時抵達）：從兩條第一段共同搭的車（例如同一班高鐵）往前看，接駁不同類就兩條都列：
   // 一條有坐公車（B）、另一條只坐捷運／輕軌／台鐵／高鐵（R）。只有步行（沒坐車）跟哪一類都合併（維持原本「同時到就留排前面那條」）。
   // 第二條加註：同一班什麼車、改坐什麼、在那班車開車前多留幾分
@@ -2377,9 +2381,13 @@ function planDedupe(out) {
   const split = q => !!q && ((q.cr === "B" && q.cy === "R") || (q.cr === "R" && q.cy === "B"));
   const atTk = (r, tk) => { const i = r.legs.indexOf(tk); let t = null, w = 0; for (let k = i - 1; k >= 0; k--) { const l = r.legs[k]; if (l.kind === "transit") { t = tms(l.to.time); break; } if (l.kind !== "wait") w += (l.dur || 0) * 1000; } return t == null ? null : t + w; };
   const altOf = (r, y, q) => {
-    const pre = preOf(r, q.a), m = q.cr === "B" ? "公車" : MZ[(pre.find(l => l.mode !== "bus") || pre[0] || {}).mode] || "其他車";
+    const pre = preOf(r, q.a), ypre = preOf(y, q.b), rail = p => new Set(p.filter(l => l.mode !== "bus").map(l => l.mode));
+    const rr = rail(pre), yr = rail(ypre), sameRail = rr.size > 0 && [...rr].every(m => yr.has(m));
+    const st = String((pre.find(l => l.mode !== "bus") || {}).from?.name || "").replace(/站$/, "");
+    // v2.33.2：兩條都坐同一種軌道（例如都坐捷運），差別只在走過去還是坐公車到站：照實寫「改坐公車到石牌」／「不坐公車、走到石牌」
+    const how = sameRail && st ? (q.cr === "B" ? `改坐公車到${st}` : `不坐公車、走到${st}`) : `改坐${q.cr === "B" ? "公車" : MZ[(pre.find(l => l.mode !== "bus") || pre[0] || {}).mode] || "其他車"}`;
     const ta = atTk(r, q.a), tb = atTk(y, q.b), dep = tms(q.a.from.time), d = ta != null && tb != null ? Math.round((tb - ta) / 60000) : 0;
-    return `同一班${MZ[q.a.mode] || "車"}，改坐${m}${d >= 3 && dep ? `，${hmTpe(dep)} 前多留約${d}分` : ""}`;
+    return `同一班${MZ[q.a.mode] || "車"}，${how}${d >= 3 && dep ? `，${hmTpe(dep)} 前多留約${d}分` : ""}`;
   };
   const owners = new Map(), altM = new Map();
   const kept = out.filter(r => !(r.shifted && real.has(planShape(r) + "|" + r.end))).filter(r => {
