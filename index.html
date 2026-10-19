@@ -427,6 +427,28 @@ html.locked,html.locked body{overflow:hidden}
 .xsg.th .by{padding:8px 16px 8px 26px;font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .xsg.th .by b{color:var(--text);font-size:15px}.xsg.th .by svg{width:15px;height:15px;color:var(--lime)}
 .xsg .sl{position:absolute;left:70px;width:11px;height:3px;background:var(--bg);transform:rotate(-30deg);top:50%;z-index:2}
+/* v2.35.0 公車目的地篩選 */
+.bf{margin:6px 0 6px;display:flex;gap:8px;align-items:center}
+.bf .box{flex:1;min-width:0;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:10px 12px;font-size:16px;color:var(--muted)}
+.bf .box b{color:var(--text);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bf .box input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font-size:16px;padding:0}
+.bf .box input::placeholder{color:var(--muted)}
+.bf .flag{flex:none;width:20px;height:20px;border-radius:50%;background:#16A86B;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:800}
+.bf .bfm{flex:none;font-size:13px;margin-left:auto}
+.bf .x{flex:none;background:none;border:0;color:var(--muted);font-size:15px;padding:6px 2px}
+.bfsug{background:var(--surface);border:1px solid var(--line);border-radius:18px;margin:6px 0 12px;overflow:hidden}
+.bfsug .hd{padding:10px 14px 4px;font-size:13px;color:var(--muted)}
+.bfsug .it{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 14px;border-top:1px solid var(--line);font-size:16px;color:var(--text)}
+.bfsug .it:first-of-type{border-top:0}
+.bfsug .it small{color:var(--muted);font-size:13px;display:block;margin-top:2px}
+.bfsug .tag{flex:none;font-size:12px;padding:3px 8px;border-radius:99px;background:var(--surface2);color:var(--muted);white-space:nowrap}
+.bfsug .wait{padding:12px 14px;font-size:14px;color:var(--muted)}
+.bfrec{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 10px}
+.bfrec button{font-size:14px;padding:6px 12px;border-radius:99px;background:var(--surface);border:1px solid var(--line);color:var(--text)}
+.bfsum{font-size:14px;color:var(--muted);margin:2px 2px 10px;line-height:1.45}
+.rdest .via{display:block;font-size:13px;color:#16A86B;margin-top:2px;white-space:normal}
+.bfrow .rno{flex:0 1 auto;max-width:40%;font-size:19px;line-height:1.2;overflow-wrap:anywhere}.bfrow .rdest{min-width:130px}
+.bfnote{display:block;text-align:center;font-size:13px;color:var(--muted);padding:6px 0 4px}
 </style>
 </head>
 <body>
@@ -857,7 +879,89 @@ function vBus() {
   const stops = filterQ(d.busStops, s => s.name + ' ' + s.routes.map(r => r.route).join(' '));
   if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + natSearch(S.q);
   if (!stops.length) return h + `<div class="note">這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。</div>`;
+  h += bfBox();
+  if (S.bf?.sel) return h + bfResult(d);
   return h + stops.map(s => stopBlock(s, 6)).join('');
+}
+/* ---------- v2.35.0 公車目的地篩選：輸入目的地站名或選地點，只留附近站牌有到的路線（同方向）＋坐幾站。
+   比對在 Worker（站序只存雲端）；不打 TDX；篩選只在這次使用期間記住，最近3個目的地存在手機 ---------- */
+const BF_RECENT_KEY = 'jisu_bf_recent';
+const bfRecent = () => { try { const a = JSON.parse(localStorage.getItem(BF_RECENT_KEY) || '[]'); return Array.isArray(a) ? a.slice(0, 3) : []; } catch (e) { return []; } };
+const bfLabel = o => o.type === 'place' ? o.name : o.name;
+function bfBox() {
+  const B = S.bf = S.bf || { q:'' };
+  if (B.sel) return `<div class="bf"><div class="box"><span class="flag">到</span><b>${esc(bfLabel(B.sel))}</b>${B.sel.type === 'place' ? `<span class="bfm">400公尺內的站牌</span>` : ''}</div><button class="x" data-act="bfClear">✕ 清除</button></div>`;
+  return `<div class="bf"><label class="box"><span class="flag">到</span><input id="bfq" type="text" enterkeyhint="search" autocomplete="off" placeholder="到哪裡？只看會到的路線" value="${esc(B.q || '')}"></label>${B.q ? `<button class="x" data-act="bfCancel">取消</button>` : ''}</div><div id="bfSug">${bfSugHtml()}</div>`;
+}
+function bfSugHtml() {
+  const B = S.bf || {}, q = (B.q || '').trim();
+  if (!q) { const rec = bfRecent(); return rec.length ? `<div class="bfrec">${rec.map(o => `<button data-act="bfSel" data-i="${reg(o)}">${esc(bfLabel(o))}</button>`).join('')}</div>` : ''; }
+  const item = (o, title, desc, tag) => `<button class="it" data-act="bfSel" data-i="${reg(o)}"><span>${esc(title)}<small>${esc(desc)}</small></span><span class="tag">${tag}</span></button>`;
+  let h = '';
+  const sug = B.sugQ === q ? B.sug : null;
+  if (sug && sug.length) h += sug.map(g => item({ type:'name', name:g.name }, g.name, `公車站牌${g.stops}處・附近${g.routes}條路線會到`, /捷運.+站/.test(g.name) ? '捷運站' : '站牌')).join('');
+  const rail = B.railQ === q ? (B.rail || []).slice(0, 3) : [];
+  h += rail.map(r => { const nm = r.name + (r.kind === 'metro' || /站$/.test(r.name) ? '' : '站'); return item({ type:'place', name:nm, lat:r.lat, lon:r.lon }, nm, `${r.sys}・找附近400公尺內的站牌`, '車站'); }).join('');
+  const geo = B.geoQ === q ? (B.geo || []).slice(0, 3) : [];
+  h += geo.map(g => item({ type:'place', name:g.name, lat:g.lat, lon:g.lon }, g.name, `${g.area || g.addr || '地點'}・找附近400公尺內的站牌`, '地點')).join('');
+  const waiting = B.sugQ !== q || (q.length >= 2 && B.geoQ !== q);
+  if (B.sugErr && B.sugQ === q) h += `<div class="wait">${esc(B.sugErr)}</div>`;
+  if (!h && !waiting) h = `<div class="wait">附近路線沒有經過「${esc(q)}」的站（不含轉乘）。</div>`;
+  return `<div class="bfsug"><div class="hd">選一個目的地（站牌只列附近路線會經過的）</div>${h}${waiting ? `<div class="wait">搜尋中…</div>` : ''}</div>`;
+}
+function bfRefresh() { const el = $('#bfSug'); if (el && S.tab === 'bus') el.innerHTML = bfSugHtml(); }
+let bfT = 0, bfGeoT = 0;
+function bfInput(v) {
+  const B = S.bf = S.bf || { q:'' }; B.q = v; const q = v.trim();
+  clearTimeout(bfT); clearTimeout(bfGeoT);
+  const x = document.querySelector('.bf .x'); if (!!q !== !!x) { const box = document.querySelector('.bf'); if (box) { if (q) box.insertAdjacentHTML('beforeend', '<button class="x" data-act="bfCancel">取消</button>'); else x.remove(); } }
+  if (!q) { bfRefresh(); return; }
+  bfT = setTimeout(() => {
+    const stops = S.data?.busStops || [];
+    api('busDest', { stops, q }).then(j => { if (B.q.trim() === q) { B.sug = j.sug || []; B.sugErr = null; B.sugQ = q; bfRefresh(); } })
+      .catch(e => { if (B.q.trim() === q) { B.sug = []; B.sugErr = '目的地清單暫時讀不到：' + e.message; B.sugQ = q; bfRefresh(); } });
+    api('railSearch', { q, lat:S.data?.lat, lon:S.data?.lon, noHeal:true }).then(r => { if (B.q.trim() === q) { B.rail = r || []; B.railQ = q; bfRefresh(); } }).catch(() => {});
+  }, 300);
+  // 地址／地標：停止輸入0.7秒後才查（Nominatim，不是 TDX）
+  if (q.length >= 2) bfGeoT = setTimeout(() => api('geoSearch', { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
+    .then(g => { if (B.q.trim() === q) { B.geo = Array.isArray(g) ? g : []; B.geoQ = q; bfRefresh(); } }).catch(() => { if (B.q.trim() === q) { B.geo = []; B.geoQ = q; bfRefresh(); } }), 700);
+  bfRefresh();
+}
+function bfSel(o) {
+  const B = S.bf = S.bf || { q:'' };
+  B.sel = { type:o.type, name:o.name, ...(o.type === 'place' ? { lat:o.lat, lon:o.lon } : {}) }; B.res = null; B.err = null; B.forData = null;
+  const rec = bfRecent().filter(x => !(x.name === o.name && x.type === o.type)); rec.unshift(B.sel); try { localStorage.setItem(BF_RECENT_KEY, JSON.stringify(rec.slice(0, 3))); } catch (e) {}
+  if (document.activeElement) document.activeElement.blur();
+  render();
+}
+function bfQuery() {
+  const B = S.bf; if (!B?.sel || B.busy || B.forData === S.data) return;
+  const sel = B.sel, d = S.data; B.busy = true; B.forData = d;
+  api('busDest', { stops: d.busStops, ...(sel.type === 'place' ? { lat:sel.lat, lon:sel.lon } : { name:sel.name }) })
+    .then(j => { if (B.sel === sel) { B.res = j; B.err = null; } })
+    .catch(e => { if (B.sel === sel) { B.err = e.message; B.forData = null; } })
+    .finally(() => { B.busy = false; if (B.sel === sel && S.tab === 'bus' && !S.q) render(); });
+}
+function bfResult(d) {
+  const B = S.bf; bfQuery();
+  if (B.err) return `<div class="note">篩選暫時無法使用：${esc(B.err)}</div>`;
+  if (!B.res) return `<div class="bfsum">正在找會到「${esc(B.sel.name)}」的路線…</div>` + skel(2);
+  const M = new Map((B.res.res || []).map(r => [`${r.u}|${r.d}|${r.s}`, r]));
+  const all = new Set(), hit = new Set(); let h = '';
+  for (const s of d.busStops) {
+    const rows = [];
+    for (const r of [...s.routes].sort((a, b) => etaRank(a) - etaRank(b))) {
+      const k = `${r.routeUID}|${r.dirNum ? 1 : 0}`; all.add(k);
+      const m = M.get(`${k}|${r.stopUID}`); if (!m) continue; hit.add(k);
+      const via = `坐${m.n}站到${m.to}${m.m != null ? `，離目的地約${Math.max(10, Math.round(m.m / 10) * 10)}公尺` : ''}${m.loop ? '（環狀線，繞過起點站）' : ''}${m.part ? '・部分班次（區間車）不到' : ''}`;
+      rows.push(`<button class="rrow bfrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}<span class="via">${esc(via)}</span></span>${etaPill(r)}</button>`);
+    }
+    if (rows.length) h += `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}${sideTag(s)}</span><span class="pill">${distTxt(s.dist)}</span></div>${rows.join('')}</div>`;
+  }
+  const nm = B.sel.type === 'place' ? `「${B.sel.name}」附近` : B.sel.name;
+  if (!hit.size) return `<div class="note">附近站牌沒有路線會到${esc(nm)}（不含轉乘）。可以改用路線規劃找轉乘的走法。</div>`;
+  const miss = B.res.miss ? `；${B.res.miss}條路線的站序對不上，沒有列出` : '';
+  return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>`;
 }
 function stopBlock(s, limit) {
   const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
@@ -2284,7 +2388,7 @@ function mountPlanMap() {
     } else { PM.resize(); if (PM.getSource('plan')) draw(); }
   }).catch(() => { const m = planMapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗'; });
 }
-document.addEventListener('input', e => { if (e.target.id === 'pickQ') pickInput(e.target.value); });
+document.addEventListener('input', e => { if (e.target.id === 'pickQ') pickInput(e.target.value); else if (e.target.id === 'bfq') bfInput(e.target.value); });
 document.addEventListener('change', e => { if (e.target.id === 'planTime') { S.plan.time = e.target.value; planChanged(); } });
 document.addEventListener('change', e => {
   if (e.target.id === 'stttDate' && e.target.value) stttDate(e.target.value);
@@ -2330,6 +2434,9 @@ document.addEventListener('click', e => {
     case 'planGo': planGo(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
+    case 'bfSel': if (o) bfSel(o); break;
+    case 'bfClear': if (S.bf) { S.bf.sel = null; S.bf.res = null; S.bf.q = ''; } render(); break;
+    case 'bfCancel': if (S.bf) S.bf.q = ''; { const i = $('#bfq'); if (i) { i.value = ''; i.blur(); } } bfInput(''); break;
     case 'mapPick': mapPick(); break;
     case 'mapPickOk': mapPickOk(el); break;
     case 'legOpen': if (o) legOpen(o.i); break;

@@ -1593,8 +1593,9 @@ async function scTry({ token, lat, lon }) {   // 從 App 內試跑一次捷徑�
 }
 async function railSearch(p) {
   const q = normZh(p.q).trim(); if (!q) return [];
-  let st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
-  if (!st.length && q.length >= 2 && /[\u4e00-\u9fff]/.test(q) && await railHealAll()) st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
+  // noHeal（v2.35.0 公車目的地篩選）：只用手機已存的車站清單，缺的系統不去補抓（不打 TDX）
+  let st = (p.noHeal ? Object.values(loadRailCache().systems).flatMap(s => s.stations || []) : await loadRailStations()).filter(s => normZh(s.name).includes(q));
+  if (!st.length && !p.noHeal && q.length >= 2 && /[\u4e00-\u9fff]/.test(q) && await railHealAll()) st = (await loadRailStations()).filter(s => normZh(s.name).includes(q));
   const lat = p.lat ?? 25.0478, lon = p.lon ?? 121.517;
   return nearestRail(st, lat, lon, { all: true }).map(s => ({ ...s, score: normZh(s.name) === q ? 0 : normZh(s.name).startsWith(q) ? 1 : 2 }))
     .sort((a, b) => a.score - b.score || a.dist - b.dist).slice(0, 60);
@@ -2125,6 +2126,40 @@ async function pushCall(method, path, body) {
   const r = await fetch(proxy + path, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
   if (!r.ok && r.status !== 404) throw new Error(j.message || ("錯誤 " + r.status));
+  return j;
+}
+
+// ---------- v2.35.0 公車目的地篩選（資料只存雲端） ----------
+// 手機把附近站牌的「路線、方向、站牌」和目的地（打字中的字／選定的站名／地點座標）送給 Worker（POST /bus/dest），Worker 用存在雲端的整縣市站序比對後只回結果；
+// 不打 TDX。手機只在這次使用期間記住單次結果（記憶體），不存整份站序。這個縣市雲端還沒有站序（第一次有人用）才請 Worker 建一次（/bus/sor，每個縣市只抓一次 TDX）
+const busDestMemo = new Map(), busSorAsked = new Set();
+async function busDest(p) {
+  const b = [], seen = new Set();
+  for (const st of p.stops || []) for (const r of st.routes || []) {
+    const k = routeKind(r.routeUID); if (!k || !r.stopUID) continue;
+    const city = k.kind === "intercity" ? "InterCity" : k.city, key = r.routeUID + "|" + (r.dirNum ? 1 : 0) + "|" + r.stopUID;
+    if (seen.has(key)) continue; seen.add(key); b.push([r.routeUID, r.dirNum ? 1 : 0, r.stopUID, city, st.name || ""]);
+  }
+  if (!b.length) return p.q != null ? { sug: [] } : { res: [] };
+  const body = { b: b.slice(0, 120), ...(p.q != null ? { q: String(p.q).slice(0, 30) } : p.name ? { name: p.name } : { lat: +p.lat, lon: +p.lon, r: 400 }) };
+  const mk = JSON.stringify(body), h = busDestMemo.get(mk); if (h) return h;
+  const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+  const s = getSession();
+  const post = async () => {
+    let r, j = null;
+    try { r = await fetch(proxy + "/bus/dest", { method: "POST", headers: { "content-type": "application/json", ...(s ? { "x-session": s.token } : {}) }, body: mk }); j = await r.json().catch(() => null); }
+    catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+    if (!r.ok) throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+    return j;
+  };
+  let j = await post();
+  const need = (j.need || []).filter(c => !busSorAsked.has(c));
+  if (need.length) {   // 雲端還沒有這些縣市的站序：請 Worker 建一次（之後所有人共用），建好再問一次
+    need.forEach(c => busSorAsked.add(c));
+    const ok = await Promise.all(need.map(c => authedGet("/bus/sor?c=" + c).then(() => true).catch(() => false)));
+    if (ok.some(Boolean)) j = await post();
+  }
+  busDestMemo.set(mk, j); if (busDestMemo.size > 60) busDestMemo.delete(busDestMemo.keys().next().value);
   return j;
 }
 
@@ -3168,6 +3203,7 @@ window.dataApi = async (action, p = {}) => {
     case "stopAt": return stopAt(p || {});
     case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
+    case "busDest": return busDest(p || {});
     case "railPickNear": return railPickNear(p || {});
     case "railStationRef": return railStationRef(p || {});
     case "scStatus": return scCall("GET", "/shortcut/status");
