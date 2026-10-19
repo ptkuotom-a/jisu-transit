@@ -75,6 +75,31 @@ const OD_BIKE = new Set(["TPE", "NWT"]);                       // 台北、新�
 const isOdBike = uid => OD_BIKE.has((uid || "").slice(0, 3));
 const inNorth = (lat, lon) => lat > 24.6 && lat < 25.35 && lon > 121.25 && lon < 122.05;   // 雙北大致範圍（開放資料讀不到時判斷用）
 const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更新";
+// v2.36.1：台北市公車（TPE 路線，含開進新北的站）到站用臺北市開放資料（約 20 秒更新）；新北（NWT）、公路客運（THB）等照舊只用 TDX
+const isTpeR = uid => /^TPE/.test(uid || "");
+// 附近／某站牌的預估到站：附近只有台北市公車站牌 → 0 次 TDX；有其他站牌 → 照舊 1 次 TDX NearBy，只取非 TPE 的部分
+async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey) {
+  let od = null; try { od = await odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}`); } catch (e) {}
+  if (!od || od.tpNear == null || od.tpNear > 2000) return tdx(profile, tdxUrl);   // 不在台北市公車範圍或讀不到：照舊
+  let other = od.oth > 0;
+  if (!other && geoKey) {   // 雲端站序沒有的縣市（基隆、桃園等）：看這一格以前存過的站牌清單
+    const c = await IDB.get("geo|" + geoKey).catch(() => null);
+    if (c) other = c.d.some(a => a[0] && !isTpeR(a[0]) && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
+  }
+  if (!other) return od.list;
+  const t = await tdx(profile, tdxUrl);
+  return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID))];
+}
+// 單一路線的預估到站（＋公車位置）：TPE 用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
+async function odRouteEta(routeUID, near) {
+  if (!isTpeR(routeUID)) return null;
+  try { const j = await odGet(`/od/eta?route=${routeUID}${near ? "&near=1" : ""}`); if (j.list && j.list.length) return j; } catch (e) {}
+  return null;
+}
+async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站的格式
+  const j = await odRouteEta(b.routeUID, false); if (j) return j.list;
+  return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}/${enc(b.route)}?%24top=600&%24format=JSON`);
+}
 
 // ---------- 工具 ----------
 function haversine(lat1, lon1, lat2, lon2) {
@@ -286,7 +311,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
-  const etaP = doBus ? tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`) : SKIP;
+  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`) : SKIP;
   const busP = !doBus ? SKIP : Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
     "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
   // v2.36.0：台北、新北的 YouBike 站點與車位都用開放資料（Worker /od/bike，完全不用 TDX）；其他縣市照舊 TDX
@@ -421,18 +446,23 @@ async function liveFavs(favs, fresh) {
   const jobs = [];
   // 公車：依城市分組，用 $filter 一次查多筆
   const bg = {};
-  for (const f of (favs.bus || []).slice(0, 30)) { const k = routeKind(f.routeUID); if (k) (bg[k.path] = bg[k.path] || []).push(f); }
+  const putBus = t => {
+    const key = `${t.RouteUID}|${t.Direction === 1 ? 1 : 0}|${t.StopUID}`;
+    const sec = typeof t.EstimateTime === "number" ? t.EstimateTime : null;
+    const old = out.bus[key];
+    if (!old || (sec !== null && (old.sec === null || sec < old.sec))) out.bus[key] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
+  };
+  const fb = (favs.bus || []).slice(0, 30), tp = fb.filter(f => isTpeR(f.routeUID));
+  let odOk = false;
+  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}`); for (const t of j.list || []) putBus(t); odOk = true; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
+  for (const f of fb) { if (odOk && isTpeR(f.routeUID) && out.bus[`${f.routeUID}|${f.dirNum}|${f.stopUID}`]) continue;   // 開放資料對不到的那幾站才問 TDX
+     const k = routeKind(f.routeUID); if (k) (bg[k.path] = bg[k.path] || []).push(f); }
   for (const [path, list] of Object.entries(bg)) {
     for (let i = 0; i < list.length; i += 10) {
       const chunk = list.slice(i, i + 10);
       const filter = chunk.map(f => `(RouteUID eq '${f.routeUID}' and StopUID eq '${f.stopUID}' and Direction eq ${f.dirNum})`).join(" or ");
       jobs.push(tdx("main", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${path}?%24filter=${enc(filter)}&%24top=100&%24format=JSON`).then(list => {
-        for (const t of list) {
-          const key = `${t.RouteUID}|${t.Direction === 1 ? 1 : 0}|${t.StopUID}`;
-          const sec = typeof t.EstimateTime === "number" ? t.EstimateTime : null;
-          const old = out.bus[key];
-          if (!old || (sec !== null && (old.sec === null || sec < old.sec))) out.bus[key] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
-        }
+        for (const t of list) putBus(t);
       }).catch(() => {}));
     }
   }
@@ -476,10 +506,11 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
   const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); IDB.set("sor|" + sorKey, { t: Date.now(), d: sorPack(l) }).catch(() => {}); return l; };
+  const odR = await odRouteEta(routeUID, true);   // v2.36.1 台北市公車：到站與公車位置用開放資料，讀不到才用 TDX
   let [sor, etas, near] = await Promise.all([
     sc ? sc.d : sorFresh(false),
-    tdx("route", u("EstimatedTimeOfArrival")),
-    tdx("route", u("RealTimeNearStop")).catch(() => []),
+    odR ? odR.list : tdx("route", u("EstimatedTimeOfArrival")),
+    odR && Array.isArray(odR.near) ? odR.near : tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
   if (sc) {
     const have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
@@ -2142,7 +2173,7 @@ const UID_CITY_SET = new Set(Object.values(UID_CITY));
 // 搜尋結果點進去：用站牌位置查一次附近預估到站（Worker 共用快取20秒），只留同名站牌
 async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
   const rad = Math.min(Math.max(r + 60, 80), 400);
-  const eta = await tdx("main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`);
+  const eta = await busNearEta(lat.toFixed(4), lon.toFixed(4), rad, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`);
   try { placeHeal(eta.map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw }))); } catch (e) {}
   const routes = {};
   for (const it of eta) {
@@ -2838,7 +2869,7 @@ function planBusNext(leg) {   // 這條公車在上車站的下一班（即時�
   if (h && Date.now() - h.t < 30000) return h.p;
   const p = (async () => {
     const b = await planBusMatch(leg); if (!b) return null;
-    const etas = await tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}/${enc(b.route)}?%24top=600&%24format=JSON`);
+    const etas = await routeEtas(b);
     const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
     const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && (t.Direction === 1 ? 1 : 0) === b.dirNum).sort((x, y) => rank(x) - rank(y))[0];
     if (!e) return null;
@@ -3153,7 +3184,7 @@ async function planLive({ legs }) {
         const b = await planBusMatch(leg); if (!b) { out[i] = { miss: true }; return; }
         const o = { open: { type: "route", r: { routeUID: b.routeUID, route: b.route, dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact };
         if (wantLive) {
-          const etas = await tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}/${enc(b.route)}?%24top=600&%24format=JSON`);
+          const etas = await routeEtas(b);
           // 同一站可能有好幾條支線（例如 1815A～G），挑最有用的那筆：有預估秒數的最近一班 > 有下一班時間的 > 其他
           const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
           const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && (t.Direction === 1 ? 1 : 0) === b.dirNum).sort((x, y) => rank(x) - rank(y))[0];
