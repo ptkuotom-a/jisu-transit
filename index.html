@@ -623,7 +623,7 @@ function pupd(at, err) { const t = updTxt(at, err); return t ? `<div class="pupd
 function renderStatus() {
   const st = $('#status'), pe = !S.error && S.partErr[TAB_PART[S.tab]];
   st.className = 'live' + (S.error || pe ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -979,7 +979,7 @@ function vBike() {
   if (!d) return h + (S.error ? '' : skel(3));
   if (d.bikeError) h += `<div class="note">YouBike 資料暫時讀不到：${esc(d.bikeError)}</div>`;
   const bikes = filterQ(d.bikes, b => b.name);
-  if (!bikes.length) return d.bikeError ? h : h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
+  if (!bikes.length) return d.bikeError ? h : d.bikePending ? h + `<div class="note">YouBike 讀取中…</div>` : h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
   return h + bikes.map(b => {
     const off = b.status != null && b.status !== 1;
     return `<button class="bike" data-act="bikeSheet" data-i="${reg(b)}">
@@ -2407,7 +2407,11 @@ async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只�
   if (!S.data) part = null;
   S.loading = true; renderStatus();
   try {
-    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual });
+    // v2.36.3：YouBike 比較慢時先顯示公車、軌道（onEarly），YouBike 好了再補上；沿用上一次的 YouBike 直到新的回來
+    const onEarly = part ? null : e => { const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
+      S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now();
+      if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
+    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, onEarly });
     const now = Date.now();
     if (!part) { S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; }
     else {

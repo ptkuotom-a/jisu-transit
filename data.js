@@ -71,6 +71,9 @@ async function odMemoGet(path, ms) {   // 同一網址 ms 毫秒內重用（YouB
   const v = await odGet(path); if (!v.err) odMemo.set(path, { t: Date.now(), v });   // 部分來源失敗的結果不重用 if (odMemo.size > 40) odMemo.delete(odMemo.keys().next().value);
   return v;
 }
+function odWarm(src) {   // 不等回應、失敗不管；只在附近資料更新時發一次（不是定時）
+  try { const proxy = getProxy(); if (proxy && (!lastLoc || inNorth(lastLoc.latitude, lastLoc.longitude))) fetch(proxy + "/od/warm" + (src ? "?s=" + src : "")).catch(() => {}); } catch (e) {}
+}
 const OD_BIKE = new Set(["TPE", "NWT"]);                       // 台北、新北 YouBike：只用開放資料（完全不用 TDX）
 const isOdBike = uid => OD_BIKE.has((uid || "").slice(0, 3));
 const inNorth = (lat, lon) => lat > 24.6 && lat < 25.35 && lon > 121.25 && lon < 122.05;   // 雙北大致範圍（開放資料讀不到時判斷用）
@@ -78,16 +81,17 @@ const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更
 // v2.36.1：台北市公車（TPE 路線，含開進新北的站）到站用臺北市開放資料（約 20 秒更新）；新北（NWT）、公路客運（THB）等照舊只用 TDX
 const isTpeR = uid => /^TPE/.test(uid || "");
 // 附近／某站牌的預估到站：附近只有台北市公車站牌 → 0 次 TDX；有其他站牌 → 照舊 1 次 TDX NearBy，只取非 TPE 的部分
-async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey) {
-  let od = null; try { od = await odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}`); } catch (e) {}
-  if (!od || od.tpNear == null || od.tpNear > 2000) return tdx(profile, tdxUrl);   // 不在台北市公車範圍或讀不到：照舊
-  let other = od.oth > 0;
-  if (!other && geoKey) {   // 雲端站序沒有的縣市（基隆、桃園等）：看這一格以前存過的站牌清單
-    const c = await IDB.get("geo|" + geoKey).catch(() => null);
-    if (c) other = c.d.some(a => a[0] && !isTpeR(a[0]) && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
-  }
-  if (!other) return od.list;
-  const t = await tdx(profile, tdxUrl);
+async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
+  // v2.36.3：手機存過這一格的站牌清單、看得出附近有非 TPE 站牌 → TDX 和開放資料同時發（不用等開放資料回來才問 TDX；次數不變）
+  let known = null;
+  if (geoKey) { const c = await IDB.get("geo|" + geoKey).catch(() => null);
+    if (c) known = c.d.some(a => a[0] && !isTpeR(a[0]) && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30); }
+  const odP = odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}${fresh ? "&fresh=1" : ""}`).catch(() => null);
+  const tdxP = known === true ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
+  const od = await odP;
+  if (!od || od.tpNear == null || od.tpNear > 2000) return tdxP || tdx(profile, tdxUrl);   // 不在台北市公車範圍或讀不到：照舊
+  if (!(od.oth > 0 || known === true)) return od.list;
+  const t = await (tdxP || tdx(profile, tdxUrl));
   return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID))];
 }
 // 單一路線的預估到站（＋公車位置）：TPE 用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
@@ -301,24 +305,25 @@ async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
 
 // ---------- 附近：公車 + YouBike + 收藏 ----------
 const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
-async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false }) {
+async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false, onEarly = null }) {
   // v2.26.0：only＝'bus'／'bike'／'rail' 只更新那一部分（公車、YouBike、軌道分頁的下拉更新），其他部分不呼叫
   const doBus = !only || only === "bus", doBike = !only || only === "bike", doRail = !only || only === "rail";
   const SKIP = Promise.reject(new Error("skip")); SKIP.catch(() => {});
+  if (!only || only !== "rail") odWarm(only === "bike" ? "ybTPE,ybNWT" : only === "bus" ? "eta" : null);   // v2.36.3：定位的同時請 Worker 先抓開放資料
   const loc = await locate();
   // 查詢座標取到小數第3位（約100公尺格子），半徑多加100公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
   const lat = loc.latitude.toFixed(3), lon = loc.longitude.toFixed(3);
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
-  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`) : SKIP;
+  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
   const busP = !doBus ? SKIP : Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
     "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
   // v2.36.0：台北、新北的 YouBike 站點與車位都用開放資料（Worker /od/bike，完全不用 TDX）；其他縣市照舊 TDX
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
     let od = null, odErr = null;
-    try { od = await odMemoGet(`/od/bike?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 90000); } catch (e) { odErr = e; }
+    try { od = await odMemoGet(`/od/bike?lat=${lat}&lon=${lon}&r=${qBike}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); } catch (e) { odErr = e; }
     const covered = od ? od.near != null && od.near <= 3000 : inNorth(+lat, +lon);
     if (!covered) {   // 不在雙北：照舊（站點清單永久快取＋車位 TDX）
       const avP = memoTdx("route", avUrl, fresh ? 0 : 90000);
@@ -334,22 +339,36 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     if (others.length) av2 = (await memoTdx("route", avUrl, fresh ? 0 : 90000).catch(() => [])).filter(a => !isOdBike(a.StationUID));
     return [[...od.list, ...others], [...od.list, ...av2]];
   })();
-  const favP = liveFavs({ bus: doBus ? favs.bus : [], bike: doBike ? favs.bike : [] }, fresh).catch(() => ({ bus: {}, bike: {} }));
+  // v2.36.3：收藏的公車、YouBike 分開查，YouBike 慢不拖住公車
+  const favBusP = doBus && (favs.bus || []).length ? liveFavs({ bus: favs.bus, bike: [] }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
+  const favBikeP = doBike && (favs.bike || []).length ? liveFavs({ bus: [], bike: favs.bike }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
   const railP = !doRail ? SKIP : Promise.all([loadRailStations(), loadRailExits().catch(() => ({}))])
     .then(([st, ex]) => nearestRail(st, loc.latitude, loc.longitude,
       { walkKm: settings.railWalk || 1.5, systems: settings.railSys || null, far: { TRA: (settings.railFarTra ?? settings.railFar ?? 1) !== 0, THSR: (settings.railFarThsr ?? settings.railFar ?? 1) !== 0 } }, ex));
 
-  const [busR_, bikeR_, favLive, railR_] = await Promise.allSettled([busP, bikeP, favP, railP]);
-  if (!only && busR_.status === "rejected" && bikeR_.status === "rejected") throw busR_.reason;
-  if (only) { const r = { bus: busR_, bike: bikeR_, rail: railR_ }[only]; if (r.status === "rejected") throw r.reason; }
+  const settle = p => p.then(value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason }));
+  const bikeS = settle(bikeP);
+  const [busR_, railR_, favBus] = await Promise.all([settle(busP), settle(railP), favBusP]);
   try {   // 全市搜尋名單的自動補救（只比對、不額外呼叫；發現新站才重抓）
-    placeHeal(busR_.status === "fulfilled" ? busR_.value[0].map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw })) : [],
-      bikeR_.status === "fulfilled" ? bikeR_.value[1].map(a => a.StationUID) : []);
+    placeHeal(busR_.status === "fulfilled" ? busR_.value[0].map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw })) : [], []);
     if (busR_.status === "fulfilled") busHeal(busR_.value[0].map(e => e.RouteUID));          // 全台路線清單沒有的 RouteUID
     if (railR_.status === "fulfilled") exitHeal(railR_.value);                               // 附近捷運站沒有出口資料
   } catch (e) {}
+  const busStops = await busGroup(busR_);
+  // v2.36.3：YouBike 還沒好 → 先把公車、軌道交給畫面（onEarly），YouBike 好了再回完整結果
+  let bikeR_ = null; bikeS.then(r => { bikeR_ = r; });
+  await Promise.resolve(); await Promise.resolve();
+  if (!bikeR_ && onEarly && doBike && !only && busR_.status === "fulfilled") {
+    try { onEarly(finish({ status: "pending" }, { bus: favBus.bus, bike: {} })); } catch (e) {}
+  }
+  bikeR_ = await bikeS;
+  const favBike = await favBikeP;
+  if (!only && busR_.status === "rejected" && bikeR_.status === "rejected") throw busR_.reason;
+  if (only) { const r = { bus: busR_, bike: bikeR_, rail: railR_ }[only]; if (r.status === "rejected") throw r.reason; }
+  try { if (bikeR_.status === "fulfilled") placeHeal([], bikeR_.value[1].map(a => a.StationUID)); } catch (e) {}
+  return finish(bikeR_, { bus: favBus.bus, bike: favBike.bike });
 
-  // 公車：依站名分組
+  async function busGroup(busR_) {
   let busStops = [];
   if (busR_.status === "fulfilled") {
     const [eta, stops] = busR_.value;
@@ -403,7 +422,10 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
   }
+  return busStops;
+  }
 
+  function finish(bikeR_, favLive) {
   // YouBike
   let bikes = [], bikeError = null;
   if (bikeR_.status === "fulfilled") {
@@ -429,15 +451,16 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       });
     }
     bikes.sort((x, y) => x.dist - y.dist);
-  } else if (doBike) bikeError = String(bikeR_.reason && bikeR_.reason.message || bikeR_.reason).slice(0, 120);
+  } else if (doBike && bikeR_.status === "rejected") bikeError = String(bikeR_.reason && bikeR_.reason.message || bikeR_.reason).slice(0, 120);
 
   return {
-    lat: loc.latitude, lon: loc.longitude, accuracy: loc.accuracy || null, busStops, bikes, bikeError,
+    lat: loc.latitude, lon: loc.longitude, accuracy: loc.accuracy || null, busStops, bikes, bikeError, bikePending: bikeR_.status === "pending",
     only, rail: railR_.status === "fulfilled" ? railR_.value : [],
     railError: doRail && railR_.status === "rejected" ? String(railR_.reason.message || railR_.reason).slice(0, 120) : null,
     busError: doBus && busR_.status === "rejected" ? String(busR_.reason.message || busR_.reason).slice(0, 120) : null,
-    favs: favLive.status === "fulfilled" ? favLive.value : { bus: {}, bike: {} },
+    favs: favLive,
   };
+  }
 }
 
 // ---------- 收藏的即時資料（不受目前位置限制） ----------
@@ -454,7 +477,7 @@ async function liveFavs(favs, fresh) {
   };
   const fb = (favs.bus || []).slice(0, 30), tp = fb.filter(f => isTpeR(f.routeUID));
   let odOk = false;
-  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}`); for (const t of j.list || []) putBus(t); odOk = true; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
+  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}${fresh ? "&fresh=1" : ""}`); for (const t of j.list || []) putBus(t); odOk = true; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
   for (const f of fb) { if (odOk && isTpeR(f.routeUID) && out.bus[`${f.routeUID}|${f.dirNum}|${f.stopUID}`]) continue;   // 開放資料對不到的那幾站才問 TDX
      const k = routeKind(f.routeUID); if (k) (bg[k.path] = bg[k.path] || []).push(f); }
   for (const [path, list] of Object.entries(bg)) {
@@ -471,7 +494,7 @@ async function liveFavs(favs, fresh) {
   for (const f of (favs.bike || []).slice(0, 30)) { const c = UID_CITY[(f.uid || "").slice(0, 3)]; if (c) (kg[c] = kg[c] || []).push(f.uid); }
   for (const [city, uids] of Object.entries(kg)) {
     if (city === "Taipei" || city === "NewTaipei") {   // v2.36.0：開放資料，不用 TDX
-      jobs.push(odMemoGet(`/od/bike?ids=${uids.join(",")}`, fresh ? 0 : 90000).then(j => { for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a); }).catch(() => {}));
+      jobs.push(odMemoGet(`/od/bike?ids=${uids.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000).then(j => { for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a); }).catch(() => {}));
       continue;
     }
     const filter = uids.map(u => `StationUID eq '${u}'`).join(" or ");
