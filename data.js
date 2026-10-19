@@ -87,8 +87,24 @@ async function locate() {
     try { p = await getPos(false, 10000); }              // 室內收不到 GPS 時退回快速定位
     catch (e2) { if (lastLoc) return lastLoc; throw new Error("無法取得定位，請稍後再試"); }
   }
-  lastLoc = { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: Math.round(p.coords.accuracy || 0) };
+  lastLoc = { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: Math.round(p.coords.accuracy || 0), t: p.timestamp || Date.now() };
   return lastLoc;
+}
+// v2.33.0：路線規劃的「目前位置」（首頁附近資料的定位照舊用 locate()）：2分鐘內、誤差100公尺以內的位置直接用；
+// 沒有就先試快速定位（可用2分鐘內的系統定位），夠準就用；不夠準或失敗才照 locate() 等 GPS 精確定位
+let planLoc = null;
+async function locatePlan() {
+  const ok = l => l && l.t && Date.now() - l.t <= 120000 && l.accuracy > 0 && l.accuracy <= 100;
+  if (ok(lastLoc)) return lastLoc;
+  if (ok(planLoc)) return planLoc;
+  if (!navigator.geolocation) return locate();
+  let low = null;
+  try {
+    const p = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: false, timeout: 4000, maximumAge: 120000 }));
+    low = { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: Math.round(p.coords.accuracy || 0), t: p.timestamp || Date.now() };
+    if (ok(low)) return planLoc = low;
+  } catch (e) { if (e && e.code === 1) return locate(); }   // 沒有權限：照 locate() 的錯誤訊息
+  try { const l = await locate(); return l; } catch (e) { if (low) return low; throw e; }
 }
 
 // ---------- 終點站快取（沿用原腳本格式） ----------
@@ -2192,7 +2208,10 @@ function planPickG(T, G, rule, { when, ref, arrBy }) {
   const gain = when === "arr" ? gb - tb : tb - gb, base = when === "arr" ? arrBy - tb : tb - ref;
   return gain >= 15 * 60000 || gain >= 0.15 * base;
 }
-async function planRoutes({ o, d, modes, yb, when, time }) {
+async function planRoutes({ o, d, modes, yb, when, time, onLive }) {
+  // v2.33.0：「目前位置」座標取到小數第4位（約10公尺）再送 /plan：Worker 快取鍵用收到的座標，站著不動重查、換交通工具再換回來都能共用快取
+  const r4 = p => p && p.here && p.lat != null ? { ...p, lat: +(+p.lat).toFixed(4), lon: +(+p.lon).toFixed(4) } : p;
+  o = r4(o); d = r4(d);
   const snapOf = p => { if (!planIsStation(p)) return null; const m = TDX_MISSING[String(p.name || "").replace(/站$/, "")]; return m && modes.includes(m.mode) ? m : null; };
   let so = snapOf(o), sd = snapOf(d); const qo = so || o, qd = sd || d;
   // 座標原樣送出（車站用車站本身的座標，不四捨五入）；換成相鄰站時另外帶原本的座標（Worker 改問 Google 時用）
@@ -2308,19 +2327,34 @@ async function planRoutes({ o, d, modes, yb, when, time }) {
   const cmpR = (a, b) => (!!a.missed - !!b.missed) || (a.approx - b.approx) || (when === "arr" ? (b.start + atO(b)) - (a.start + atO(a)) : (a.end - atO(a)) - (b.end - atO(b))) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b);
   out.sort(cmpR);
   // v2.27.2：現在出發：只對排第一的路線查第一段公車的即時動態（每次規劃最多 2 次：查完被拿掉或掉出第一名，才再查新的第一名）
-  if (when === "now" && ref) {
+  // v2.33.0：有 onLive 時先回傳 TDX＋校正的結果，即時查詢在背景做完再用 onLive(新清單) 更新；查不到或不用查就 onLive(null)
+  const liveRun = async list => {
+    let hit = false;
     for (let n = 0; n < 2; n++) {
-      const top = out.find(r => !r.missed && !r.approx); if (!top || !top._lv) break;
-      let x = null;
+      const top = list.find(r => !r.missed && !r.approx); if (!top || !top._lv) break;
+      let x = null; hit = true;
       try { x = (await planTtFix([top._src], { when, ref, arrBy, live: true }))[0]; } catch (e) { console.warn("plan live", e); }
       x = x && !x.broken ? planStartNorm({ ...x, ...(top.note ? { note: top.note } : {}) }) : null;
       if (x && x.start < ref - 60000) x = null;
-      out = out.filter(r => r !== top); if (x) { delete x._lv; out.push(x); }
-      out.sort(cmpR);
-      if (out.find(r => !r.missed && !r.approx) === x) break;
+      list = list.filter(r => r !== top); if (x) { delete x._lv; x.liveChecked = true; list.push(x); }
+      list.sort(cmpR);
+      if (list.find(r => !r.missed && !r.approx) === x) break;
     }
+    return hit ? list : null;
+  };
+  const strip = list => list.map(r => { if (!("_lv" in r) && !("_src" in r)) return r; const x = { ...r }; delete x._lv; delete x._src; return x; });
+  const liveNeed = when === "now" && ref && out.some(r => r._lv);
+  if (liveNeed && typeof onLive === "function") {
+    const pend = out.slice();
+    setTimeout(() => liveRun(pend).then(l => onLive(l ? planDedupe(strip(l)) : null), e => { console.warn("plan live", e); onLive(null); }), 0);
+    const first = planDedupe(strip(out));
+    const t = first.find(r => !r.missed && !r.approx); if (t && pend.some(r => r._lv && r === pend.find(y => !y.missed && !y.approx))) t.livePending = true;
+    return first;
   }
-  for (const r of out) { delete r._lv; delete r._src; }
+  if (liveNeed) out = (await liveRun(out)) || out;
+  return planDedupe(strip(out));
+}
+function planDedupe(out) {
   // 去重：①同一種走法、同時出發又同時抵達 ②每段車都同時刻 ③同一班火車同時抵達 ④主要那段車（最久的一段）同一班、同時抵達，只是前面接駁不同（例如兩條都搭同一班1839）；最多列8條
   const seen = new Set(), real = new Set(out.filter(r => !r.shifted).map(r => planShape(r) + "|" + r.end));
   const tsig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + "@" + (l.from.time || "").slice(0, 16) + ">" + (l.to.time || "").slice(0, 16)).join("|");
@@ -3106,6 +3140,7 @@ window.dataApi = async (action, p = {}) => {
     case "busIndex": return busIndex();
     case "busHeal": return busHeal(p.uids, p.cities);
     case "planRoutes": return planRoutes(p);
+    case "locatePlan": return locatePlan();
     case "planLive": return planLive(p);
     case "gmapImg": return gmapImg(p || {});
     case "geoSearch": return geoSearch(p);

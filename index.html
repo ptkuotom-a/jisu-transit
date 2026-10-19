@@ -1685,14 +1685,26 @@ function planInit() {
 function planSavePref() { try { localStorage.setItem(PLAN_PREF_KEY, JSON.stringify({ modes:S.plan.modes })); } catch (e) {} }
 const hereName = () => '目前位置';
 function planHere() { const d = S.data; return d && d.lat ? { name:hereName(), lat:d.lat, lon:d.lon, here:true } : null; }
+// v2.33.0：規劃用的「目前位置」只用定位座標（locatePlan：2分鐘內／快速定位誤差100公尺以內直接用），不等首頁附近資料；
+// 定位只更新起訖欄，不會自動規劃（一律等使用者按「規劃路線」）
+const hereSlot = () => ({ name:hereName(), here:true, lat:null, lon:null });
+let planLocP = null;
+function planFillHere() {
+  const P = S.plan;
+  if (!planLocP) planLocP = api('locatePlan').finally(() => { planLocP = null; });
+  return planLocP.then(l => {
+    for (const k of ['o', 'd']) if (P[k] && P[k].here) P[k] = { name:hereName(), here:true, lat:l.latitude, lon:l.longitude, acc:l.accuracy };
+    P.locErr = null; return true;
+  }, e => { P.locErr = (e && e.message) || '無法取得定位'; return false; });
+}
 function openPlan() {
   const P = planInit(); S.back = [];
-  if (!P.o) P.o = planHere();
+  if (!P.o) P.o = hereSlot();
   S.page = 'plan';
   const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0));
   p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderPage();
-  if (!P.o) api('locate').then(l => { if (!P.o) { P.o = { name:hereName(), lat:l.latitude, lon:l.longitude, here:true }; if (S.page === 'plan') renderPage(); } }).catch(() => {});
+  if ((P.o && P.o.here && P.o.lat == null) || (P.d && P.d.here && P.d.lat == null)) planFillHere().then(() => { if (S.page === 'plan') renderPage(); });
 }
 const PLAN_PAGES = ['plan','planPick','planDetail','adv','siri'];
 function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : pg === 'siri' ? siriHtml() : ''; }
@@ -1725,11 +1737,12 @@ function underPage() {
 }
 
 /* 規劃頁 */
-const placeTxt = p => p ? esc(p.name) : '<span style="color:var(--dim)">選擇地點</span>';
+const placeTxt = p => !p ? '<span style="color:var(--dim)">選擇地點</span>' : p.here && p.lat == null ? `${esc(p.name)}<span style="color:var(--dim)">・定位中…</span>` : esc(p.name);
 const pad2 = n => String(n).padStart(2, '0');
 const localIso = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 function planHtml() {
   const P = planInit();
+  if (P.pendRes && S.page === 'plan') { P.res = P.pendRes; P.pendRes = null; }   // 在詳細頁時背景即時查詢做完：回到列表才換上
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1 style="font-size:40px">路線規劃</h1></div></div>
     <div class="pbox"><div>
@@ -1740,11 +1753,11 @@ function planHtml() {
     ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
     <div class="plab">交通工具<span>步行一定會用到</span></div>
     <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button></div>
-    <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>`;
+    <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.locating ? '定位中…' : P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>`;
   if (P.loading && !P.res) h += skel(3);
   else if (P.err) h += `<div class="note" style="margin-top:14px">${esc(P.err)}</div>`;
   else if (P.res) {
-    h += `<div class="sec" id="planRes"><h2>建議路線</h2><span class="side">${P.res.length}條</span></div>`;
+    h += `<div class="sec" id="planRes"><h2>建議路線</h2><span class="side">${P.res.length}條${P.liveBusy ? '・查公車即時中' : ''}</span></div>`;
     h += P.res.length ? P.res.map((r, i) => planCard(r, i)).join('') : `<div class="note">找不到可行的路線。試著打開更多交通工具，或換個時間。</div>`;
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
@@ -1884,14 +1897,32 @@ async function planGo() {
   const P = S.plan; if (!P.o || !P.d) return;
   const modes = PLAN_MODES.filter(([k]) => P.modes[k]).map(x => x[2]);
   if (!modes.length) { P.err = '至少選一種交通工具'; P.res = null; renderPage(); return; }
-  if (P.o.here) { const h = planHere(); if (h) P.o = h; }
-  if (P.d.here) { const h = planHere(); if (h) P.d = h; }
-  P.loading = true; P.err = null; renderPage();
   const tok = P.tok = (P.tok || 0) + 1;
-  try { const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))) }); if (tok === P.tok) { P.res = res; P.err = null; } }
+  P.loading = true; P.err = null; P.liveBusy = false; P.pendRes = null;
+  // v2.33.0：起訖有「目前位置」：按下後才確認座標（近期／快速定位夠準就直接用），還在定位就顯示「定位中…」，拿到座標接著規劃
+  if (P.o.here || P.d.here) {
+    P.locating = true; renderPage();
+    const ok = await planFillHere();
+    if (tok !== P.tok) return;
+    P.locating = false;
+    if (!ok) { P.loading = false; P.err = P.locErr; P.res = null; if (S.page === 'plan') renderPage(); return; }
+  }
+  renderPage();
+  try {
+    const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))), onLive: L => planLiveDone(tok, L) });
+    if (tok === P.tok) { P.res = res; P.err = null; P.liveBusy = res.some(r => r.livePending); }
+  }
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
   if (tok !== P.tok) return;
   P.loading = false; if (S.page === 'plan') { renderPage(); if (P.res && P.res.length) planScrollRes(); }
+}
+// v2.33.0：第一段公車的即時查詢在背景做完（最多2次，和以前一樣）：換上新清單（可能改變排序）；在別頁時先存著，回到列表才換
+function planLiveDone(tok, L) {
+  const P = S.plan; if (!P || tok !== P.tok) return;
+  P.liveBusy = false;
+  if (L) { if (S.page === 'plan') P.res = L; else P.pendRes = L; }
+  else if (P.res) P.res = P.res.map(r => r.livePending ? { ...r, livePending:false } : r);
+  if (S.page === 'plan' && !P.loading) renderPage();
 }
 // 結果出來時，把「建議路線」捲到浮動標題列正下方（不被標題列蓋住）；已經在更下面就不動
 function planScrollRes() {
@@ -1900,7 +1931,9 @@ function planScrollRes() {
   const y = Math.round(pg.scrollTop + sec.getBoundingClientRect().top - pg.getBoundingClientRect().top - top.offsetHeight - 18);
   if (y > pg.scrollTop + 4) pg.scrollTo({ top: y, behavior: 'smooth' });
 }
-function planChanged() { S.plan.res = null; S.plan.err = null; renderPage(); }
+// v2.33.0：起訖、時間、交通工具改了：清掉舊結果，也取消還在跑的那次規劃（免得舊起訖的結果蓋上來）；不自動重新規劃
+function planReset() { const P = S.plan; P.res = null; P.err = null; P.tok = (P.tok || 0) + 1; P.loading = false; P.locating = false; P.liveBusy = false; P.pendRes = null; }
+function planChanged() { planReset(); renderPage(); }
 
 /* 選地點頁：車站、站牌（App 自己的清單）＋ OpenStreetMap 地址／地標 */
 function openPick(which) { stackPush(() => { S.page = 'planPick'; S.pick = { which, q:'', rail:null, geo:null, geoQ:'', geoLoading:false, geoErr:null, near:null }; pickNearLoad(S.pick); $('#routePage').scrollTop = 0; renderPage(); setTimeout(() => { const i = $('#pickQ'); if (i) i.focus(); }, reduceMotion() ? 0 : NAV_MS + 20); }); }
@@ -1918,7 +1951,7 @@ function pickResHtml() {
   const q = K.q.trim();
   if (!q) {
     const rec = recentPlaces();
-    let h = `<div class="board">` + pickRow({ here:true }, I.nav, '目前位置', S.data?.lat ? '使用手機定位' : '定位中…') + `<button class="trow nrow" data-act="mapPick"><span class="pico">${I.pin}</span><span class="tmain"><div class="td">在地圖上選點</div></span><span class="chev">${I.chev}</span></button></div>`;
+    let h = `<div class="board">` + pickRow({ here:true }, I.nav, '目前位置', '使用手機定位') + `<button class="trow nrow" data-act="mapPick"><span class="pico">${I.pin}</span><span class="tmain"><div class="td">在地圖上選點</div></span><span class="chev">${I.chev}</span></button></div>`;
     h += pickNearHtml(K);
     if (rec.length) h += `<div class="tgrp">最近使用</div><div class="board">` + rec.map(p => pickRow(p, I.clock, p.name, p.sub || '')).join('') + `</div>`;
     return h;
@@ -1975,14 +2008,14 @@ function pickNearHtml(K) {
 function pickRefresh() { const el = $('#pickRes'); if (el && S.page === 'planPick') el.innerHTML = pickResHtml(); }
 function pickSel(o) {
   const K = S.pick, P = S.plan;
-  let place = o.here ? planHere() : { name:o.name, lat:o.lat, lon:o.lon, sub:o.sub || '', ...(o.st ? { st:1 } : {}) };
-  if (o.here && !place) { toast('還在定位，請稍候'); api('locate').then(l => { P[K.which] = { name:hereName(), lat:l.latitude, lon:l.longitude, here:true }; if (S.page === 'plan') renderPage(); }).catch(() => toast('無法取得定位')); }
-  else P[K.which] = place;
+  const place = o.here ? hereSlot() : { name:o.name, lat:o.lat, lon:o.lon, sub:o.sub || '', ...(o.st ? { st:1 } : {}) };
+  P[K.which] = place;
+  if (o.here) planFillHere().then(() => { if (S.page === 'plan') renderPage(); });   // 只更新起訖欄，不自動規劃
   if (place && !place.here) { const rec = recentPlaces().filter(p => !(p.name === place.name && Math.abs(p.lat - place.lat) < 1e-4)); rec.unshift({ name:place.name, lat:place.lat, lon:place.lon, sub:place.sub || '' }); try { localStorage.setItem(PLAN_RECENT_KEY, JSON.stringify(rec.slice(0, 8))); } catch (e) {} }
-  P.res = null; P.err = null;
+  planReset();
   if (document.activeElement) document.activeElement.blur();
   stackPop();
-  if (P.o && P.d) setTimeout(planGo, reduceMotion() ? 0 : NAV_MS + 30);
+  // v2.33.0：選好起訖不自動規劃，等使用者按「規劃路線」
 }
 /* 地圖選點：底部面板裡的地圖，中心十字對準位置後按「選這裡」 */
 let mpMap = null;
@@ -2290,7 +2323,7 @@ document.addEventListener('click', e => {
     case 'closeRoute': closeRoute(); break;
     case 'planNew': if (document.activeElement) document.activeElement.blur(); openPlan(); break;
     case 'planPick': openPick(el.dataset.v); break;
-    case 'planSwap': { const P = S.plan; [P.o, P.d] = [P.d, P.o]; P.res = null; P.err = null; renderPage(); if (P.o && P.d) planGo(); break; }
+    case 'planSwap': { const P = S.plan; [P.o, P.d] = [P.d, P.o]; planChanged(); break; }   // v2.33.0：交換後不自動規劃
     case 'planWhen': S.plan.when = el.dataset.v; if (el.dataset.v !== 'now' && !S.plan.time) S.plan.time = localIso(new Date(Date.now() + 15 * 60000)); planChanged(); break;
     case 'planMode': S.plan.modes[el.dataset.v] = S.plan.modes[el.dataset.v] ? 0 : 1; planSavePref(); planChanged(); break;
     case 'planGo': planGo(); break;
