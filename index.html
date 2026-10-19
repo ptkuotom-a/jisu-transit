@@ -1772,6 +1772,74 @@ const chipStyle = c => `background:${c};color:${hexLum(c) > 0.62 ? '#111' : '#ff
 const MODE_ZH = { bus:'公車', mrt:'捷運', lrt:'輕軌', tra:'台鐵', thsr:'高鐵' };
 // 路段標籤：台鐵／高鐵用「台鐵」「高鐵」（TDX 給的是「南港-左營」這種起訖名）；捷運去掉「線」字
 const legLabel = l => legBr(l) ? LINE_NAME.TRTC[legBr(l)] : l.mode === 'tra' || l.mode === 'thsr' ? MODE_ZH[l.mode] : l.mode === 'bus' ? (l.name || '公車') : (l.name || MODE_ZH[l.mode] || '').replace(/線$/, '');
+// ===== TRA_LINE_BEGIN（v2.32.0：台鐵段標籤顯示路線名稱；單元測試會擷取這段）=====
+// 台鐵站代碼（TDX StationID）＋站名，2026-11 台鐵每日時刻表逐站核對；1001「臺北-環島」是環島列車的虛擬終點＝臺北
+const TRA_ST = (() => { const m = {}; for (const x of '0900基隆 0910三坑 0920八堵 0930七堵 0940百福 0950五堵 0960汐止 0970汐科 0980南港 0990松山 1000臺北 1010萬華 1020板橋 1030浮洲 1040樹林 1050南樹林 1060山佳 1070鶯歌 1075鳳鳴 1080桃園 1090內壢 1100中壢 1105平鎮 1110埔心 1120楊梅 1130富岡 1140新富 1150北湖 1160湖口 1170新豐 1180竹北 1190北新竹 1191千甲 1192新莊 1193竹中 1194六家 1201上員 1202榮華 1203竹東 1204橫山 1205九讚頭 1206合興 1207富貴 1208內灣 1210新竹 1220三姓橋 1230香山 1240崎頂 1250竹南 2110談文 2120大山 2130後龍 2140龍港 2150白沙屯 2160新埔 2170通霄 2180苑裡 2190日南 2200大甲 2210臺中港 2220清水 2230沙鹿 2240龍井 2250大肚 2260追分 3140造橋 3150豐富 3160苗栗 3170南勢 3180銅鑼 3190三義 3210泰安 3220后里 3230豐原 3240栗林 3250潭子 3260頭家厝 3270松竹 3280太原 3290精武 3300臺中 3310五權 3320大慶 3330烏日 3340新烏日 3350成功 3360彰化 3370花壇 3380大村 3390員林 3400永靖 3410社頭 3420田中 3430二水 3431源泉 3432濁水 3433龍泉 3434集集 3435水里 3436車埕 3450林內 3460石榴 3470斗六 3480斗南 3490石龜 4050大林 4060民雄 4070嘉北 4080嘉義 4090水上 4100南靖 4110後壁 4120新營 4130柳營 4140林鳳營 4150隆田 4160拔林 4170善化 4180南科 4190新市 4200永康 4210大橋 4220臺南 4250保安 4260仁德 4270中洲 4271長榮大學 4272沙崙 4290大湖 4300路竹 4310岡山 4320橋頭 4330楠梓 4340新左營 4350左營 4360內惟 4370美術館 4380鼓山 4390三塊厝 4400高雄 4410民族 4420科工館 4430正義 4440鳳山 4450後庄 4460九曲堂 4470六塊厝 5000屏東 5010歸來 5020麟洛 5030西勢 5040竹田 5050潮州 5060崁頂 5070南州 5080鎮安 5090林邊 5100佳冬 5110東海 5120枋寮 5130加祿 5140內獅 5160枋山 5190大武 5200瀧溪 5210金崙 5220太麻里 5230知本 5240康樂 6000臺東 6010山里 6020鹿野 6030瑞源 6040瑞和 6050關山 6060海端 6070池上 6080富里 6090東竹 6100東里 6110玉里 6120三民 6130瑞穗 6140富源 6150大富 6160光復 6170萬榮 6180鳳林 6190南平 6200林榮新光 6210豐田 6220壽豐 6230平和 6240志學 6250吉安 7000花蓮 7010北埔 7020景美 7030新城 7040崇德 7050和仁 7060和平 7070漢本 7080武塔 7090南澳 7100東澳 7110永樂 7120蘇澳 7130蘇澳新 7150冬山 7160羅東 7170中里 7180二結 7190宜蘭 7200四城 7210礁溪 7220頂埔 7230頭城 7240外澳 7250龜山 7260大溪 7270大里 7280石城 7290福隆 7300貢寮 7310雙溪 7320牡丹 7330三貂嶺 7331大華 7332十分 7333望古 7334嶺腳 7335平溪 7336菁桐 7350猴硐 7360瑞芳 7361海科館 7362八斗子 7380四腳亭 7390暖暖'.split(' ')) m[x.slice(0, 4)] = x.slice(4); return m; })();
+// 各線站序（依維基「臺灣鐵路路線列表」的起訖與分界站；分界站同屬兩線）。縱貫線不分北段南段；成追線只有成功–追分
+const TRA_LN = {
+  縱貫線: '0900 0910 0920 0930 0940 0950 0960 0970 0980 0990 1000 1010 1020 1030 1040 1050 1060 1070 1075 1080 1090 1100 1105 1110 1120 1130 1140 1150 1160 1170 1180 1190 1210 1220 1230 1240 1250|3360 3370 3380 3390 3400 3410 3420 3430 3450 3460 3470 3480 3490 4050 4060 4070 4080 4090 4100 4110 4120 4130 4140 4150 4160 4170 4180 4190 4200 4210 4220 4250 4260 4270 4290 4300 4310 4320 4330 4340 4350 4360 4370 4380 4390 4400',
+  山線: '1250 3140 3150 3160 3170 3180 3190 3210 3220 3230 3240 3250 3260 3270 3280 3290 3300 3310 3320 3330 3340 3350 3360',
+  海線: '1250 2110 2120 2130 2140 2150 2160 2170 2180 2190 2200 2210 2220 2230 2240 2250 2260 3360',
+  成追線: '3350 2260',
+  屏東線: '4400 4410 4420 4430 4440 4450 4460 4470 5000 5010 5020 5030 5040 5050 5060 5070 5080 5090 5100 5110 5120',
+  南迴線: '5120 5130 5140 5160 5190 5200 5210 5220 5230 5240 6000',
+  台東線: '6000 6010 6020 6030 6040 6050 6060 6070 6080 6090 6100 6110 6120 6130 6140 6150 6160 6170 6180 6190 6200 6210 6220 6230 6240 6250 7000',
+  北迴線: '7000 7010 7020 7030 7040 7050 7060 7070 7080 7090 7100 7110 7130',
+  宜蘭線: '7120 7130 7150 7160 7170 7180 7190 7200 7210 7220 7230 7240 7250 7260 7270 7280 7290 7300 7310 7320 7330 7350 7360 7380 7390 0920',
+  平溪線: '7330 7331 7332 7333 7334 7335 7336', 深澳線: '7360 7361 7362',
+  內灣線: '1210 1190 1191 1192 1193 1201 1202 1203 1204 1205 1206 1207 1208', 六家線: '1193 1194',
+  集集線: '3430 3431 3432 3433 3434 3435 3436', 沙崙線: '4270 4271 4272',
+};
+const TRA_WEST = new Set(['縱貫線', '山線', '海線', '成追線', '屏東線']), TRA_EAST = new Set(['宜蘭線', '北迴線', '台東線']);
+let TRA_G = null;   // 相鄰站圖：站 → { 鄰站: [線…] }（新竹–北新竹這種共用路段同屬兩線）；站名（正規化）→ 站代碼
+function traGraph() {
+  if (TRA_G) return TRA_G;
+  const adj = {}, byName = {}, put = (x, y, ln) => { const m = adj[x] = adj[x] || {}; (m[y] = m[y] || []).push(ln); };
+  for (const [ln, s] of Object.entries(TRA_LN)) for (const seg of s.split('|')) { const a = seg.split(' ');
+    for (let i = 1; i < a.length; i++) { put(a[i - 1], a[i], ln); put(a[i], a[i - 1], ln); } }
+  for (const [id, n] of Object.entries(TRA_ST)) byName[n] = id;
+  return TRA_G = { adj, byName };
+}
+const traNorm = n => String(n || '').replace(/台/g, '臺').replace(/\s+/g, '').replace(/[（(].*$/, '').replace(/-環島$/, '').replace(/(火車站|車站|站)$/, '');
+// 校正後的經停站名取自手機的車站清單；清單裡找不到時會是原始站代碼（4 位數字），也直接認
+const traId = n => { const k = String(n || '').trim(); if (k === '1001') return '1000'; return TRA_ST[k] ? k : traGraph().byName[traNorm(k)] || null; };
+// 兩站間的最短路（站數）→ 每一段的候選線；成追線只在兩站剛好是成功、追分時才走（其他時候當它不存在，避免繞成追線的怪路）
+function traPath(a, b) {
+  const { adj } = traGraph(), cz = (a === '3350' && b === '2260') || (a === '2260' && b === '3350');
+  const prev = { [a]: null }, q = [a];
+  while (q.length) { const x = q.shift(); if (x === b) break;
+    for (const [y, lns] of Object.entries(adj[x] || {})) if (!(y in prev) && (cz || lns.some(l => l !== '成追線'))) { prev[y] = x; q.push(y); } }
+  if (!(b in prev)) return null;
+  const ids = [b]; while (prev[ids[0]] != null) ids.unshift(prev[ids[0]]);
+  const edges = []; for (let i = 1; i < ids.length; i++) edges.push(adj[ids[i - 1]][ids[i]].filter(l => cz || l !== '成追線'));
+  // 中間沒有停靠站、整段跨過竹南–彰化（山海線兩邊都通）：分不出山線或海線
+  if (ids.includes('1250') && ids.includes('3360')) return edges.map(e => e.some(l => l === '山線' || l === '海線') ? ['?'] : e);
+  return edges;
+}
+// 一段台鐵（上車站、經停站、下車站的站名）→ 經過的路線（連續相同的合併）；有站對不到就回傳 null
+function traRuns(names) {
+  const ids = names.map(traId); if (ids.length < 2 || ids.some(x => !x)) return null;
+  const E = [];
+  for (let i = 1; i < ids.length; i++) { if (ids[i] === ids[i - 1]) continue; const p = traPath(ids[i - 1], ids[i]); if (!p) return null; E.push(...p); }
+  // 共用路段：跟前一段同線就算前一段的線，否則看下一段，都不是就取第一個
+  const L = [];
+  for (let i = 0; i < E.length; i++) { const e = E[i], pv = L[i - 1], nx = (E.slice(i + 1).find(x => x.length === 1) || [])[0];
+    L.push(e.length === 1 ? e[0] : e.includes(pv) ? pv : e.includes(nx) ? nx : e[0]); }
+  let runs = []; for (const l of L) if (runs[runs.length - 1] !== l) runs.push(l);
+  if (runs.length > 1 && runs.some(l => l !== '成追線')) { const r = runs.filter(l => l !== '成追線'); runs = []; for (const l of r) if (runs[runs.length - 1] !== l) runs.push(l); }
+  return runs;
+}
+function traLabelOf(names) {
+  const R = traRuns(names); if (!R || !R.length) return '台鐵';
+  if (R.includes('?')) return R.every(l => l === '?' || TRA_WEST.has(l)) ? '西部幹線' : `${R[0] === '?' ? '西部幹線' : R[0]}→${R[R.length - 1] === '?' ? '西部幹線' : R[R.length - 1]}`;
+  if (R.length === 1) return R[0];
+  if (R.length === 2) return R.join('・');
+  if (R.every(l => TRA_WEST.has(l))) { const m = R.includes('山線'), s = R.includes('海線'); return m && !s ? '西部幹線（經山線）' : s && !m ? '西部幹線（經海線）' : '西部幹線'; }
+  if (R.every(l => TRA_EAST.has(l))) return '東部幹線';
+  return `${R[0]}→${R[R.length - 1]}`;
+}
+const traLabel = l => traLabelOf([l.from && l.from.name, ...(l.stops || []).map(s => s.name), l.to && l.to.name]);
+// ===== TRA_LINE_END =====
 // v2.31.0：路段列改成自動換行的「圖示＋框線標籤」（公車只寫路線號、列車寫路線名稱或台鐵／高鐵）；台鐵藍在深色底太暗，只有這裡用亮一點的藍
 const SEG_TRA = '#5B8FE0', SEG_BIKE = '#FFB400';
 function segItem(p) {
@@ -1779,7 +1847,7 @@ function segItem(p) {
   if (p.k === 'bike') return `<span class="si" style="color:${SEG_BIKE}">${I.bike}</span><span class="sl" style="--c:${SEG_BIKE}">YouBike・${p.m}分</span>`;
   const l = p.l;
   if (l.mode === 'bus') return `<span class="si" style="color:${MODE_C.bus}">${I.busG}</span><span class="sl" style="--c:${MODE_C.bus}">${esc(l.name || '公車')}</span>`;
-  if (l.mode === 'tra' || l.mode === 'thsr') { const c = l.mode === 'tra' ? SEG_TRA : MODE_C.thsr; return `<span class="si" style="color:${c}">${SYS_LOGO[l.mode === 'tra' ? 'TRA' : 'THSR']}</span><span class="sl" style="--c:${c}">${MODE_ZH[l.mode]}</span>`; }
+  if (l.mode === 'tra' || l.mode === 'thsr') { const c = l.mode === 'tra' ? SEG_TRA : MODE_C.thsr; return `<span class="si" style="color:${c}">${SYS_LOGO[l.mode === 'tra' ? 'TRA' : 'THSR']}</span><span class="sl" style="--c:${c}">${l.mode === 'tra' ? esc(traLabel(l)) : MODE_ZH[l.mode]}</span>`; }
   const ln = legLine(l), c = legColor(l);
   if (ln) {
     const lc = (LINE_COLOR[ln[0]] || {})[ln[1]] || c, name = (LINE_NAME[ln[0]] || {})[ln[1]] || l.name || MODE_ZH[l.mode] || '捷運';
