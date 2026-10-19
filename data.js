@@ -2192,22 +2192,7 @@ function planClean(routes, yb) {
 // 起訖點是這種車站時，改用同一條線上相鄰、TDX 認得的車站去查，並在結果上註明
 const TDX_MISSING = { "廣慈/奉天宮": { name: "象山", lat: 25.032871, lon: 121.570029, line: "淡水信義線", mode: 6 } };
 const planIsStation = p => !!p && !p.here && (!!p.st || /北捷|新北捷|機捷|桃捷|中捷|高捷|捷運|輕軌|台鐵|高鐵/.test(p.sub || ""));
-// TDX 和 Google 兩組都校正過之後，照 Worker 原本的規則用「校正後」的時間決定用哪一組（v2.22）：
-// faster＝Google 早到 15 分以上或快 15% 以上（指定抵達則是晚出發）；klrt-night＝Google 有搭高雄輕軌、或比較好
-function planPickG(T, G, rule, { when, ref, arrBy }) {
-  const best = rs => { let b = null;
-    for (const r of rs) { if (r.approx) continue; const ft = r.legs.find(l => l.kind === "transit"), f0 = ft ? tms(ft.from.time) - preWalk(r) : r.start;
-      if (when === "arr") { if (arrBy && r.end <= arrBy + 60000 && (b == null || r.start > b)) b = r.start; }
-      else if (f0 >= ref - 60000 && (b == null || r.end < b)) b = r.end; }
-    return b; };
-  const tb = best(T), gb = best(G);
-  if (gb == null) return false;
-  if (tb == null) return true;
-  const better = when === "arr" ? gb > tb : gb < tb;
-  if (rule === "klrt-night") return G.some(r => r.legs.some(l => l.kind === "transit" && l.mode === "lrt")) || better;
-  const gain = when === "arr" ? gb - tb : tb - gb, base = when === "arr" ? arrBy - tb : tb - ref;
-  return gain >= 15 * 60000 || gain >= 0.15 * base;
-}
+// v2.34.0：Worker 有問 Google 時兩組都帶回來（data.cand），前端不再「兩組挑一組」（舊的 planPickG），合併後一起校正、去重、排序（最多8條）
 async function planRoutes({ o, d, modes, yb, when, time, onLive }) {
   // v2.33.0：「目前位置」座標取到小數第4位（約10公尺）再送 /plan：Worker 快取鍵用收到的座標，站著不動重查、換交通工具再換回來都能共用快取
   const r4 = p => p && p.here && p.lat != null ? { ...p, lat: +(+p.lat).toFixed(4), lon: +(+p.lon).toFixed(4) } : p;
@@ -2218,7 +2203,7 @@ async function planRoutes({ o, d, modes, yb, when, time, onLive }) {
   const q = new URLSearchParams({ o: `${qo.lat},${qo.lon}`, d: `${qd.lat},${qd.lon}`, t: modes.join(","), gc: "1", yb: yb ? "1" : "0" });
   if (so) q.set("go", `${o.lat},${o.lon}`); if (sd) q.set("gd", `${d.lat},${d.lon}`);
   if (when === "dep" && time) q.set("dep", time); if (when === "arr" && time) q.set("arr", time);
-  let out = [], cand = null;
+  let out = [], cand = null; const so0 = so, sd0 = sd;
   try {
     const j = await authedGet("/plan?" + q.toString());
     if (!j || j.result !== "success") throw new Error((j && (j.message || j.Message)) || "規劃失敗");
@@ -2271,10 +2256,10 @@ async function planRoutes({ o, d, modes, yb, when, time, onLive }) {
   // 全部都不成立時：Worker 比較過兩組就改用另一組，否則再問一次 Worker 的備援（fb=1：起訖都是車站時的官方時刻表直達車＋Google），校正後一樣要成立
   const okOf = l => l.filter(r => !r.broken);
   if (cand) {
-    let [T, G] = await Promise.all([fix(trim(cand.T, so, sd)), fix(trim(cand.G, null, null))]);
-    const T1 = okOf(T), G1 = okOf(G);
-    const useG = !T1.length && G1.length ? true : !G1.length && T1.length ? false : planPickG(T1.length ? T1 : T, G1.length ? G1 : G, cand.rule, { when, ref: ref0 || Date.now(), arrBy });
-    out = useG ? G : T; if (useG) { so = null; sd = null; }
+    // v2.34.0：兩組合併（TDX 用相鄰站查的照樣加註、Google 用原本的起訖點），之後一起去重、排序
+    so = so0; sd = sd0;
+    const [T, G] = await Promise.all([fix(trim(cand.T, so, sd)), fix(trim(cand.G, null, null))]);
+    out = T.concat(G);
   } else out = await fix(trim(out, so, sd));
   if (out.length && !okOf(out).length) {
     let fb = [];
@@ -2318,7 +2303,7 @@ async function planRoutes({ o, d, modes, yb, when, time, onLive }) {
   if (ref && when !== "arr") { const near = out.filter(r => r.start - ref < 3 * 3600000); if (near.length) out = near; }
   if (so || sd) {
     const note = so && sd ? `TDX 還沒有${o.name}和${d.name}站的資料，改從相鄰的${so.name}站規劃到${sd.name}站` : so ? `TDX 還沒有${o.name}站的資料，改從相鄰的${so.name}站（同為${so.line}）起算` : `TDX 還沒有${d.name}站的資料，改規劃到相鄰的${sd.name}站（同為${sd.line}）`;
-    out = out.map(r => ({ ...r, note }));
+    out = out.map(r => r.src === "tdx" ? { ...r, note } : r);   // v2.34.0：合併時只有 TDX 的路線是用相鄰站查的
   }
   // 一律最快：先到的排前面（指定抵達則是最晚出發的排前面），同時到的轉乘少、走路少的優先
   const walkOf = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
@@ -2360,7 +2345,9 @@ function planDedupe(out) {
   const tsig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + "@" + (l.from.time || "").slice(0, 16) + ">" + (l.to.time || "").slice(0, 16)).join("|");
   // v2.23.3：多繞的路線不列：另一條路線搭的車（同一班、同一段）是這條的一部分，這條只是前後多接了幾段車，卻沒有比較晚出發、也沒有比較早到
   // （例如 1839 到屏東轉運站，另一條同一班 1839 再轉 8218 坐一站到真耶穌教會、反而更晚到）
-  const legSig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + l.name + "@" + l.from.name + ">" + l.to.name + "@" + (l.from.time || "").slice(0, 16));
+  // v2.34.0：TDX 和 Google 合併後，同一班車的名稱寫法可能不同（臺北／台北、捷運石牌站(西安)、高鐵車次只有校正後才有）：站名用 pn 正規化，台鐵／高鐵有車次就比車次
+  const lnm = l => (l.mode === "tra" || l.mode === "thsr") && l.number ? l.number : l.mode === "thsr" ? "" : pn(l.name || "");
+  const legSig = r => r.legs.filter(l => l.kind === "transit").map(l => l.mode + lnm(l) + "@" + pn(l.from.name || "") + ">" + pn(l.to.name || "") + "@" + (l.from.time || "").slice(0, 16));
   const within = (a, b) => { for (let i = 0; i + a.length <= b.length; i++) if (a.every((x, k) => x === b[i + k])) return true; return false; };
   const sigs = out.map(legSig);
   // v2.33.2：同時出發、同時到（各差2分內）時，步行少8分以上的優先：多繞不列不刪這種（例如坐公車到石牌站、不用走17分），去重時也排到前面留下
@@ -2372,7 +2359,7 @@ function planDedupe(out) {
   // 一條有坐公車（B）、另一條只坐捷運／輕軌／台鐵／高鐵（R）。只有步行（沒坐車）跟哪一類都合併（維持原本「同時到就留排前面那條」）。
   // 第二條加註：同一班什麼車、改坐什麼、在那班車開車前多留幾分
   const MZ = { mrt: "捷運", lrt: "輕軌", tra: "台鐵", thsr: "高鐵", bus: "公車" };
-  const lid = l => l.mode + "|" + (l.number || l.name) + "|" + (l.from.name || "") + "|" + (l.from.time || "").slice(0, 16);
+  const lid = l => l.mode + "|" + (l.number || pn(l.name || "")) + "|" + pn(l.from.name || "") + "|" + (l.from.time || "").slice(0, 16);
   const tr = r => r.legs.filter(l => l.kind === "transit");
   const firstCommon = (r, y) => { const ys = new Set(tr(y).map(lid)); return tr(r).find(l => ys.has(lid(l))) || null; };
   const preOf = (r, tk) => r.legs.slice(0, r.legs.indexOf(tk)).filter(l => l.kind === "transit");
@@ -2394,7 +2381,7 @@ function planDedupe(out) {
     const k1 = planShape(r) + "|" + r.start + "|" + r.end, k2 = "t|" + tsig(r);
     const rl = r.legs.filter(l => l.kind === "transit" && (l.mode === "tra" || l.mode === "thsr") && l.number), k3 = rl.length ? "r|" + rl[rl.length - 1].mode + rl[rl.length - 1].number + "|" + Math.round(r.end / 120000) : null;
     const mt = r.legs.filter(l => l.kind === "transit").sort((x, y) => y.dur - x.dur)[0];
-    const k4 = mt ? "m|" + mt.mode + mt.name + "@" + (mt.to.time || "").slice(0, 16) + "|" + Math.round(r.end / 120000) : null;
+    const k4 = mt ? "m|" + mt.mode + lnm(mt) + "@" + (mt.to.time || "").slice(0, 16) + "|" + Math.round(r.end / 120000) : null;
     if (seen.has(k1) || seen.has(k2)) return false;
     const ks = [k3, k4].filter(Boolean); let alt = null;
     for (const k of ks) for (const y of owners.get(k) || []) { const q = pairOf(r, y); if (!split(q)) return false; if (!alt) alt = altOf(r, y, q); }

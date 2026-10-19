@@ -915,7 +915,7 @@ function vSettings() {
     <dt>估算班次</dt><dd>台中捷運、北捷文湖線沒有站別時刻表，依 TDX 班距與首末班推算，列上標「估算」</dd>
     <dt>車站時刻表查詢</dt><dd>車站頁「時刻表」：可選日期，依上面的台鐵／高鐵與捷運日期規則挑班表（只讀雲端存的時刻表，不另向 TDX 查）；文湖線、台中捷運列出首末班與各時段班距</dd>
     <dt>列車停靠站時間</dt><dd>由各站官方時刻表串成每一班車；串不起來的站依 TDX 站間行駛時間推估（標 ≈）</dd>
-    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（查不到或明顯太差時改用 Google 地圖，Google 的路線同樣依官方時刻表校正、用校正後的時間比較；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
+    <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（長途、TDX 查不到或沒收錄的車站等情況也會問 Google 地圖，兩邊的路線合併後一起依官方時刻表校正、去重、排序，每條標示來源；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
   </dl></div>`;
@@ -1761,8 +1761,9 @@ function planHtml() {
     h += P.res.length ? P.res.map((r, i) => planCard(r, i)).join('') : `<div class="note">找不到可行的路線。試著打開更多交通工具，或換個時間。</div>`;
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
-  const gsrc = P.res && P.res.some(r => r.src === 'google'), tsrc = P.res && P.res.some(r => r.src === 'tt');
-  return h + `<div class="sub" style="margin-top:18px">路線來源：${gsrc ? 'Google 地圖（TDX 查不到或明顯較慢時改用）' : tsrc ? '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）' : '交通部 TDX 公共運輸旅運規劃'}；地點搜尋：© OpenStreetMap 貢獻者</div></div>`;
+  // v2.34.0：TDX 和 Google 的路線合併列出：照這次實際列出的路線標示用到哪些來源
+  const has = s => !!(P.res && P.res.some(r => r.src === s)), srcs = [has('tdx') && '交通部 TDX 公共運輸旅運規劃', has('google') && 'Google 地圖', has('tt') && '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）'].filter(Boolean);
+  return h + `<div class="sub" style="margin-top:18px">路線來源：${srcs.length ? srcs.join('、') : '交通部 TDX 公共運輸旅運規劃'}；地點搜尋：© OpenStreetMap 貢獻者</div></div>`;
 }
 const minTxt = m => m >= 60 ? `${Math.floor(m / 60)}小時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
 const hmOf = ms => { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
