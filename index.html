@@ -1010,11 +1010,13 @@ function vSettings() {
   ${vAccount()}
   ${!DEMO && S.auth?.role === 'admin' ? `<button class="card advrow" data-act="openAdv"><span class="body"><div class="title">進階設定</div><div class="desc">Worker 網址、更新時刻表、每日訪客檢查</div></span><span class="pill">僅管理者</span><span class="chev">${I.chev}</span></button>` : ''}
   <div class="sec"><h2>關於</h2></div>
-  <div class="note">極速通勤${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>
+  <div class="note">極速通勤${esc(S.version || '')}　公車與 YouBike 即時資料來自交通部 TDX，以及臺北市政府交通局、新北市政府交通局開放資料。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>
   <div class="sub" style="margin:16px 4px 8px;font-weight:700;color:var(--text)">資料來源</div>
   <div class="set src"><dl>
     <dt>公車、YouBike、軌道車站與時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
     <dt>台北、新北 YouBike</dt><dd>臺北市政府交通局（YouBike2.0 臺北市公共自行車即時資訊）、新北市政府交通局（新北市公共自行車租賃系統）開放資料，經自己的伺服器整理後顯示（台北約每分鐘、新北約每5分鐘更新；台北只有總車數）</dd>
+    <dt>台北市公車即時到站</dt><dd>臺北市政府交通局開放資料（預估到站約每20秒更新、車輛到離站），經自己的伺服器整理；用於路線代碼 TPE 開頭的台北市公車（含開進新北的站）。新北市公車、公路客運與其他縣市照舊用 TDX；尚未發車時只顯示「尚未發車」</dd>
+    <dt>公車站序（目的地篩選）</dt><dd>台北：臺北市政府交通局開放資料（站牌、路線、附屬路線站序）；新北：新北市政府交通局「公車站位資訊」；其他縣市與公路客運：TDX</dd>
     <dt>北捷、環狀線即時到站</dt><dd>Bus+ 公開資料（非官方）；讀不到時改用 TDX 即時看板（只有進站中列車）＋時刻表</dd>
     <dt>其他捷運、輕軌即時到站</dt><dd>TDX 即時看板（官方），與各站時刻表合併顯示</dd>
     <dt>台鐵</dt><dd>七天班表（取自一個平常週的 TDX 每日時刻表；國定假日、連假和其前一天改用當天時刻表）；誤點取自 TDX 本站即時看板＋全台列車動態</dd>
