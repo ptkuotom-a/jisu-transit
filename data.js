@@ -2159,7 +2159,8 @@ async function busDest(p) {
     const ok = await Promise.all(need.map(c => authedGet("/bus/sor?c=" + c).then(() => true).catch(() => false)));
     if (ok.some(Boolean)) j = await post();
   }
-  busDestMemo.set(mk, j); if (busDestMemo.size > 60) busDestMemo.delete(busDestMemo.keys().next().value);
+  if (!j.upd) busDestMemo.set(mk, j);   // 雲端正在更新站序：先不記，之後再查拿新資料
+  if (busDestMemo.size > 60) busDestMemo.delete(busDestMemo.keys().next().value);
   return j;
 }
 

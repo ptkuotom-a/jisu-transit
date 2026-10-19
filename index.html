@@ -942,6 +942,8 @@ function bfQuery() {
     .catch(e => { if (B.sel === sel) { B.err = e.message; B.forData = null; } })
     .finally(() => { B.busy = false; if (B.sel === sel && S.tab === 'bus' && !S.q) render(); });
 }
+// v2.35.1：附近有路線在雲端站序裡確實對不到 → Worker 已在背景重抓（每個縣市每天最多一次）
+const bfUpd = B => B.res?.upd?.length ? '（有新路線或新站牌，雲端正在更新站序資料，過幾分鐘再查會更完整）' : '';
 function bfResult(d) {
   const B = S.bf; bfQuery();
   if (B.err) return `<div class="note">篩選暫時無法使用：${esc(B.err)}</div>`;
@@ -959,8 +961,8 @@ function bfResult(d) {
     if (rows.length) h += `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}${sideTag(s)}</span><span class="pill">${distTxt(s.dist)}</span></div>${rows.join('')}</div>`;
   }
   const nm = B.sel.type === 'place' ? `「${B.sel.name}」附近` : B.sel.name;
-  if (!hit.size) return `<div class="note">附近站牌沒有路線會到${esc(nm)}（不含轉乘）。可以改用路線規劃找轉乘的走法。</div>`;
-  const miss = B.res.miss ? `；${B.res.miss}條路線的站序對不上，沒有列出` : '';
+  if (!hit.size) return `<div class="note">附近站牌沒有路線會到${esc(nm)}（不含轉乘）。可以改用路線規劃找轉乘的走法。${bfUpd(B)}</div>`;
+  const miss = (B.res.miss ? `；${B.res.miss}條路線的站序對不上，沒有列出` : '') + bfUpd(B);
   return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>`;
 }
 function stopBlock(s, limit) {
