@@ -979,7 +979,7 @@ function vBike() {
   if (!d) return h + (S.error ? '' : skel(3));
   if (d.bikeError) h += `<div class="note">YouBike 資料暫時讀不到：${esc(d.bikeError)}</div>`;
   const bikes = filterQ(d.bikes, b => b.name);
-  if (!bikes.length) return h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
+  if (!bikes.length) return d.bikeError ? h : h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
   return h + bikes.map(b => {
     const off = b.status != null && b.status !== 1;
     return `<button class="bike" data-act="bikeSheet" data-i="${reg(b)}">
@@ -988,7 +988,7 @@ function vBike() {
         <div class="num"><b class="${bikeCls(b.rent,b.status)}">${off ? '—' : b.rent ?? '?'}</b><span>${off ? '暫停營運' : b.electric ? `可借（電輔${b.electric}）` : '可借'}</span></div>
         <div class="num"><b class="${bikeCls(b.ret,b.status)}">${off ? '—' : b.ret ?? '?'}</b><span>可還空位</span></div>
       </div></button>`;
-  }).join('');
+  }).join('') + (bikes.some(b => /^(TPE|NWT)/.test(b.uid || '')) ? `<span class="bfnote">台北、新北車位：臺北市政府交通局、新北市政府交通局開放資料（政府資料開放授權條款第1版）</span>` : '');
 }
 function seg(key, opts, fmt) {
   return `<div class="sseg">${opts.map(o => `<button class="${S.settings[key]===o?'on':''}" data-act="set" data-k="${key}" data-v="${o}">${fmt(o)}</button>`).join('')}</div>`;
@@ -1014,6 +1014,7 @@ function vSettings() {
   <div class="sub" style="margin:16px 4px 8px;font-weight:700;color:var(--text)">資料來源</div>
   <div class="set src"><dl>
     <dt>公車、YouBike、軌道車站與時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
+    <dt>台北、新北 YouBike</dt><dd>臺北市政府交通局（YouBike2.0 臺北市公共自行車即時資訊）、新北市政府交通局（新北市公共自行車租賃系統）開放資料，經自己的伺服器整理後顯示（台北約每分鐘、新北約每5分鐘更新；台北只有總車數）</dd>
     <dt>北捷、環狀線即時到站</dt><dd>Bus+ 公開資料（非官方）；讀不到時改用 TDX 即時看板（只有進站中列車）＋時刻表</dd>
     <dt>其他捷運、輕軌即時到站</dt><dd>TDX 即時看板（官方），與各站時刻表合併顯示</dd>
     <dt>台鐵</dt><dd>七天班表（取自一個平常週的 TDX 每日時刻表；國定假日、連假和其前一天改用當天時刻表）；誤點取自 TDX 本站即時看板＋全台列車動態</dd>
@@ -1024,7 +1025,7 @@ function vSettings() {
     <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（長途、TDX 查不到或沒收錄的車站等情況也會問 Google 地圖，兩邊的路線合併後一起依官方時刻表校正、去重、排序，每條標示來源；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
-  </dl></div>`;
+  </dl><p class="sub" style="margin-top:8px">臺北市政府交通局、新北市政府交通局（政府資料開放授權條款第1版）</p></div>`;
 }
 
 /* ---------- 帳號與進階設定（進階設定只有管理者看得到） ---------- */
