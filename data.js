@@ -2364,12 +2364,35 @@ function planDedupe(out) {
   const within = (a, b) => { for (let i = 0; i + a.length <= b.length; i++) if (a.every((x, k) => x === b[i + k])) return true; return false; };
   const sigs = out.map(legSig);
   out = out.filter((r, i) => !out.some((y, j) => j !== i && !y.missed && !y.approx && sigs[j].length && sigs[j].length < sigs[i].length && within(sigs[j], sigs[i]) && r.end >= y.end && r.start <= y.start));
-  return out.filter(r => !(r.shifted && real.has(planShape(r) + "|" + r.end))).filter(r => {
+  // v2.33.1：③④（同一班主幹車同時抵達）：從兩條第一段共同搭的車（例如同一班高鐵）往前看，接駁不同類就兩條都列：
+  // 一條有坐公車（B）、另一條只坐捷運／輕軌／台鐵／高鐵（R）。只有步行（沒坐車）跟哪一類都合併（維持原本「同時到就留排前面那條」）。
+  // 第二條加註：同一班什麼車、改坐什麼、在那班車開車前多留幾分
+  const MZ = { mrt: "捷運", lrt: "輕軌", tra: "台鐵", thsr: "高鐵", bus: "公車" };
+  const lid = l => l.mode + "|" + (l.number || l.name) + "|" + (l.from.name || "") + "|" + (l.from.time || "").slice(0, 16);
+  const tr = r => r.legs.filter(l => l.kind === "transit");
+  const firstCommon = (r, y) => { const ys = new Set(tr(y).map(lid)); return tr(r).find(l => ys.has(lid(l))) || null; };
+  const preOf = (r, tk) => r.legs.slice(0, r.legs.indexOf(tk)).filter(l => l.kind === "transit");
+  const cls = pre => !pre.length ? "" : pre.some(l => l.mode === "bus") ? "B" : "R";
+  const pairOf = (r, y) => { const a = firstCommon(r, y); if (!a) return null; const b = tr(y).find(l => lid(l) === lid(a)); return { a, b, cr: cls(preOf(r, a)), cy: cls(preOf(y, b)) }; };
+  const split = q => !!q && ((q.cr === "B" && q.cy === "R") || (q.cr === "R" && q.cy === "B"));
+  const atTk = (r, tk) => { const i = r.legs.indexOf(tk); let t = null, w = 0; for (let k = i - 1; k >= 0; k--) { const l = r.legs[k]; if (l.kind === "transit") { t = tms(l.to.time); break; } if (l.kind !== "wait") w += (l.dur || 0) * 1000; } return t == null ? null : t + w; };
+  const altOf = (r, y, q) => {
+    const pre = preOf(r, q.a), m = q.cr === "B" ? "公車" : MZ[(pre.find(l => l.mode !== "bus") || pre[0] || {}).mode] || "其他車";
+    const ta = atTk(r, q.a), tb = atTk(y, q.b), dep = tms(q.a.from.time), d = ta != null && tb != null ? Math.round((tb - ta) / 60000) : 0;
+    return `同一班${MZ[q.a.mode] || "車"}，改坐${m}${d >= 3 && dep ? `，${hmTpe(dep)} 前多留約${d}分` : ""}`;
+  };
+  const owners = new Map(), altM = new Map();
+  const kept = out.filter(r => !(r.shifted && real.has(planShape(r) + "|" + r.end))).filter(r => {
     const k1 = planShape(r) + "|" + r.start + "|" + r.end, k2 = "t|" + tsig(r);
-    const rl = r.legs.filter(l => l.kind === "transit" && (l.mode === "tra" || l.mode === "thsr") && l.number), k3 = rl.length ? "r|" + rl[rl.length - 1].mode + rl[rl.length - 1].number + "|" + Math.round(r.end / 120000) : k1;
+    const rl = r.legs.filter(l => l.kind === "transit" && (l.mode === "tra" || l.mode === "thsr") && l.number), k3 = rl.length ? "r|" + rl[rl.length - 1].mode + rl[rl.length - 1].number + "|" + Math.round(r.end / 120000) : null;
     const mt = r.legs.filter(l => l.kind === "transit").sort((x, y) => y.dur - x.dur)[0];
-    const k4 = mt ? "m|" + mt.mode + mt.name + "@" + (mt.to.time || "").slice(0, 16) + "|" + Math.round(r.end / 120000) : k1;
-    if (seen.has(k1) || seen.has(k2) || seen.has(k3) || seen.has(k4)) return false; [k1, k2, k3, k4].forEach(k => seen.add(k)); return true; }).slice(0, 8);
+    const k4 = mt ? "m|" + mt.mode + mt.name + "@" + (mt.to.time || "").slice(0, 16) + "|" + Math.round(r.end / 120000) : null;
+    if (seen.has(k1) || seen.has(k2)) return false;
+    const ks = [k3, k4].filter(Boolean); let alt = null;
+    for (const k of ks) for (const y of owners.get(k) || []) { const q = pairOf(r, y); if (!split(q)) return false; if (!alt) alt = altOf(r, y, q); }
+    seen.add(k1); seen.add(k2); for (const k of ks) { if (!owners.has(k)) owners.set(k, []); if (!owners.get(k).includes(r)) owners.get(k).push(r); }
+    if (alt) altM.set(r, alt); return true; }).slice(0, 8);
+  return kept.map(r => { const a = altM.get(r); if (a) return { ...r, altNote: a }; if (r.altNote) { const x = { ...r }; delete x.altNote; return x; } return r; });
 }
 // ---------- 輕軌（以及趕不上時的捷運／台鐵／高鐵）對官方時刻表（v2.17.0） ----------
 // TDX MaaS 的輕軌班次大多是推算的假班次（淡海 0/13、安坑 5/10、高雄 0/8 對得上），還會把同一班車拆成好幾段、配錯線（淡海綠山／藍海）、
