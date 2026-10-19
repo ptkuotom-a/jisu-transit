@@ -363,9 +363,15 @@ html.locked,html.locked body{overflow:hidden}
 .pr{display:block;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:16px 16px 14px;margin-bottom:12px}.pr:active{background:#202221}
 .pr-h{display:flex;align-items:center;gap:10px}.pr-h .dur{font-size:30px;font-weight:900;letter-spacing:-1px;line-height:1}.pr-h .tm{flex:1;color:var(--text);font-size:16px;font-weight:600}
 .pr-m{display:flex;gap:10px;color:var(--muted);font-size:14px;margin-top:6px}.pr-m span{flex:none}.pr-m span:last-child{flex:1;min-width:0}
-.sbar{display:flex;gap:3px;margin-top:12px;align-items:center}
-.sbar>span{height:28px;min-width:0;border-radius:9px;display:flex;align-items:center;justify-content:center;gap:2px;font-size:12.5px;font-weight:800;padding:0 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.sbar .w{background:var(--surface2);color:var(--muted);min-width:38px}.sbar .y{background:#FFB400;color:#111;min-width:38px}.sbar .c{min-width:44px}.sbar svg{width:14px;height:14px;flex:none}
+/* v2.31.0：建議路線段落＝自動換行、「›」連接；每段搭車是 圖示（標籤外）＋框線標籤（框色＝路線色），步行是灰色小方塊 */
+.sflow{display:flex;flex-wrap:wrap;align-items:center;row-gap:7px;margin-top:12px}
+.sflow .sg{display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;max-width:100%}
+.sflow .sep{flex:none;color:var(--dim);font-size:17px;font-weight:700;line-height:1;margin:0 4px 2px}
+.sflow .sw{flex:none;display:inline-flex;align-items:center;gap:1px;height:24px;padding:0 6px 0 4px;border-radius:7px;background:var(--surface2);color:var(--muted);font-size:12.5px;font-weight:800}
+.sflow .sw svg{width:14px;height:14px}
+.sflow .si{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-right:4px}.sflow .si svg{width:21px;height:21px}.sflow .si .slogo{width:22px;height:22px}
+.sflow .scd{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 4px;margin-right:4px;border-radius:6px;font-size:12.5px;font-weight:900;line-height:1}
+.sflow .sl{display:block;min-width:0;height:26px;line-height:23px;padding:0 9px;border-radius:8px;border:1.5px solid var(--c);background:var(--surface2);color:var(--text);font-size:13.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .psearch{height:54px;margin:12px 0 2px;padding:0 18px}.psearch svg{width:22px;height:22px}.psearch input{font-size:17px}
 .pico{flex:none;width:36px;height:36px;border-radius:50%;background:var(--surface2);display:grid;place-items:center;color:var(--lime)}.pico svg{width:18px;height:18px}.pico .slogo{width:22px;height:22px}
 .mpick{height:min(52vh,420px);margin-top:10px}.mpin-c{position:absolute;left:50%;top:50%;width:40px;height:40px;margin:-38px 0 0 -20px;color:var(--lime);z-index:3;pointer-events:none;filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))}.mpin-c svg{width:40px;height:40px}
@@ -1766,6 +1772,21 @@ const chipStyle = c => `background:${c};color:${hexLum(c) > 0.62 ? '#111' : '#ff
 const MODE_ZH = { bus:'公車', mrt:'捷運', lrt:'輕軌', tra:'台鐵', thsr:'高鐵' };
 // 路段標籤：台鐵／高鐵用「台鐵」「高鐵」（TDX 給的是「南港-左營」這種起訖名）；捷運去掉「線」字
 const legLabel = l => legBr(l) ? LINE_NAME.TRTC[legBr(l)] : l.mode === 'tra' || l.mode === 'thsr' ? MODE_ZH[l.mode] : l.mode === 'bus' ? (l.name || '公車') : (l.name || MODE_ZH[l.mode] || '').replace(/線$/, '');
+// v2.31.0：路段列改成自動換行的「圖示＋框線標籤」（公車只寫路線號、列車寫路線名稱或台鐵／高鐵）；台鐵藍在深色底太暗，只有這裡用亮一點的藍
+const SEG_TRA = '#5B8FE0', SEG_BIKE = '#FFB400';
+function segItem(p) {
+  if (p.k === 'walk') return `<span class="sw">${I.walk}${p.m}${p.l.approx ? '≈' : ''}</span>`;
+  if (p.k === 'bike') return `<span class="si" style="color:${SEG_BIKE}">${I.bike}</span><span class="sl" style="--c:${SEG_BIKE}">YouBike・${p.m}分</span>`;
+  const l = p.l;
+  if (l.mode === 'bus') return `<span class="si" style="color:${MODE_C.bus}">${I.busG}</span><span class="sl" style="--c:${MODE_C.bus}">${esc(l.name || '公車')}</span>`;
+  if (l.mode === 'tra' || l.mode === 'thsr') { const c = l.mode === 'tra' ? SEG_TRA : MODE_C.thsr; return `<span class="si" style="color:${c}">${SYS_LOGO[l.mode === 'tra' ? 'TRA' : 'THSR']}</span><span class="sl" style="--c:${c}">${MODE_ZH[l.mode]}</span>`; }
+  const ln = legLine(l), c = legColor(l);
+  if (ln) {
+    const lc = (LINE_COLOR[ln[0]] || {})[ln[1]] || c, name = (LINE_NAME[ln[0]] || {})[ln[1]] || l.name || MODE_ZH[l.mode] || '捷運';
+    return `<span class="scd" style="background:${lc};color:${darkText(lc) || hexLum(lc) > 0.62 ? '#111' : '#fff'}">${esc((LINE_LABEL[ln[0]] || {})[ln[1]] || ln[1])}</span><span class="sl" style="--c:${lc}">${esc(name)}</span>`;
+  }
+  return `<span class="si" style="color:${c}">${I.train}</span><span class="sl" style="--c:${c}">${esc(l.name || MODE_ZH[l.mode] || '捷運')}</span>`;
+}
 function segBar(r) {
   const parts = [];
   for (const l of r.legs) {
@@ -1774,9 +1795,7 @@ function segBar(r) {
     if (l.kind === 'walk' && prev && prev.k === 'walk') { prev.m += m; continue; }
     parts.push({ k:l.kind, m, l });
   }
-  return `<div class="sbar">` + parts.map(p => p.k === 'walk' ? `<span class="w" style="flex:${p.m} 1 0">${I.walk}${p.m}${p.l.approx ? '≈' : ''}</span>`
-    : p.k === 'bike' ? `<span class="y" style="flex:${p.m} 1 0">${I.bike}${p.m}</span>`
-    : `<span class="c" style="flex:${p.m * 1.4} 1 auto;${chipStyle(legColor(p.l))}">${esc(legLabel(p.l))}</span>`).join('') + `</div>`;
+  return `<div class="sflow">` + parts.map((p, i) => `<span class="sg">${segItem(p)}${i < parts.length - 1 ? '<span class="sep">›</span>' : ''}</span>`).join('') + `</div>`;
 }
 function planCard(r, i) {
   const tr = r.legs.filter(l => l.kind === 'transit'), walk = Math.round(r.legs.filter(l => l.kind === 'walk').reduce((a, l) => a + l.dur, 0) / 60);
