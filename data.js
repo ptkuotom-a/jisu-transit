@@ -33,6 +33,11 @@ const r_ok = c => c >= 200 && c < 300;
 // 遇到429時 Worker 會先換另一組金鑰重試；仍然限流就丟出 RATE_MSG
 const RATE_MSG = "查詢太頻繁，請稍後再試";
 const isRate = e => !!(e && (e.rate || String(e.message || e).includes(RATE_MSG)));
+// v2.37.2：請求逾時（網路卡住時不會一直停在「定位中」；逾時就顯示錯誤，可下拉重試）
+function fetchT(u, ms, opt) {
+  const ac = new AbortController(), tm = setTimeout(() => ac.abort(), ms);
+  return fetch(u, { ...(opt || {}), signal: ac.signal }).then(r => { clearTimeout(tm); return r; }, e => { clearTimeout(tm); throw e; });
+}
 async function tdx(profile, url) {
   const proxy = getProxy();
   if (!proxy) throw new Error("NO_PROXY");
@@ -41,7 +46,7 @@ async function tdx(profile, url) {
   for (let i = 0; i < 3; i++) {
     let code = 0, res;
     try {
-      const r = await fetch(target);
+      const r = await fetchT(target, 20000);
       code = r.status; res = await r.json();
     } catch (e) { res = { message: String(e) }; }
     if (Array.isArray(res)) return res;
@@ -61,7 +66,7 @@ async function tdx(profile, url) {
 async function odGet(path) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   let r, j = null;
-  try { r = await fetch(proxy + path); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  try { r = await fetchT(proxy + path, 15000); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
   if (!r.ok || !j) throw new Error((j && j.message) || ("開放資料讀取失敗 " + r.status));
   return j;
 }
@@ -139,9 +144,12 @@ const clampR = r => Math.max(100, Math.min(1000, Number(r) || 300));
 
 // ---------- 定位 ----------
 let lastLoc = null;
-function getPos(high, timeout) {
-  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej,
-    { enableHighAccuracy: high, timeout, maximumAge: high ? 10000 : 30000 }));
+function getPos(high, timeout) {   // v2.37.2：iOS 有時不理 timeout、永遠不回應 → 自己加一道計時，逾時當作失敗
+  return new Promise((res, rej) => {
+    const tm = setTimeout(() => rej({ code: 3, message: "timeout" }), timeout + 1500);
+    navigator.geolocation.getCurrentPosition(p => { clearTimeout(tm); res(p); }, e => { clearTimeout(tm); rej(e); },
+      { enableHighAccuracy: high, timeout, maximumAge: high ? 10000 : 30000 });
+  });
 }
 async function locate() {
   if (!navigator.geolocation) { if (lastLoc) return lastLoc; throw new Error("這個瀏覽器不支援定位"); }
@@ -251,6 +259,7 @@ const IDB = (() => {
     if (!Object.keys(localStorage).some(k => k === "jisu_geo" || k === "jisu_sor" || k === "jisu_bus_idx" || k.startsWith("jisu_place_"))) localStorage.setItem("jisu_idb_mig", "1");
   }
   const open = () => dbp || (dbp = new Promise(res => {
+    setTimeout(() => res(null), 3000);   // v2.37.2：iOS 偶爾 indexedDB.open 永遠不回應 → 3 秒後先不用手機資料庫
     try {
       if (!self.indexedDB) return res(null);
       const r = indexedDB.open("jisu", 1);
@@ -275,10 +284,11 @@ const IDB = (() => {
   }
   return {
     async get(k) {
-      const db = await open(); if (!db) return mem.get(k) || null;
+      const late = ms => new Promise((_, no) => setTimeout(() => no(new Error("idb timeout")), ms));   // v2.37.2：iOS 資料庫卡住時不要整個停住
+      const db = await Promise.race([open(), late(4000)]).catch(() => null); if (!db) return mem.get(k) || null;
       try {
         const t = db.transaction(["kv", "meta"], "readonly");
-        const [v, m] = await Promise.all([rq(t.objectStore("kv").get(k)), rq(t.objectStore("meta").get(k))]);
+        const [v, m] = await Promise.race([Promise.all([rq(t.objectStore("kv").get(k)), rq(t.objectStore("meta").get(k))]), late(3000)]);
         if (v != null && (!m || Date.now() - (m.u || 0) > DAY_MS)) {   // 最近使用時間每天最多記一次
           try { const t2 = db.transaction(["meta"], "readwrite"); t2.objectStore("meta").put({ u: Date.now(), n: (m && m.n) || sizeOf(v) }, k); } catch (e) {}
         }
