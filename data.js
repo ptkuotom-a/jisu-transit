@@ -105,7 +105,7 @@ async function busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey) {
   if (!near.some(a => isNwtR(a[0]))) return null;                       // 附近沒有新北站牌：照舊
   const other = near.some(a => !isTpeR(a[0]) && !isNwtR(a[0]));
   const tdxP = other ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
-  const od = await odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1`).catch(() => null);
+  const od = await Promise.race([odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))]).catch(() => null);   // 6 秒等不到就照舊問 TDX，不卡畫面
   if (!od || !od.nwtOk) { if (tdxP) return null; return null; }        // 新北開放資料讀不到：照舊（會問 TDX）
   if (!(other || od.thb > 0)) return od.list;                          // 0 次 TDX
   const t = await (tdxP || tdx(profile, tdxUrl));
