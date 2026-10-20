@@ -110,7 +110,7 @@ function cloudStops(geoKey) {
   if (cloudJobs.has(geoKey)) return cloudJobs.get(geoKey);
   const m = /^s\|([\d.-]+),([\d.-]+),(\d+)$/.exec(geoKey);
   const job = (async () => {
-    if (!m || !inNorth(+m[1], +m[2])) return null;
+    if (!m) return null;
     const c = await IDB.get("geo|" + geoKey).catch(() => null); if (c) return c;
     const j = await Promise.race([odGet(`/od/stops?lat=${m[1]}&lon=${m[2]}&r=${m[3]}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))]).catch(() => null);
     if (!j || j.cov !== 1 || !Array.isArray(j.d)) return null;
