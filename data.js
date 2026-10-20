@@ -103,9 +103,25 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
 }
 // v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
 // 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
+// v2.38.0：這一格還沒存站牌清單 → 先從雲端下載雙北（含公路客運）附近站牌清單（不用 TDX），存成同格式的 geo| 快取；雲端沒涵蓋就回 null，照舊 TDX
+const cloudJobs = new Map();
+function cloudStops(geoKey) {
+  if (!geoKey) return Promise.resolve(null);
+  if (cloudJobs.has(geoKey)) return cloudJobs.get(geoKey);
+  const m = /^s\|([\d.-]+),([\d.-]+),(\d+)$/.exec(geoKey);
+  const job = (async () => {
+    if (!m || !inNorth(+m[1], +m[2])) return null;
+    const c = await IDB.get("geo|" + geoKey).catch(() => null); if (c) return c;
+    const j = await Promise.race([odGet(`/od/stops?lat=${m[1]}&lon=${m[2]}&r=${m[3]}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))]).catch(() => null);
+    if (!j || j.cov !== 1 || !Array.isArray(j.d)) return null;
+    const v = { t: Date.now(), d: j.d, src: "od" }; await IDB.set("geo|" + geoKey, v).catch(() => {}); return v;
+  })();
+  cloudJobs.set(geoKey, job); job.then(v => { if (!v) cloudJobs.delete(geoKey); }, () => cloudJobs.delete(geoKey));
+  return job;
+}
 async function busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey) {
   if (!geoKey) return null;
-  const c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c) return null;
+  const c = (await IDB.get("geo|" + geoKey).catch(() => null)) || await cloudStops(geoKey); if (!c) return null;
   const near = c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
   if (!near.some(a => isNwtR(a[0]))) return null;                       // 附近沒有新北站牌：照舊
   const other = near.some(a => !isTpeR(a[0]) && !isNwtR(a[0]));
@@ -319,7 +335,8 @@ const bikePack = s => [s.StationUID, (s.StationName && s.StationName.Zh_tw) || "
 const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, StationAddress: { Zh_tw: a[2] || null }, BikesCapacity: a[3], ServiceType: a[4], StationPosition: a[5] == null ? null : { PositionLat: a[5], PositionLon: a[6] } });
 // 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
 async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
-  const c = await IDB.get("geo|" + key);
+  let c = await IDB.get("geo|" + key);
+  if (!c && kind === "stop") c = await cloudStops(key).catch(() => null);
   const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); IDB.set("geo|" + key, { t: Date.now(), d: l.map(pack) }).catch(() => {}); return l; };
   if (!c) return fresh(false);
   const list = c.d.map(unpack);
