@@ -81,7 +81,9 @@ const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更
 // v2.36.1：台北市公車（TPE 路線，含開進新北的站）到站用臺北市開放資料（約 20 秒更新）；新北（NWT）、公路客運（THB）等照舊只用 TDX
 const isTpeR = uid => /^TPE/.test(uid || "");
 // 附近／某站牌的預估到站：附近只有台北市公車站牌 → 0 次 TDX；有其他站牌 → 照舊 1 次 TDX NearBy，只取非 TPE 的部分
+const isNwtR = uid => /^NWT/.test(uid || "");
 async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
+  if (!fresh) { const v = await busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey); if (v) return v; }
   // v2.36.3：手機存過這一格的站牌清單、看得出附近有非 TPE 站牌 → TDX 和開放資料同時發（不用等開放資料回來才問 TDX；次數不變）
   let known = null;
   if (geoKey) { const c = await IDB.get("geo|" + geoKey).catch(() => null);
@@ -93,6 +95,21 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
   if (!(od.oth > 0 || known === true)) return od.list;
   const t = await (tdxP || tdx(profile, tdxUrl));
   return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID))];
+}
+// v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
+// 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
+async function busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey) {
+  if (!geoKey) return null;
+  const c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c) return null;
+  const near = c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
+  if (!near.some(a => isNwtR(a[0]))) return null;                       // 附近沒有新北站牌：照舊
+  const other = near.some(a => !isTpeR(a[0]) && !isNwtR(a[0]));
+  const tdxP = other ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
+  const od = await odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1`).catch(() => null);
+  if (!od || !od.nwtOk) { if (tdxP) return null; return null; }        // 新北開放資料讀不到：照舊（會問 TDX）
+  if (!(other || od.thb > 0)) return od.list;                          // 0 次 TDX
+  const t = await (tdxP || tdx(profile, tdxUrl));
+  return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID) && !isNwtR(e.RouteUID))];
 }
 // 單一路線的預估到站（＋公車位置）：TPE 用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
 async function odRouteEta(routeUID, near) {
@@ -309,7 +326,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   // v2.26.0：only＝'bus'／'bike'／'rail' 只更新那一部分（公車、YouBike、軌道分頁的下拉更新），其他部分不呼叫
   const doBus = !only || only === "bus", doBike = !only || only === "bike", doRail = !only || only === "rail";
   const SKIP = Promise.reject(new Error("skip")); SKIP.catch(() => {});
-  if (!only || only !== "rail") odWarm(only === "bike" ? "ybTPE,ybNWT" : only === "bus" ? "eta" : null);   // v2.36.3：定位的同時請 Worker 先抓開放資料
+  if (!only || only !== "rail") odWarm(only === "bike" ? "ybTPE,ybNWT" : only === "bus" ? (fresh ? "eta" : "eta,nwt") : (fresh ? "eta,ybTPE,ybNWT" : null));   // v2.36.3：定位的同時請 Worker 先抓開放資料
   const loc = await locate();
   // 查詢座標取到小數第3位（約100公尺格子），半徑多加100公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
   const lat = loc.latitude.toFixed(3), lon = loc.longitude.toFixed(3);
@@ -475,10 +492,10 @@ async function liveFavs(favs, fresh) {
     const old = out.bus[key];
     if (!old || (sec !== null && (old.sec === null || sec < old.sec))) out.bus[key] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
   };
-  const fb = (favs.bus || []).slice(0, 30), tp = fb.filter(f => isTpeR(f.routeUID));
-  let odOk = false;
-  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}${fresh ? "&fresh=1" : ""}`); for (const t of j.list || []) putBus(t); odOk = true; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
-  for (const f of fb) { if (odOk && isTpeR(f.routeUID) && out.bus[`${f.routeUID}|${f.dirNum}|${f.stopUID}`]) continue;   // 開放資料對不到的那幾站才問 TDX
+  const fb = (favs.bus || []).slice(0, 30), tp = fb.filter(f => isTpeR(f.routeUID) || (!fresh && isNwtR(f.routeUID)));   // v2.37.0：自動更新時新北收藏也用開放資料
+  let odOk = false, nwtOk = false;
+  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}${fresh ? "&fresh=1" : "&nwt=1"}`); for (const t of j.list || []) putBus(t); odOk = true; nwtOk = !!j.nwtOk; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
+  for (const f of fb) { if (((odOk && isTpeR(f.routeUID)) || (nwtOk && isNwtR(f.routeUID))) && out.bus[`${f.routeUID}|${f.dirNum}|${f.stopUID}`]) continue;   // 開放資料對不到的那幾站才問 TDX
      const k = routeKind(f.routeUID); if (k) (bg[k.path] = bg[k.path] || []).push(f); }
   for (const [path, list] of Object.entries(bg)) {
     for (let i = 0; i < list.length; i += 10) {

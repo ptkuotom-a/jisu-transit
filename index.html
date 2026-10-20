@@ -23,7 +23,7 @@
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#0E100F; } }
 :root[data-theme="dark"]{ --bg:#0E100F; }
 *,*::before,*::after{box-sizing:border-box}
-html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%;min-height:100vh;min-height:100lvh}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%;min-height:100vh;min-height:100lvh;overflow-anchor:none}
 /* iOS 獨立 PWA：文件比螢幕短時，fixed 底部會跟著文件高度上移；讓 html/body 永遠至少滿版 */
 body{margin:0;min-height:100%;min-height:100lvh;padding-top:env(safe-area-inset-top,0px);background:var(--bg);color:var(--text);
   font-family:-apple-system,"SF Pro Text","PingFang TC","Noto Sans TC",system-ui,sans-serif;
@@ -133,7 +133,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .tab.on{color:var(--lime)}
 .tab-ind{position:absolute;top:7px;bottom:7px;left:0;border-radius:32px;background:#121413;z-index:0;transition:transform .3s cubic-bezier(.25,.8,.3,1),width .3s cubic-bezier(.25,.8,.3,1)}
 #main.swipe{will-change:transform}
-#main{position:relative} .mghost{position:absolute;width:100%;pointer-events:none}
+#main{position:relative;overflow-anchor:none} .mghost{position:absolute;width:100%;pointer-events:none}
 @media (prefers-reduced-motion: reduce){ .tab-ind{transition:none} }
 
 /* route page */
@@ -613,7 +613,12 @@ function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕�
   if (pill.tagName === 'I') setTimeout(() => { if (pill.isConnected) { pill.style.transition = 'none'; pill.style.width = ''; pill.style.transform = ''; pill.offsetWidth; pill.style.transition = ''; } }, ms + 30);
 }
 const TAB_ORDER = ['home','bus','bike','rail','settings'];
-function setTab(k) { S.tab = k; window.scrollTo(0,0); render(); }
+function setTab(k) {   // v2.37.0：已在頂端就不 scrollTo（iOS 會讓上方標題跳一下）；有捲動才在換完內容後回頂端
+  S.tab = k;
+  const sc = document.scrollingElement || document.documentElement, y = sc.scrollTop || window.scrollY || 0;
+  render();
+  if (y > 1) sc.scrollTop = 0;
+}
 // v2.26.0：更新時間各頁分開：首頁＝打開 app／首頁更新的時間；公車、YouBike、軌道分頁＝各自那份資料的時間（打開 app 時三者同時更新，所以一樣）
 const TAB_PART = { bus:'bus', bike:'bike', rail:'rail' };
 function tabAt() { return { bus:S.busAt, bike:S.bikeAt, rail:S.railNearAt }[S.tab] ?? S.lastFetch; }
@@ -2678,9 +2683,17 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     dropGhost(); ghost = mkGhost(j, d); gDir = d;
     main.classList.add('swipe'); main.style.transition = 'none'; main.style.transform = ''; main.offsetWidth;
     main.style.transition = `transform ${ms}ms cubic-bezier(.25,.8,.3,1)`; main.style.transform = `translateX(${-d * w}px)`;
-    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; main.classList.remove('swipe'); brandLock = false; setTab(k); main.offsetWidth; main.style.transition = ''; busy = false; }, ms);
+    setTimeout(() => { pinGhost(); main.style.transition = 'none'; main.style.transform = ''; main.classList.remove('swipe'); brandLock = false; setTab(k); dropGhost(); main.offsetWidth; main.style.transition = ''; busy = false; }, ms);
   };
   const dropGhost = () => { if (ghost) { ghost.remove(); ghost = null; gDir = 0; } };
+  const pinGhost = () => {   // 有捲動時，換頁那一刻先把新分頁的影像固定在原位，避免閃一下
+    const y = window.scrollY || document.documentElement.scrollTop || 0;
+    if (!ghost || y <= 1) return;
+    const r = ghost.getBoundingClientRect();
+    ghost.style.transition = 'none'; ghost.style.position = 'fixed'; ghost.style.margin = '0';
+    ghost.style.left = r.left + 'px'; ghost.style.top = r.top + 'px'; ghost.style.width = r.width + 'px'; ghost.style.zIndex = '5';
+    document.body.appendChild(ghost);
+  };
   const blocked = el => el.closest('input,textarea,select,.tabbar,[data-noswipe]') || [...(function*(){ for (let e = el; e && e !== area; e = e.parentElement) yield e; })()].some(e => e.scrollWidth > e.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(e).overflowX));
   area.addEventListener('touchstart', e => {
     st = 0;
@@ -2720,7 +2733,7 @@ document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.sto
     pillSettle(ind, tbs[j], d2);
     const dir = dx < 0 ? -1 : 1;
     main.style.transition = `transform ${d2}ms ease`; main.style.transform = `translateX(${dir * w}px)`;   // 新分頁（ghost）剛好滑到定位
-    setTimeout(() => { ghost = null; gDir = 0; main.style.transition = 'none'; main.style.transform = ''; brandLock = false; setTab(TAB_ORDER[j]); done(); }, d2);
+    setTimeout(() => { pinGhost(); main.style.transition = 'none'; main.style.transform = ''; brandLock = false; setTab(TAB_ORDER[j]); dropGhost(); done(); }, d2);
   };
   area.addEventListener('touchend', end); area.addEventListener('touchcancel', end);
 })();
