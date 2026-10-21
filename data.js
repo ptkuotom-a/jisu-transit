@@ -84,6 +84,33 @@ const YB_CLOUD_CITY = new Set(["Taipei", "NewTaipei", "Taoyuan", "Taichung", "Hs
 const isCloudBike = uid => YB_CLOUD.has((uid || "").slice(0, 3));
 const OD_BIKE = new Set(["TPE", "NWT"]);                       // 備援：雙北市府開放資料
 const isOdBike = uid => OD_BIKE.has((uid || "").slice(0, 3));
+const YB_FEED_URL = "https://apis.youbike.com.tw/json/station-yb2.json";
+const YB_AREA = { "00": "TPE", "05": "NWT", "07": "TAO", "01": "TXG", "09": "HSZ", "10": "HSZ", "0B": "HSQ", "0A": "MIA", "08": "CYI", "11": "CYQ", "12": "KHH", "13": "TNN", "14": "PIF", "15": "TTT" };
+let ybFeedP = null, ybFeedAt = 0;
+function youbikeFeed(fresh) {
+  if (!fresh && ybFeedP && Date.now() - ybFeedAt < 90000) return ybFeedP;
+  ybFeedAt = Date.now();
+  ybFeedP = fetch(YB_FEED_URL, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error("feed"); return r.json(); }).then(list => {
+    if (!Array.isArray(list)) throw new Error("feed");
+    const map = {};
+    for (const s of list) {
+      const pre = YB_AREA[String(s.area_code)], no = String(s.station_no || "");
+      if (!pre || !no) continue;
+      const eyb = s.available_spaces_detail ? s.available_spaces_detail.eyb : null;
+      const rent = typeof s.available_spaces === "number" ? s.available_spaces : null;
+      map[pre + no] = {
+        AvailableRentBikes: rent, AvailableReturnBikes: typeof s.empty_spaces === "number" ? s.empty_spaces : null,
+        AvailableRentBikesDetail: { GeneralBikes: rent != null && eyb != null ? rent - eyb : null, ElectricBikes: eyb == null ? null : eyb },
+        ServiceStatus: s.status === 1 ? 1 : 2, SrcUpdateTime: s.updated_at || null,
+      };
+    }
+    return map;
+  }).catch(e => { ybFeedP = null; throw e; });
+  return ybFeedP;
+}
+function withYoubikeFeed(stations, map) {
+  return stations.map(s => map[s.StationUID] ? { ...s, ...map[s.StationUID] } : s);
+}
 const inNorth = (lat, lon) => lat > 24.6 && lat < 25.35 && lon > 121.25 && lon < 122.05;   // 雙北大致範圍（開放資料讀不到時判斷用）
 const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更新";
 // v2.36.1：台北市公車（TPE 路線，含開進新北的站）到站用臺北市開放資料（約 20 秒更新）；新北（NWT）、公路客運（THB）等照舊只用 TDX
@@ -366,13 +393,13 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
   const busP = !doBus ? SKIP : Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
     "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
-  // v2.39.0：YouBike 站點與車位先走雲端統一 feed；失敗時雙北退市府開放資料，其餘退 TDX
+  // v2.39.1：站點跟雲端要；附近車位由這支手機直接抓 YouBike 統一 feed。feed 失敗才退雙北市府、其餘 TDX
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
     let cloud = null;
-    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 90000); } catch (e) { cloud = null; }
-    if (cloud && Array.isArray(cloud.list) && cloud.list.length && cloud.live) return [cloud.list, cloud.list];
+    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000); } catch (e) { cloud = null; }
     if (cloud && Array.isArray(cloud.list) && cloud.list.length) {
+      try { return [cloud.list, withYoubikeFeed(cloud.list, await youbikeFeed(fresh))]; } catch (e) {}
       const north = cloud.list.filter(s => isOdBike(s.StationUID)).map(s => s.StationUID);
       let av = cloud.list.slice();
       if (north.length) {
@@ -569,15 +596,10 @@ async function liveFavs(favs, fresh) {
     }
     if (cloudU.length) {
       try {
-        const j = await odMemoGet(`/od/ybstn?ids=${cloudU.join(",")}`, fresh ? 0 : 90000);
-        for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a);
-        if (!j.live) {
-          for (const a of j.list || []) {
-            if (out.bike[a.StationUID] && out.bike[a.StationUID].rent != null) continue;
-            if (isOdBike(a.StationUID)) northU.push(a.StationUID);
-            else { const c = UID_CITY[(a.StationUID || "").slice(0, 3)]; if (c) (tdxKg[c] = tdxKg[c] || []).push(a.StationUID); }
-          }
-        }
+        const map = await youbikeFeed(fresh);
+        let hit = 0;
+        for (const uid of cloudU) if (map[uid]) { out.bike[uid] = odBikeLive(map[uid]); hit++; }
+        if (!hit) throw new Error("feed");
       } catch (e) {
         northU.push(...cloudU.filter(isOdBike));
         for (const u of cloudU.filter(u => !isOdBike(u))) { const c = UID_CITY[u.slice(0, 3)]; if (c) (tdxKg[c] = tdxKg[c] || []).push(u); }
@@ -2304,9 +2326,9 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
 async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
   const city = UID_CITY[(uid || "").slice(0, 3)];
   let a = {};
-  if (city && isCloudBike(uid)) { try { a = ((await odMemoGet(`/od/ybstn?ids=${uid}`, 90000)).list || [])[0] || {}; } catch (e) {} }
-  if (a.AvailableRentBikes == null && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) a = { ...a, ...b }; } catch (e) {} }
-  if (a.AvailableRentBikes == null && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) a = { ...a, ...b }; } catch (e) {} }
+  if (city && isCloudBike(uid)) { try { a = (await youbikeFeed(false))[uid] || {}; } catch (e) {} }
+  if (a.AvailableRentBikes == null && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) a = b; } catch (e) {} }
+  if (a.AvailableRentBikes == null && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) a = b; } catch (e) {} }
   if (a.StationUID) try { placeHeal([], [a.StationUID]); } catch (e) {}
   const det = a.AvailableRentBikesDetail || null;
   return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
