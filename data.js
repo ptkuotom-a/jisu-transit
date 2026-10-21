@@ -407,8 +407,17 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
   const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
-  const busP = !doBus ? SKIP : Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
-    "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
+  const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
+  const busP = !doBus ? SKIP : (async () => {
+    const [eta, stops, thb] = await Promise.all([
+      etaP,
+      geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
+        "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => [])),
+      odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
+    ]);
+    const cloud = thb && Array.isArray(thb.list) ? thb.list : null;
+    return [eta, cloud ? [...stops.filter(s => !isThbStop(s)), ...cloud] : stops];
+  })();
   // v2.39.1：站點跟雲端要；附近車位由這支手機直接抓 YouBike 統一 feed。feed 失敗才退雙北市府、其餘 TDX
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
