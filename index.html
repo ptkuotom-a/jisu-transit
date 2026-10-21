@@ -1018,7 +1018,7 @@ function vSettings() {
   <div class="note">極速通勤${esc(S.version || '')}　YouBike 站點名單從雲端下載；附近車位由這支手機直接讀 YouBike 統一 feed。讀不到車位時，雙北改用市府開放資料，其餘改用 TDX。公車即時資料來自交通部 TDX，以及臺北市、新北市政府開放資料。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>
   <div class="sub" style="margin:16px 4px 8px;font-weight:700;color:var(--text)">資料來源</div>
   <div class="set src"><dl>
-    <dt>YouBike 站點</dt><dd>YouBike 官方統一 feed 的站名與座標，每天核對一次，有變才更新雲端名單</dd>
+    <dt>YouBike 站點</dt><dd>YouBike 官方統一 feed 的站名與座標。手機比對站號和站名，有變才寫回雲端，一天最多一次；沒變不更新。車位不寫進雲端</dd>
     <dt>YouBike 車位</dt><dd>由這支手機直接讀 YouBike 官方統一 feed，不經雲端轉發。讀不到時，台北與新北改用市府開放資料，其餘縣市改用 TDX</dd>
     <dt>公車與軌道車站、時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
     <dt>台北市公車即時到站</dt><dd>臺北市政府交通局開放資料（預估到站約每20秒更新、車輛到離站），經自己的伺服器整理；用於路線代碼 TPE 開頭的台北市公車（含開進新北的站）。新北市公車、公路客運與其他縣市照舊用 TDX；尚未發車時只顯示「尚未發車」</dd>

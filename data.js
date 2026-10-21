@@ -86,27 +86,43 @@ const OD_BIKE = new Set(["TPE", "NWT"]);                       // 備援：雙�
 const isOdBike = uid => OD_BIKE.has((uid || "").slice(0, 3));
 const YB_FEED_URL = "https://apis.youbike.com.tw/json/station-yb2.json";
 const YB_AREA = { "00": "TPE", "05": "NWT", "07": "TAO", "01": "TXG", "09": "HSZ", "10": "HSZ", "0B": "HSQ", "0A": "MIA", "08": "CYI", "11": "CYQ", "12": "KHH", "13": "TNN", "14": "PIF", "15": "TTT" };
-let ybFeedP = null, ybFeedAt = 0;
+let ybFeedP = null, ybFeedAt = 0, ybFeedSnap = null, ybCloudSha = null, ybPushedAt = 0;
 function youbikeFeed(fresh) {
   if (!fresh && ybFeedP && Date.now() - ybFeedAt < 90000) return ybFeedP;
   ybFeedAt = Date.now();
-  ybFeedP = fetch(YB_FEED_URL, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error("feed"); return r.json(); }).then(list => {
+  ybFeedP = fetch(YB_FEED_URL, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error("feed"); return r.json(); }).then(async list => {
     if (!Array.isArray(list)) throw new Error("feed");
-    const map = {};
+    const map = {}, pairs = [], rows = [];
     for (const s of list) {
       const pre = YB_AREA[String(s.area_code)], no = String(s.station_no || "");
-      if (!pre || !no) continue;
+      if (!pre || !no || s.lat == null || s.lng == null) continue;
+      const uid = pre + no, name = s.name_tw || "";
       const eyb = s.available_spaces_detail ? s.available_spaces_detail.eyb : null;
       const rent = typeof s.available_spaces === "number" ? s.available_spaces : null;
-      map[pre + no] = {
+      map[uid] = {
         AvailableRentBikes: rent, AvailableReturnBikes: typeof s.empty_spaces === "number" ? s.empty_spaces : null,
         AvailableRentBikesDetail: { GeneralBikes: rent != null && eyb != null ? rent - eyb : null, ElectricBikes: eyb == null ? null : eyb },
         ServiceStatus: s.status === 1 ? 1 : 2, SrcUpdateTime: s.updated_at || null,
       };
+      pairs.push(uid + "\t" + name);
+      rows.push([uid, name, s.address_tw || "", +s.lat, +s.lng, +s.parking_spaces || 0]);
     }
+    pairs.sort();
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pairs.join("\n")));
+    ybFeedSnap = { sha: [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join(""), rows };
+    ybMaybePush();
     return map;
   }).catch(e => { ybFeedP = null; throw e; });
   return ybFeedP;
+}
+function noteCloudSha(j) { if (j && j.names_sha) { ybCloudSha = j.names_sha; ybMaybePush(); } }
+function ybMaybePush() {
+  if (!ybFeedSnap || !ybCloudSha || ybFeedSnap.sha === ybCloudSha || Date.now() - ybPushedAt < 24 * 3600000) return;
+  ybPushedAt = Date.now();
+  const proxy = getProxy(); if (!proxy) return;
+  fetchT(proxy + "/od/ybstn", 30000, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ list: ybFeedSnap.rows }) })
+    .then(r => r.json().catch(() => null).then(j => { if (!r.ok || !j || !j.ok) ybPushedAt = 0; else if (j.names_sha) ybCloudSha = j.names_sha; }))
+    .catch(() => { ybPushedAt = 0; });
 }
 function withYoubikeFeed(stations, map) {
   return stations.map(s => map[s.StationUID] ? { ...s, ...map[s.StationUID] } : s);
@@ -397,7 +413,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
     let cloud = null;
-    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000); } catch (e) { cloud = null; }
+    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000); noteCloudSha(cloud); } catch (e) { cloud = null; }
     if (cloud && Array.isArray(cloud.list) && cloud.list.length) {
       try { return [cloud.list, withYoubikeFeed(cloud.list, await youbikeFeed(fresh))]; } catch (e) {}
       const north = cloud.list.filter(s => isOdBike(s.StationUID)).map(s => s.StationUID);
@@ -2252,6 +2268,7 @@ async function placeBikes(city, heal) {
   if (YB_CLOUD_CITY.has(city)) {
     try {
       const j = await odGet(`/od/ybstn?city=${city}`);
+      noteCloudSha(j);
       if (j && Array.isArray(j.list) && j.list.length) return j.list.filter(x => x.StationPosition).map(pack);
     } catch (e) {}
   }
