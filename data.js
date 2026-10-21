@@ -79,7 +79,10 @@ async function odMemoGet(path, ms) {   // 同一網址 ms 毫秒內重用（YouB
 function odWarm(src) {   // 不等回應、失敗不管；只在附近資料更新時發一次（不是定時）
   try { const proxy = getProxy(); if (proxy && (!lastLoc || inNorth(lastLoc.latitude, lastLoc.longitude))) fetch(proxy + "/od/warm" + (src ? "?s=" + src : "")).catch(() => {}); } catch (e) {}
 }
-const OD_BIKE = new Set(["TPE", "NWT"]);                       // 台北、新北 YouBike：只用開放資料（完全不用 TDX）
+const YB_CLOUD = new Set(["TPE", "NWT", "TAO", "TXG", "HSZ", "HSQ", "MIA", "CYI", "CYQ", "KHH", "TNN", "PIF", "TTT"]);
+const YB_CLOUD_CITY = new Set(["Taipei", "NewTaipei", "Taoyuan", "Taichung", "Hsinchu", "HsinchuCounty", "MiaoliCounty", "Chiayi", "ChiayiCounty", "Kaohsiung", "Tainan", "PingtungCounty", "TaitungCounty"]);
+const isCloudBike = uid => YB_CLOUD.has((uid || "").slice(0, 3));
+const OD_BIKE = new Set(["TPE", "NWT"]);                       // 備援：雙北市府開放資料
 const isOdBike = uid => OD_BIKE.has((uid || "").slice(0, 3));
 const inNorth = (lat, lon) => lat > 24.6 && lat < 25.35 && lon > 121.25 && lon < 122.05;   // 雙北大致範圍（開放資料讀不到時判斷用）
 const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更新";
@@ -363,20 +366,41 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
   const busP = !doBus ? SKIP : Promise.all([etaP, geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
     "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => []))]);
-  // v2.36.0：台北、新北的 YouBike 站點與車位都用開放資料（Worker /od/bike，完全不用 TDX）；其他縣市照舊 TDX
+  // v2.39.0：YouBike 站點與車位先走雲端統一 feed；失敗時雙北退市府開放資料，其餘退 TDX
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
+    let cloud = null;
+    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 90000); } catch (e) { cloud = null; }
+    if (cloud && Array.isArray(cloud.list) && cloud.list.length && cloud.live) return [cloud.list, cloud.list];
+    if (cloud && Array.isArray(cloud.list) && cloud.list.length) {
+      const north = cloud.list.filter(s => isOdBike(s.StationUID)).map(s => s.StationUID);
+      let av = cloud.list.slice();
+      if (north.length) {
+        try {
+          const od = await odMemoGet(`/od/bike?ids=${north.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000);
+          const am = {}; for (const a of od.list || []) am[a.StationUID] = a;
+          av = av.map(s => am[s.StationUID] || s);
+        } catch (e) {}
+      }
+      if (cloud.list.some(s => !isOdBike(s.StationUID))) {
+        try {
+          const t = await memoTdx("route", avUrl, fresh ? 0 : 90000);
+          const am = {}; for (const a of t) if (a.StationUID && !isOdBike(a.StationUID)) am[a.StationUID] = a;
+          av = av.map(s => am[s.StationUID] || s);
+        } catch (e) {}
+      }
+      return [cloud.list, av];
+    }
     let od = null, odErr = null;
     try { od = await odMemoGet(`/od/bike?lat=${lat}&lon=${lon}&r=${qBike}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); } catch (e) { odErr = e; }
     const covered = od ? od.near != null && od.near <= 3000 : inNorth(+lat, +lon);
-    if (!covered) {   // 不在雙北：照舊（站點清單永久快取＋車位 TDX）
+    if (!covered) {
       const avP = memoTdx("route", avUrl, fresh ? 0 : 90000);
       return Promise.all([geoList("bike", bkKey, `${BASE}/advanced/v2/Bike/Station/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`,
         "route", bikePack, bikeUnpack, avP.then(l => l.map(a => a.StationUID)).catch(() => [])), avP]);
     }
     if (!od) throw new Error(odErr && odErr.message === "NO_PROXY" ? "NO_PROXY" : ODB_ERR);
-    if (od.err && !od.list.length) throw new Error(ODB_ERR);   // 其中一市讀不到、附近又沒有另一市的站：照實說，不改問 TDX
-    // 雙北：只有這一格以前存過其他縣市（基隆、桃園）的站點時，才為那幾站問 TDX（不另外抓站點清單）
+    if (od.err && !od.list.length) throw new Error(ODB_ERR);
     const c = await IDB.get("geo|" + bkKey).catch(() => null);
     const others = c ? c.d.map(bikeUnpack).filter(x => !isOdBike(x.StationUID)) : [];
     let av2 = [];
@@ -536,24 +560,39 @@ async function liveFavs(favs, fresh) {
   // YouBike：依城市分組
   const kg = {};
   for (const f of (favs.bike || []).slice(0, 30)) { const c = UID_CITY[(f.uid || "").slice(0, 3)]; if (c) (kg[c] = kg[c] || []).push(f.uid); }
-  for (const [city, uids] of Object.entries(kg)) {
-    if (city === "Taipei" || city === "NewTaipei") {   // v2.36.0：開放資料，不用 TDX
-      jobs.push(odMemoGet(`/od/bike?ids=${uids.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000).then(j => { for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a); }).catch(() => {}));
-      continue;
+  jobs.push((async () => {
+    const cloudU = [], northU = [], tdxKg = {};
+    for (const [city, uids] of Object.entries(kg)) {
+      if (YB_CLOUD_CITY.has(city)) cloudU.push(...uids);
+      else if (city === "Taipei" || city === "NewTaipei") northU.push(...uids);
+      else tdxKg[city] = uids;
     }
-    const filter = uids.map(u => `StationUID eq '${u}'`).join(" or ");
-    jobs.push(memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, fresh ? 0 : 90000).then(list => {
-      try { placeHeal([], list.map(a => a.StationUID)); } catch (e) {}
-      for (const a of list) {
-        const det = a.AvailableRentBikesDetail || null;
-        out.bike[a.StationUID] = {
-          rent: a.AvailableRentBikes ?? null, ret: a.AvailableReturnBikes ?? null,
-          general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
-          status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || null,
-        };
+    if (cloudU.length) {
+      try {
+        const j = await odMemoGet(`/od/ybstn?ids=${cloudU.join(",")}`, fresh ? 0 : 90000);
+        for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a);
+        if (!j.live) {
+          for (const a of j.list || []) {
+            if (out.bike[a.StationUID] && out.bike[a.StationUID].rent != null) continue;
+            if (isOdBike(a.StationUID)) northU.push(a.StationUID);
+            else { const c = UID_CITY[(a.StationUID || "").slice(0, 3)]; if (c) (tdxKg[c] = tdxKg[c] || []).push(a.StationUID); }
+          }
+        }
+      } catch (e) {
+        northU.push(...cloudU.filter(isOdBike));
+        for (const u of cloudU.filter(u => !isOdBike(u))) { const c = UID_CITY[u.slice(0, 3)]; if (c) (tdxKg[c] = tdxKg[c] || []).push(u); }
       }
-    }).catch(() => {}));
-  }
+    }
+    if (northU.length) {
+      try { const j = await odMemoGet(`/od/bike?ids=${[...new Set(northU)].join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a); } catch (e) {}
+    }
+    await Promise.all(Object.entries(tdxKg).map(([city, uids]) => {
+      const filter = [...new Set(uids)].map(u => `StationUID eq '${u}'`).join(" or ");
+      return memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, fresh ? 0 : 90000).then(list => {
+        for (const a of list) out.bike[a.StationUID] = odBikeLive(a);
+      }).catch(() => {});
+    }));
+  })());
   await Promise.all(jobs);
   return out;
 }
@@ -2186,14 +2225,20 @@ async function placeStops(city, heal) {
   return stops;
 }
 async function placeBikes(city, heal) {
-  if (city === "Taipei" || city === "NewTaipei") {   // v2.36.0：雙北 YouBike 站點名單取自開放資料（不用 TDX）
+  const pack = x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
+    (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null];
+  if (YB_CLOUD_CITY.has(city)) {
+    try {
+      const j = await odGet(`/od/ybstn?city=${city}`);
+      if (j && Array.isArray(j.list) && j.list.length) return j.list.filter(x => x.StationPosition).map(pack);
+    } catch (e) {}
+  }
+  if (city === "Taipei" || city === "NewTaipei") {
     const j = await odGet(`/od/bike?city=${city}`);
-    return (j.list || []).filter(x => x.StationPosition).map(x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
-      (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]);
+    return (j.list || []).filter(x => x.StationPosition).map(pack);
   }
   const l = await tdx("route", `${BASE}/basic/v2/Bike/Station/City/${city}?%24select=${enc("StationUID,StationName,StationAddress,StationPosition,BikesCapacity,ServiceType")}&%24top=5000&%24format=JSON` + (heal ? FRESH : ""));
-  return l.filter(x => x.StationPosition).map(x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
-    (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null]);
+  return l.filter(x => x.StationPosition).map(pack);
 }
 async function placeIndex({ city }) {
   if (!city || !UID_CITY_SET.has(city)) return null;
@@ -2259,8 +2304,9 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
 async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
   const city = UID_CITY[(uid || "").slice(0, 3)];
   let a = {};
-  if (city && isOdBike(uid)) { try { a = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0] || {}; } catch (e) {} }   // v2.36.0 開放資料
-  else if (city) { try { a = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0] || {}; } catch (e) {} }
+  if (city && isCloudBike(uid)) { try { a = ((await odMemoGet(`/od/ybstn?ids=${uid}`, 90000)).list || [])[0] || {}; } catch (e) {} }
+  if (a.AvailableRentBikes == null && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) a = { ...a, ...b }; } catch (e) {} }
+  if (a.AvailableRentBikes == null && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) a = { ...a, ...b }; } catch (e) {} }
   if (a.StationUID) try { placeHeal([], [a.StationUID]); } catch (e) {}
   const det = a.AvailableRentBikesDetail || null;
   return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
