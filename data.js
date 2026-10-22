@@ -409,14 +409,14 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
   const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
   const busP = !doBus ? SKIP : (async () => {
-    const [eta, stops, thb] = await Promise.all([
+    const [eta, od, thb] = await Promise.all([
       etaP,
-      geoList("stop", `s|${lat},${lon},${qStop}`, `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`,
-        "main", stopPack, stopUnpack, etaP.then(l => l.map(e => e.StopUID)).catch(() => [])),
+      odGet(`/od/stops?lat=${lat}&lon=${lon}&r=${qStop}`).catch(() => null),
       odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
-    const cloud = thb && Array.isArray(thb.list) ? thb.list : null;
-    return [eta, cloud ? [...stops.filter(s => !isThbStop(s)), ...cloud] : stops];
+    const city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => !isThbStop(s)) : [];
+    const hw = thb && Array.isArray(thb.list) ? thb.list : [];
+    return [eta, [...city, ...hw]];
   })();
   // v2.39.1：站點跟雲端要；附近車位由這支手機直接抓 YouBike 統一 feed。feed 失敗才退雙北市府、其餘 TDX
   const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
@@ -886,17 +886,9 @@ async function traBoard(get, st) {
 async function thsrBoard(get, st) {
   const id = st.ids[0];
   const storedRows = await ttTrainRows("THSR", id, await dayInfo(svcDate(0))).catch(() => null);
-  const [tt, seats] = await Promise.allSettled([
-    storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`),
-    memoTdx("rail", `${RAIL_BASE}/v2/Rail/THSR/AvailableSeatStatusList/${id}?%24format=JSON`, 60000),
-  ]);
+  const tt = storedRows ? { status: "fulfilled", value: [] } : await Promise.resolve(get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)).then(v => ({ status: "fulfilled", value: v }), e => ({ status: "rejected", reason: e }));
   const seatMap = {};
-  let seatList = [];
-  if (seats.status === "fulfilled") {
-    const v = seats.value;
-    seatList = (v[0] && v[0].AvailableSeats) ? v[0].AvailableSeats : (v[0] && v[0].TrainNo ? v : []);
-    for (const s of seatList) seatMap[String(s.TrainNo)] = { std: SEAT[s.StandardSeatStatus] || null, biz: SEAT[s.BusinessSeatStatus] || null };
-  }
+  const seatList = [];
   let rows;
   if (storedRows && storedRows.length) rows = storedRows;
   else if (tt.status === "fulfilled" && tt.value.length) {
@@ -909,7 +901,7 @@ async function thsrBoard(get, st) {
   const now = nowMin();
   rows = rows.filter(r => r.time).map(r => ({ ...r, t: toMin(r.time), seats: seatMap[r.no] || null }))
     .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t);
-  return { kind: "thsr", live: seats.status === "fulfilled", trains: rows, groups: groupTrains("thsr", rows), note: seats.status === "fulfilled" ? null : "座位資訊暫時讀不到" };
+  return { kind: "thsr", live: false, trains: rows, groups: groupTrains("thsr", rows), note: null };
 }
 
 // 北捷即時到站（經 Worker /trtc-eta，來源 Bus+）；失敗或沒資料回傳 null
@@ -1723,7 +1715,7 @@ async function metroTimetable(get, st, filter, all) {
   for (const g of Object.values(byKey)) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
-    let up = ts.filter(o => o.t >= now);
+    let up = ts.filter(o => o.t >= now - 25);
     if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
       const gT = byKeyT[g.dest + "|" + g.line + "|" + g.dir] || g;
       up = [...gT.times].map(x => ({ x, t: (toMin(x) < 180 ? toMin(x) + 1440 : toMin(x)) + 1440 })).sort((a, b) => a.t - b.t);
@@ -2094,7 +2086,7 @@ function loadRailCache() { try { const c = JSON.parse(localStorage.getItem(RAIL_
 async function loadRailStations() {
   const cache = loadRailCache(), now = Date.now();
   let rateErr = null;
-  const todo = RAIL_SYSTEMS.filter(s => { const c = cache.systems[s.key]; return !(c && c.stations && c.stations.length); });   // 永久：只補還沒有的系統
+  const todo = [];   // v2.40：車站名單只讀已下載的雲端／本機快取，不再為了補清單打 TDX
   for (let i = 0; i < todo.length; i += 3) {           // 一次3個系統，避免限流
     await Promise.all(todo.slice(i, i + 3).map(async s => {
       try {
@@ -2111,18 +2103,7 @@ async function loadRailStations() {
 
 function loadExitCache() { try { const c = JSON.parse(localStorage.getItem(EXIT_KEY)); if (c && c.systems) return c; } catch (e) {} return { systems: {} }; }
 async function loadRailExits() {
-  const cache = loadExitCache(), now = Date.now();
-  const metros = RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional && !NO_EXIT.has(s.key));
-  const todo = metros.filter(s => { const c = cache.systems[s.key]; return !(c && (Object.keys(c.exits || {}).length || now - c.time < DAY_MS)); });   // 有資料就永久；空的／失敗的明天再試
-  for (let i = 0; i < todo.length; i += 3) {
-    await Promise.all(todo.slice(i, i + 3).map(async s => {
-      try {
-        const list = await tdx("rail", `${RAIL_BASE}/v2/Rail/Metro/StationExit/${s.key}?%24top=3000&%24format=JSON`);
-        cache.systems[s.key] = { time: now, exits: mapExits(list, s.key) };
-      } catch (e) { if (!isRate(e)) cache.systems[s.key] = { time: now, exits: {} }; } // 失敗的明天再試；限流的下次開啟就重試
-    }));
-  }
-  if (todo.length) { try { localStorage.setItem(EXIT_KEY, JSON.stringify(cache)); } catch (e) {} }
+  const cache = loadExitCache();
   return Object.assign({}, ...Object.values(cache.systems).map(s => s.exits || {}));
 }
 
@@ -2160,26 +2141,8 @@ async function railHealAll() {
   return any;
 }
 // 附近捷運站沒有出口資料：重抓那個系統的出口清單
-function exitHeal(near) { exitHealA(near || []).catch(() => {}); }
-async function exitHealA(near) {
-  const metros = new Set(RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional && !NO_EXIT.has(s.key)).map(s => s.key));
-  const want = {};
-  for (const s of near) if (metros.has(s.op) && !s.exit) (want[s.op] = want[s.op] || []).push(...(s.ids || [s.id]));
-  for (const [op, ids] of Object.entries(want)) {
-    const k = "exit|" + op; if (healBusy[k]) continue;
-    const c = loadExitCache().systems[op];
-    if (!c || !Object.keys(c.exits || {}).length || Date.now() - c.time < DAY_MS) continue;   // 整個系統沒有出口資料的不重抓（由 loadRailExits 每天重試）
-    const have = new Set(Object.keys(c.exits).map(x => x.split("|")[1])), ign = new Set(c.ign || []), miss = newMiss(ids, have, ign);
-    if (!miss.length) continue;
-    healBusy[k] = true;
-    let ex = null;
-    try { ex = mapExits(await tdx("rail", `${RAIL_BASE}/v2/Rail/Metro/StationExit/${op}?%24top=3000&%24format=JSON` + FRESH), op); } catch (e) {}
-    const ok = ex && Object.keys(ex).length, cache = loadExitCache(), got = new Set(Object.keys(ok ? ex : c.exits).map(x => x.split("|")[1]));
-    cache.systems[op] = { time: Date.now(), exits: ok ? ex : c.exits, ign: [...ign, ...miss.filter(i => !got.has(i))].slice(-300) };
-    try { localStorage.setItem(EXIT_KEY, JSON.stringify(cache)); } catch (e) {}
-    delete healBusy[k];
-  }
-}
+function exitHeal(near) {}
+async function exitHealA(near) {}
 
 // ---------- 設定 / 收藏 ----------
 function loadState() {

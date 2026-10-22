@@ -1373,9 +1373,17 @@ function railTabsMetro(R, D, G) {
     for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
       if (lv.eta == null) continue;
       if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true }); continue; }
-      let bi = -1, bd = 1e9;
-      rows.forEach((r, i) => { if (used.has(i) || r.dest !== lv.dest || r.eta == null) return; const d = Math.abs(r.eta - lv.eta); if (d < bd) { bd = d; bi = i; } });
-      if (bi >= 0 && bd <= 8) { used.add(bi); rows[bi].live = lv.eta; }
+      let bi = -1, bestEta = -1e9;
+      rows.forEach((r, i) => {
+        if (used.has(i) || r.dest !== lv.dest || r.eta == null) return;
+        if (r.eta <= lv.eta + 1 && r.eta > bestEta) { bestEta = r.eta; bi = i; }
+      });
+      if (bi < 0) rows.forEach((r, i) => {
+        if (used.has(i) || r.dest !== lv.dest || r.eta == null || r.eta < lv.eta) return;
+        const d = r.eta - lv.eta;
+        if (d <= 2 && (bi < 0 || r.eta < rows[bi].eta)) bi = i;
+      });
+      if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; }
       else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true });
     }
     rows.sort((x, y) => (x.live ?? x.eta ?? 9999) - (y.live ?? y.eta ?? 9999));
