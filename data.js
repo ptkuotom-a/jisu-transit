@@ -1721,7 +1721,7 @@ async function metroTimetable(get, st, filter, all) {
   for (const g of Object.values(byKey)) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
-    let up = ts.filter(o => o.t >= now - 25);
+    let up = ts.filter(o => o.t >= now - ((st.op === "TRTC" || st.op === "NTMC") ? 4 : 25));
     if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
       const gT = byKeyT[g.dest + "|" + g.line + "|" + g.dir] || g;
       up = [...gT.times].map(x => ({ x, t: (toMin(x) < 180 ? toMin(x) + 1440 : toMin(x)) + 1440 })).sort((a, b) => a.t - b.t);

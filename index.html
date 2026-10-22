@@ -1374,15 +1374,18 @@ function railTabsMetro(R, D, G) {
     for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
       if (lv.eta == null) continue;
       if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true }); continue; }
-      let bi = -1, bestEta = -1e9;
-      rows.forEach((r, i) => {
-        if (used.has(i) || r.dest !== lv.dest || r.eta == null) return;
-        if (r.eta <= lv.eta + 1 && r.eta > bestEta) { bestEta = r.eta; bi = i; }
-      });
-      if (bi < 0) rows.forEach((r, i) => {
-        if (used.has(i) || r.dest !== lv.dest || r.eta == null || r.eta < lv.eta) return;
-        const d = r.eta - lv.eta;
-        if (d <= 2 && (bi < 0 || r.eta < rows[bi].eta)) bi = i;
+      let bi = -1;
+      const same = [];
+      rows.forEach((r, i) => { if (!used.has(i) && r.dest === lv.dest && r.eta != null) same.push(i); });
+      // 和某班表定差 2 分鐘以內，就是那一班。北捷班距短，不要把下一班的倒數貼到上一班變成晚 4 分以上。
+      let bestD = 99;
+      same.forEach(i => { const d = Math.abs(rows[i].eta - lv.eta); if (d <= 2 && d < bestD) { bestD = d; bi = i; } });
+      if (bi < 0) same.forEach(i => {
+        const late = lv.eta - rows[i].eta;
+        if (late < 0 || late >= 4) return;
+        const nxt = same.find(j => rows[j].eta > rows[i].eta);
+        if (nxt != null && Math.abs(rows[nxt].eta - lv.eta) <= 2) return;
+        if (bi < 0 || rows[i].eta > rows[bi].eta) bi = i;
       });
       if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; }
       else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true });
