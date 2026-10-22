@@ -195,6 +195,129 @@ function haversine(lat1, lon1, lat2, lon2) {
   const a = Math.sin(t(lat2 - lat1) / 2) ** 2 + Math.cos(t(lat1)) * Math.cos(t(lat2)) * Math.sin(t(lon2 - lon1) / 2) ** 2;
   return Math.round(2 * R * Math.asin(Math.sqrt(a)));
 }
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const p = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * p) * Math.cos(lat2 * p);
+  const x = Math.cos(lat1 * p) * Math.sin(lat2 * p) - Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos((lon2 - lon1) * p);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function angDiff(a, b) {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+function circMean(degs) {
+  let x = 0, y = 0;
+  for (const d of degs) { const r = d * Math.PI / 180; x += Math.cos(r); y += Math.sin(r); }
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function llOf(s) {
+  if (!s) return null;
+  if (Array.isArray(s.P) && s.P.length >= 2 && s.P[0] != null && s.P[1] != null) return [+s.P[0], +s.P[1]];
+  const p = s.StopPosition;
+  if (p && p.PositionLat != null && p.PositionLon != null) return [+p.PositionLat, +p.PositionLon];
+  return null;
+}
+// 往下一站的方位：沿站序只取緊接的下一站。不往終點跳，也不用終點或前一站的方位。
+function travelHead(stops, uid, lat, lon) {
+  if (!stops || !uid) return null;
+  const idx = stops.findIndex(s => s.StopUID === uid);
+  if (idx < 0 || idx + 1 >= stops.length) return null;
+  const self = llOf(stops[idx]);
+  const here = lat != null && lon != null ? [+lat, +lon] : self;
+  const p = llOf(stops[idx + 1]);
+  if (!here || !p) return null;
+  if (haversine(here[0], here[1], p[0], p[1]) < 1) return null;
+  return bearingDeg(here[0], here[1], p[0], p[1]);
+}
+function headFromList(list, routeUID, dirNum, stopUID, lat, lon) {
+  for (const r of list || []) {
+    if (r.RouteUID !== routeUID || (r.Direction === 1 ? 1 : 0) !== dirNum) continue;
+    const h = travelHead(r.Stops || [], stopUID, lat, lon);
+    if (h != null) return h;
+  }
+  return null;
+}
+const sorMem = new Map();
+async function loadTravelHead(jobs) {
+  const out = {};
+  const want = new Map();
+  for (const j of jobs) {
+    const k = routeKind(j.routeUID);
+    if (!k || !j.stopUID || !j.routeUID) continue;
+    if (!want.has(j.routeUID)) want.set(j.routeUID, { path: k.path, route: j.route || "", jobs: [] });
+    const info = want.get(j.routeUID);
+    if (!info.route && j.route) info.route = j.route;
+    info.jobs.push(j);
+  }
+  const miss = [];
+  await Promise.all([...want.values()].map(async info => {
+    const sk = info.route && info.route !== "?" ? `sor|${info.path}|${info.route}` : "";
+    let list = sorMem.get("uid|" + info.jobs[0].routeUID);
+    if (!list && sk) {
+      list = sorMem.get(sk);
+      if (list === undefined) {
+        const sc = await IDB.get(sk).catch(() => null);
+        list = sc && sc.d ? sc.d : null;
+        if (list) sorMem.set(sk, list);
+      }
+    }
+    let hit = 0;
+    for (const j of info.jobs) {
+      const h = list ? headFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon) : null;
+      if (h != null) { out[`${j.routeUID}|${j.dirNum}|${j.stopUID}`] = h; hit++; }
+    }
+    if (hit < info.jobs.length) miss.push(info);
+  }));
+  const byPath = {};
+  for (const info of miss) (byPath[info.path] = byPath[info.path] || []).push(info);
+  const paths = Object.entries(byPath);
+  for (let i = 0; i < paths.length; i += 2) {
+    await Promise.all(paths.slice(i, i + 2).map(async ([path, infos]) => {
+      const uids = [...new Set(infos.map(x => x.jobs[0].routeUID))];
+      for (let n = 0; n < uids.length; n += 12) {
+        const chunk = uids.slice(n, n + 12);
+        const filter = chunk.map(u => `RouteUID eq '${u}'`).join(" or ");
+        let list = [];
+        try { list = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${path}?%24filter=${enc(filter)}&%24top=200&%24format=JSON`); } catch (e) { list = []; }
+        const byUid = {};
+        for (const r of list || []) if (r.RouteUID) (byUid[r.RouteUID] = byUid[r.RouteUID] || []).push(r);
+        for (const [uid, rs] of Object.entries(byUid)) {
+          const packed = sorPack(rs);
+          const nm = (rs[0].RouteName && rs[0].RouteName.Zh_tw) || "";
+          sorMem.set("uid|" + uid, packed);
+          if (nm && nm !== "?") {
+            const key = `sor|${path}|${nm}`;
+            sorMem.set(key, packed);
+            IDB.set(key, { t: Date.now(), d: packed }).catch(() => {});
+          }
+        }
+        const left = chunk.filter(u => !byUid[u]);
+        await Promise.all(left.slice(0, 8).map(async uid => {
+          const info = infos.find(x => x.jobs[0].routeUID === uid);
+          const route = info && info.route;
+          if (!route || route === "?") return;
+          try {
+            const one = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${path}/${enc(route)}?%24top=600&%24format=JSON`);
+            const packed = sorPack((one || []).filter(r => r.RouteUID === uid));
+            if (!packed.length) return;
+            sorMem.set("uid|" + uid, packed);
+            const key = `sor|${path}|${route}`;
+            sorMem.set(key, packed);
+            IDB.set(key, { t: Date.now(), d: packed }).catch(() => {});
+          } catch (e) {}
+        }));
+      }
+    }));
+  }
+  for (const info of miss) for (const j of info.jobs) {
+    const hk = `${j.routeUID}|${j.dirNum}|${j.stopUID}`;
+    if (out[hk] != null) continue;
+    const list = sorMem.get("uid|" + j.routeUID) || (info.route ? sorMem.get(`sor|${info.path}|${info.route}`) : null);
+    const h = headFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon);
+    if (h != null) out[hk] = h;
+  }
+  return out;
+}
 const nearbyQ = (lat, lon, r) => "?%24spatialFilter=" + enc(`nearby(${lat},${lon},${r})`);
 function routeKind(uid) {
   const code = (uid || "").slice(0, 3);
@@ -507,51 +630,73 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // 站名不是合併鍵。不同 StopUID 的兩個方向要分開，不能因同名、同 StationID、或 20 公尺內缺 Bearing 併成一站。
-    // 同一根站牌（座標差 8 公尺內）的多個 StopUID 仍合成一張卡，避免一條路線一張卡。有 Bearing 且相同、20 公尺內，仍視為同一側。
-    const groups = {}, list = [];
-    const poleOf = (g, pos, uid) => {
-      if (uid && g.uids.has(uid)) return true;
-      if (!pos || g.lat == null) return false;
-      const dist = haversine(g.lat, g.lon, pos.lat, pos.lon);
-      if (pos.bear && g.bear && pos.bear !== g.bear) return false;
-      if (pos.bear && g.bear && pos.bear === g.bear && dist <= 20) return true;
-      return dist <= 8;
-    };
+    // v2.40.7：同一站名、往下一站的行進方位差 60 度以內，合成一張卡。不是往終點，也不是站名或 StopUID。
+    // 不同方位仍分開。站序讀不到、或已是末站時，才退回 8 公尺內同一根站牌，避免兩側被合成一張。
+    const rawMap = new Map();
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
       const uid = it.StopUID || "";
       const pos = (uid && byUID[uid]) || (!uid && byName[name]) || null;
-      if (pos && pos.d > busR) continue;                    // 查詢範圍比設定大一點，超出設定距離的不列
-      const arr = groups[name] = groups[name] || [];
-      let g = uid ? arr.find(x => poleOf(x, pos, uid)) : (pos ? arr.find(x => !x.uids.size && poleOf(x, pos, "")) : arr.find(x => !x.uids.size && x.lat == null));
-      if (!g) {
-        g = { name, uids: new Set(uid ? [uid] : []), dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, bear: pos ? pos.bear : null, routes: {} };
-        arr.push(g); list.push(g);
-      } else {
-        if (uid) g.uids.add(uid);
-        if (pos) {
-          if (!g.bear && pos.bear) g.bear = pos.bear;
-          if (g.dist == null || pos.d < g.dist) { g.dist = pos.d; g.lat = pos.lat; g.lon = pos.lon; }
-        }
-      }
+      if (pos && pos.d > busR) continue;
       const dirNum = it.Direction === 1 ? 1 : 0;
       const sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
+      const key = `${it.RouteUID || ""}|${dirNum}|${uid}`;
+      const prev = rawMap.get(key);
+      if (prev && !(sec !== null && (prev.r.sec === null || sec < prev.r.sec))) continue;
       const r = {
         route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum,
         stopUID: uid || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null,
       };
-      const key = `${r.routeUID}|${dirNum}|${uid}`;
-      const old = g.routes[key];
-      if (!old || (sec !== null && (old.sec === null || sec < old.sec))) g.routes[key] = r;
+      rawMap.set(key, { name, uid, pos, r });
     }
-    let destMap = {};
-    try { destMap = await loadRouteDest("main", eta.map(e => e.RouteUID)); } catch (e) {}
-    for (const g of list) for (const r of Object.values(g.routes)) r.dest = destOf(r.routeUID, r.dirNum, destMap);
+    const raw = [...rawMap.values()];
+    const uidsOf = {};
+    for (const row of raw) {
+      if (!row.uid) continue;
+      const s = uidsOf[row.name] = uidsOf[row.name] || new Set();
+      s.add(row.uid);
+    }
+    const need = raw.filter(row => uidsOf[row.name] && uidsOf[row.name].size > 1 && row.r.routeUID && row.uid).map(row => ({
+      routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid,
+      lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null,
+    }));
+    let heads = {}, destMap = {};
+    const [hR, dR] = await Promise.all([
+      need.length ? loadTravelHead(need).catch(() => ({})) : {},
+      loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
+    ]);
+    heads = hR || {}; destMap = dR || {};
+    const groups = {}, list = [];
+    const samePole = (g, row) => {
+      if (row.uid && g.uids.has(row.uid)) return true;
+      if (!row.pos || g.lat == null) return false;
+      if (row.pos.bear && g.bear && row.pos.bear !== g.bear) return false;
+      return haversine(g.lat, g.lon, row.pos.lat, row.pos.lon) <= 8;
+    };
+    for (const row of raw) {
+      const arr = groups[row.name] = groups[row.name] || [];
+      const h = heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`];
+      let g = h != null ? arr.find(x => x.head != null && angDiff(h, x.head) <= 60) : arr.find(x => x.head == null && samePole(x, row));
+      if (!g) {
+        g = { name: row.name, uids: new Set(row.uid ? [row.uid] : []), dist: row.pos ? row.pos.d : null, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null, bear: row.pos ? row.pos.bear : null, head: h != null ? h : null, heads: h != null ? [h] : [], routes: {} };
+        arr.push(g); list.push(g);
+      } else {
+        if (row.uid) g.uids.add(row.uid);
+        if (h != null) { g.heads.push(h); g.head = circMean(g.heads); }
+        if (row.pos) {
+          if (!g.bear && row.pos.bear) g.bear = row.pos.bear;
+          if (g.dist == null || row.pos.d < g.dist) { g.dist = row.pos.d; g.lat = row.pos.lat; g.lon = row.pos.lon; }
+        }
+      }
+      row.r.dest = destOf(row.r.routeUID, row.r.dirNum, destMap);
+      const rk = `${row.r.routeUID}|${row.r.dirNum}`;
+      const old = g.routes[rk];
+      if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) g.routes[rk] = row.r;
+    }
     for (const arr of Object.values(groups)) {
       const located = arr.filter(g => g.lat != null).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
       if (located.length >= 2) located.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
-      if (arr.length < 2) continue;                         // 只有一個方向時不加標，版面維持原樣
+      if (arr.length < 2) continue;
       for (const g of arr) {
         const rs = Object.values(g.routes);
         const dests = [...new Set(rs.map(r => r.dest).filter(Boolean))];
@@ -564,7 +709,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      const { uids, ...rest } = g;
+      const { uids, head, heads, ...rest } = g;
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9) || String(a.dirTxt || "").localeCompare(String(b.dirTxt || ""), "zh-Hant"));
   }
