@@ -507,46 +507,66 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // 同名站牌依實際位置分開（相距 > 20公尺視為不同站牌），之後依距離標「同向／對向」
+    // 站名不是合併鍵。不同 StopUID 的兩個方向要分開，不能因同名、同 StationID、或 20 公尺內缺 Bearing 併成一站。
+    // 同一根站牌（座標差 8 公尺內）的多個 StopUID 仍合成一張卡，避免一條路線一張卡。有 Bearing 且相同、20 公尺內，仍視為同一側。
     const groups = {}, list = [];
+    const poleOf = (g, pos, uid) => {
+      if (uid && g.uids.has(uid)) return true;
+      if (!pos || g.lat == null) return false;
+      const dist = haversine(g.lat, g.lon, pos.lat, pos.lon);
+      if (pos.bear && g.bear && pos.bear !== g.bear) return false;
+      if (pos.bear && g.bear && pos.bear === g.bear && dist <= 20) return true;
+      return dist <= 8;
+    };
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
-      const pos = byUID[it.StopUID] || byName[name] || null;
+      const uid = it.StopUID || "";
+      const pos = (uid && byUID[uid]) || (!uid && byName[name]) || null;
       if (pos && pos.d > busR) continue;                    // 查詢範圍比設定大一點，超出設定距離的不列
       const arr = groups[name] = groups[name] || [];
-      // 同一 StationID 一定同一站；不同 StationID 只有在20公尺內且行車方位（Bearing）相同時才合併（兩側站牌可能只差10公尺）
-      const same = x => x.lat !== null && ((pos.sid && x.sids.has(pos.sid)) ||
-        (haversine(x.lat, x.lon, pos.lat, pos.lon) <= 20 && (!pos.bear || !x.bear || x.bear === pos.bear)));
-      let g = pos ? arr.find(same) : arr.find(x => x.lat === null);
-      if (g && pos && pos.sid) g.sids.add(pos.sid);
+      let g = uid ? arr.find(x => poleOf(x, pos, uid)) : (pos ? arr.find(x => !x.uids.size && poleOf(x, pos, "")) : arr.find(x => !x.uids.size && x.lat == null));
       if (!g) {
-        g = { name, dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, bear: pos ? pos.bear : null, sids: new Set(pos && pos.sid ? [pos.sid] : []), routes: {} };
+        g = { name, uids: new Set(uid ? [uid] : []), dist: pos ? pos.d : null, lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, bear: pos ? pos.bear : null, routes: {} };
         arr.push(g); list.push(g);
-      } else if (pos && pos.d < g.dist) { g.dist = pos.d; g.lat = pos.lat; g.lon = pos.lon; }
+      } else {
+        if (uid) g.uids.add(uid);
+        if (pos) {
+          if (!g.bear && pos.bear) g.bear = pos.bear;
+          if (g.dist == null || pos.d < g.dist) { g.dist = pos.d; g.lat = pos.lat; g.lon = pos.lon; }
+        }
+      }
       const dirNum = it.Direction === 1 ? 1 : 0;
       const sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
       const r = {
         route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum,
-        stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null,
+        stopUID: uid || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null,
       };
-      const key = `${r.routeUID}|${dirNum}`;
+      const key = `${r.routeUID}|${dirNum}|${uid}`;
       const old = g.routes[key];
       if (!old || (sec !== null && (old.sec === null || sec < old.sec))) g.routes[key] = r;
     }
     let destMap = {};
     try { destMap = await loadRouteDest("main", eta.map(e => e.RouteUID)); } catch (e) {}
+    for (const g of list) for (const r of Object.values(g.routes)) r.dest = destOf(r.routeUID, r.dirNum, destMap);
     for (const arr of Object.values(groups)) {
-      const located = arr.filter(g => g.dist !== null);   // 沒有座標的不標同向／對向
-      if (located.length < 2) continue;
-      located.sort((a, b) => a.dist - b.dist);
-      located.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
+      const located = arr.filter(g => g.lat != null).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
+      if (located.length >= 2) located.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
+      if (arr.length < 2) continue;                         // 只有一個方向時不加標，版面維持原樣
+      for (const g of arr) {
+        const rs = Object.values(g.routes);
+        const dests = [...new Set(rs.map(r => r.dest).filter(Boolean))];
+        const others = new Set(arr.filter(x => x !== g).flatMap(x => Object.values(x.routes).map(r => r.dest).filter(Boolean)));
+        const uniq = dests.filter(d => !others.has(d));
+        const show = (uniq.length ? uniq : dests).slice(0, 2);
+        if (show.length) g.dirTxt = `往 ${show.join("／")}${dests.length > show.length ? " 等" : ""}`;
+        else if (rs.length && rs.every(r => r.dirNum === rs[0].dirNum)) g.dirTxt = rs[0].dirNum === 1 ? "返程" : "去程";
+      }
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      for (const r of routes) r.dest = destOf(r.routeUID, r.dirNum, destMap);
-      const { sids, ...rest } = g;
+      const { uids, ...rest } = g;
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
-    }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
+    }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9) || String(a.dirTxt || "").localeCompare(String(b.dirTxt || ""), "zh-Hant"));
   }
   return busStops;
   }
@@ -2309,7 +2329,7 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
     if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
     const dirNum = it.Direction === 1 ? 1 : 0, sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
     const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null };
-    const k = `${x.routeUID}|${dirNum}`, old = routes[k];
+    const k = `${x.routeUID}|${dirNum}|${x.stopUID || ""}`, old = routes[k];
     if (!old || (sec !== null && (old.sec === null || sec < old.sec))) routes[k] = x;
   }
   const list = Object.values(routes);

@@ -675,7 +675,7 @@ function mountMap() {
     if (D === mapKey) return; mapKey = D;
     mapMarks.forEach(m => m.remove()); mapMarks = [];
     const add = (o, cls, svg, fn) => { if (o.lat == null) return;
-      const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name);
+      const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side ? ' ' + o.side : ''));
       el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
       mapMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP)); };
     D.bikes.slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
@@ -694,7 +694,12 @@ function errBox() {
   return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
 }
 
-const sideTag = s => s.side ? ` <span class="side-tag ${s.side === '同向' ? 'same' : 'opp'}">${s.side}${s.bearTxt ? '・' + s.bearTxt : ''}</span>` : '';
+const sideTag = s => {
+  const bits = [s.side, s.bearTxt, s.dirTxt].filter(Boolean);
+  if (!bits.length) return '';
+  const cls = s.side === '同向' ? 'same' : s.side === '對向' ? 'opp' : '';
+  return ` <span class="side-tag ${cls}">${bits.map(esc).join('・')}</span>`;
+};
 function stopCard(s) {
   const routes = [...new Set(s.routes.map(r => r.route))].join('、');
   return `<button class="card" data-act="stop" data-i="${reg(s)}">
@@ -1788,7 +1793,7 @@ function openSheet(html) { const w = $('#sheetWrap'); $('#sheet').innerHTML = '<
 function closeSheet() { const w = $('#sheetWrap'); w.classList.remove('open'); setTimeout(() => { w.hidden = true; S.sheet = null; if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
 function stopSheet(s) {
   S.sheet = { type:'stop', s };
-  openSheet(`<h2>${esc(s.name)}</h2><div class="addr">距離${distTxt(s.dist)}，${s.routes.length}條路線</div>` +
+  openSheet(`<h2>${esc(s.name)}${sideTag(s)}</h2><div class="addr">距離${distTxt(s.dist)}，${s.routes.length}條路線</div>` +
     stopBlock(s, 0).replace('<div class="stop">','<div class="stop" style="background:none;border:0;padding:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '') +
     (s.lat ? `<div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="nav" data-lat="${s.lat}" data-lon="${s.lon}">${I.nav}步行前往</button></div>` : ''));
 }
