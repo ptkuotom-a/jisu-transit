@@ -1374,26 +1374,30 @@ function railTabsMetro(R, D, G) {
     for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
       if (lv.eta == null) continue;
       if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true }); continue; }
-      let bi = -1, bestEta = -1e9;
+      let bi = -1;
       const same = [];
       rows.forEach((r, i) => { if (!used.has(i) && r.dest === lv.dest && r.eta != null) same.push(i); });
-      // 已到點、晚不到 4 分的那一班。16:15 的進站中是 16:13，不是還沒到的 16:16。
+      // 16:15 進站中是 16:16 那班，不是已過點的 16:13。先對差 2 分鐘以內、且還沒過表定的班。
+      let bestD = 99;
       same.forEach(i => {
-        const late = lv.eta - rows[i].eta;
-        if (rows[i].eta > lv.eta) return;
-        if (late < 0 || late >= 4) return;
-        if (rows[i].eta > bestEta) { bestEta = rows[i].eta; bi = i; }
+        if (rows[i].eta < -1) return;
+        const d = Math.abs(rows[i].eta - lv.eta);
+        if (d <= 2 && d < bestD) { bestD = d; bi = i; }
       });
-      if (bi < 0) {
-        let bestD = 99;
-        same.forEach(i => { const d = Math.abs(rows[i].eta - lv.eta); if (d <= 2 && d < bestD) { bestD = d; bi = i; } });
-      }
+      if (bi < 0) same.forEach(i => {
+        const late = lv.eta - rows[i].eta;
+        if (late < 0 || late >= 4) return;
+        if (bi < 0 || rows[i].eta > rows[bi].eta) bi = i;
+      });
       if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; }
       else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true });
     }
     rows.sort((x, y) => (x.live ?? x.eta ?? 9999) - (y.live ?? y.eta ?? 9999));
     const firstLive = rows.findIndex(r => r.live != null);
-    const vis = rows.filter((r, i) => !(r.live == null && firstLive >= 0 && i < firstLive && r.eta < (rows[firstLive].live ?? 0) - 3));   // 已被即時列車超過的表定班次不再列
+    const vis = rows.filter((r, i) => {
+      if (r.live == null && r.eta != null && r.eta < 0) return false;
+      return !(r.live == null && firstLive >= 0 && i < firstLive && r.eta < (rows[firstLive].live ?? 0) - 3);
+    });
     if (vis.length) {
       const id = R.name + l + sel, all = S.ttAll[id], n = vis.length, show = all ? n : 5;
       const tomorrow = D.ttTomorrow || (T.tt[0] && T.tt[0].eta > 180 && !T.live.length);
