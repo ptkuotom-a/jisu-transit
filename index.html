@@ -166,6 +166,12 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .page.under{transform:none;z-index:29;transition:none;pointer-events:none}
 .dirbtn svg{width:18px;height:18px;color:var(--lime);flex:none}
 .rmeta{color:var(--muted);font-size:14px;margin-top:10px}
+.schbtn{margin-top:10px;padding:8px 16px;font-size:15px;font-weight:700}
+.schsel{width:100%;height:44px;margin:10px 0 2px;font-size:15px;color-scheme:dark}
+.schgrid{margin:10px 0 4px}.schrow{display:flex;gap:10px;padding:7px 2px;border-top:1px solid var(--line);align-items:baseline}
+.schrow b{min-width:28px;color:var(--muted);font-variant-numeric:tabular-nums}.schrow span{display:flex;flex-wrap:wrap;gap:4px 12px;font-variant-numeric:tabular-nums;font-size:16px}
+.schrow i{font-style:normal}.schrow i.past{color:var(--muted);opacity:.55}.schrow i.next{color:var(--lime);font-weight:800}
+.schnote{color:var(--muted);font-size:13.5px;margin:8px 2px 0;line-height:1.5}
 .line{position:relative;margin-top:8px}
 .st{position:relative;display:flex;align-items:center;gap:14px;padding:12px 0 12px 34px;min-height:58px}
 .st::before{content:"";position:absolute;left:11px;top:0;bottom:0;width:2px;background:var(--line)}
@@ -1140,7 +1146,46 @@ function vAdvanced() {
     <input class="inp" id="proxyUrl" placeholder="https://jisu-tdx.你的帳號.workers.dev" autocomplete="off" autocapitalize="off" inputmode="url" value="${esc(px.url)}">
     <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="saveProxy">儲存並測試連線</button></div>
     <div class="kmsg" id="keyMsg"></div></div>
-  ${vTimetable()}`;
+  ${vTimetable()}${vBusSch()}`;
+}
+// ---------- v2.43.0 公車時刻表（雲端）：管理者手動更新 ----------
+const SCH_CITIES = [['Taipei','台北市'],['NewTaipei','新北市'],['Keelung','基隆市'],['Taoyuan','桃園市'],['Hsinchu','新竹市'],['HsinchuCounty','新竹縣'],['MiaoliCounty','苗栗縣'],['Taichung','台中市'],['ChanghuaCounty','彰化縣'],['NantouCounty','南投縣'],['YunlinCounty','雲林縣'],['Chiayi','嘉義市'],['ChiayiCounty','嘉義縣'],['Tainan','台南市'],['Kaohsiung','高雄市'],['PingtungCounty','屏東縣'],['YilanCounty','宜蘭縣'],['HualienCounty','花蓮縣'],['TaitungCounty','台東縣'],['PenghuCounty','澎湖縣'],['KinmenCounty','金門縣'],['LienchiangCounty','連江縣'],['InterCity','公路客運']];
+const SB = { st:null, loading:false, busy:false, msg:'', bad:false, prog:'' };
+async function sbLoad() { SB.loading = true; try { SB.st = await api('schStatus'); } catch (e) { SB.st = { err: e.message }; } SB.loading = false; if (S.page === 'adv') renderPage(); }
+function sbSay(t, bad) { SB.msg = t; SB.bad = !!bad; if (S.page === 'adv') renderPage(); }
+async function sbRun(cities) {
+  if (SB.busy || S.auth?.role !== 'admin') return;
+  SB.busy = true; let done = 0;
+  for (const c of cities) {
+    const name = (SCH_CITIES.find(x => x[0] === c) || [c, c])[1];
+    try {
+      const r = await api('schBuild', { city: c, onProgress: p => { SB.prog = p.uploading ? `${name}：上傳中（${p.recs} 筆）…` : `${name}：下載第 ${p.page} 頁（${p.recs} 筆）…`; if (S.page === 'adv') renderPage(); } });
+      done++; SB.prog = ''; sbSay(`${name} 完成：${r.routes} 條路線、${r.trips} 班，${(r.bytes / 1024).toFixed(0)} KB（今天已用寫入 ${r.used}／400）`);
+      if (SB.st && !SB.st.err) SB.st[c] = { t: r.t, n: r.n, routes: r.routes, recs: r.recs, trips: r.trips, bytes: r.bytes };
+    } catch (e) { SB.prog = ''; sbSay(`${name} 失敗：${e.message}${done ? `（前面已完成 ${done} 區）` : ''}`, true); break; }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  SB.busy = false; if (S.page === 'adv') renderPage();
+}
+function vBusSch() {
+  if (DEMO || S.auth?.role !== 'admin') return '';
+  if (!SB.st && !SB.loading) sbLoad();
+  const st = SB.st || {}, fmt = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+  const missing = SCH_CITIES.filter(([c]) => !st[c]).map(x => x[0]);
+  let h = `<div class="sec"><h2>公車時刻表</h2><span class="side">存在雲端</span></div><div class="set">
+    <p>全台公車與公路客運的表定時刻表，存一份在雲端，路線頁的「時刻表」從這裡讀。目前只能手動更新：按下去會在這支手機分頁向 TDX 下載整個縣市（經 Worker 金鑰 2）、壓縮後上傳。每區約 1～60 次 TDX 呼叫，寫入算在每天 400 次的雲端額度裡，額度用完會自動停下，明天再按。</p>`;
+  if (SB.loading && !SB.st) h += `<p>讀取中…</p>`;
+  else if (st.err) h += `<p class="kmsg bad">${esc(st.err)}</p>`;
+  else {
+    h += SCH_CITIES.map(([c, name]) => { const m = st[c];
+      return `<div class="kv"><span>${esc(name)}</span><span>${m ? `${fmt(m.t)}・${m.routes} 條` : '<span style="color:var(--muted)">尚未下載</span>'}
+        <button class="chip" style="padding:4px 12px;font-size:13px;margin-left:8px" data-act="sbOne" data-v="${c}"${SB.busy ? ' disabled' : ''}>更新</button></span></div>`; }).join('');
+    h += `<div class="btns" style="grid-template-columns:1fr 1fr;margin-top:10px">
+      <button class="btn${missing.length ? ' pri' : ''}" data-act="sbMissing"${SB.busy || !missing.length ? ' disabled' : ''}>下載尚未下載的（${missing.length}）</button>
+      <button class="btn" data-act="sbAll"${SB.busy ? ' disabled' : ''}>全部重新下載</button></div>`;
+  }
+  h += `<div class="kmsg${SB.bad ? ' bad' : SB.msg ? ' ok' : ''}">${esc(SB.prog || SB.msg || '')}</div></div>`;
+  return h;
 }
 function vAccount() {
   if (DEMO || !S.auth) return '';
@@ -1197,14 +1242,14 @@ function vGsync() {
   const g = TT.gs || {};
   const t = g.end || g.at ? new Date(g.end || g.at).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }) : '';
   const qd = new Date().toISOString().slice(0, 10), gq = g.qday || (g.at ? new Date(g.at).toISOString().slice(0, 10) : '');   // TDX 訪客額度以 UTC 日計（台北 08:00 換日）
-  const used = gq === qd ? (g.used || 0) : 0, gp = TT.gp;
+  const used = gq === qd ? (g.used || 0) : 0, okN = gq === qd ? (g.ok ?? g.used ?? 0) : 0, gp = TT.gp;
   let s = TT.gbusy ? (gp ? (gp.wait ? gp.wait : `檢查中 ${gp.n}/${gp.total}`) : '檢查中…') : !g.day ? '還沒執行過' : g.status === 'running' ? `${t} 開始，尚未完成` : g.status === 'stopped' ? `${t} 中途停止` : `${t} 檢查完`;
   if (g.day) {
     const ch = (g.changed || []).map(c => sysN(c.op) + ' ' + c.what);
     s += `・${ch.length ? '已更新：' + ch.join('、') : '沒有新版'}`;
     if (g.deferred?.length) s += `・留到明天：${g.deferred.map(x => sysN(x)).join('、')}`;
   }
-  s += `・今天用了訪客 ${used} 次（約剩 ${Math.max(0, 20 - used)} 次，台北 08:00 重新計算）`;
+  s += `・今天訪客成功 ${okN} 次${used > okN ? `（共送出 ${used} 次）` : ''}，上限 20 次成功（台北 08:00 重新計算）`;
   const err = g.status === 'stopped' || g.status === 'budget' ? `<div class="ts bad">${g.status === 'budget' ? '額度用到上限，其餘明天再檢查' : '已停止：' + esc(g.err || '')}</div>` : '';
   const notes = g.notes?.length ? `<div class="tm">${esc(g.notes.slice(0, 4).join('；'))}</div>` : '';
   return `<div class="ttrow" style="cursor:default"><span class="tb"><div class="tn">每日訪客檢查</div><div class="tm">${esc(s)}</div>${notes}${err}
@@ -1774,7 +1819,8 @@ function renderRoute() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1>${esc(R.route)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="swapDir">${I.swap}<span>${esc(dest ? '往 ' + dest : '切換方向')}</span></button>` : (dest ? `<span class="dirbtn"><span>往 ${esc(dest)}</span></span>` : '')}</div>
-    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div>${D ? pupd(S.routeAt, S.routeError) : ''}</div>`;
+    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div>${D ? pupd(S.routeAt, S.routeError) : ''}
+    ${D && D.stops.length ? `<button class="chip schbtn" data-act="schOpen">時刻表</button>` : ''}</div>`;
   if (!D) h += skel(5);
   else {
     h += `<div class="line">` + D.stops.map((s, i) => {
@@ -1786,6 +1832,82 @@ function renderRoute() {
     }).join('') + `</div>`;
   }
   $('#routePage').innerHTML = h + '</div>';
+}
+
+/* ---------- v2.43.0 公車時刻表（雲端；路線頁「時刻表」按鈕） ---------- */
+const SCH_DAYTAB = [['today','今天'],['wk','平日'],['sat','週六'],['sun','週日']];
+function schYmd(off) { const d = new Date(Date.now() + 8 * 36e5 + off * 864e5); return d.toISOString().slice(0, 10); }
+function schDateOf(k) {   // 今天，或從今天起最近的一個平日／週六／週日
+  if (k === 'today') return schYmd(0);
+  for (let i = 0; i < 8; i++) { const y = schYmd(i), w = new Date(Date.parse(y + 'T12:00:00+08:00')).getUTCDay();
+    if ((k === 'wk' && w >= 1 && w <= 5) || (k === 'sat' && w === 6) || (k === 'sun' && w === 0)) return y; }
+  return schYmd(0);
+}
+function schSpecialHit(sp, idxs, ymd) {   // 1＝當天特別加開、0＝當天停駛、null＝照星期
+  if (idxs === -1 || idxs == null) return null;
+  const d = ymd.replace(/-/g, ''); let hit = null;
+  for (const i of String(idxs).split('.')) { const e = sp[+i]; if (!e) continue;
+    const inD = e[2] && e[2].split(',').includes(d), inP = e[3] && e[3].split(';').some(r => { const [a, b] = r.split('~'); return a && b && d >= a && d <= b; });
+    if (inD || inP) { hit = e[0]; if (hit === 0) return 0; } }
+  return hit;
+}
+function schCalc(recs, stopUID, ymd) {
+  const dow = new Date(Date.parse(ymd + 'T12:00:00+08:00')).getUTCDay();
+  const times = [], freq = []; let atOrigin = false, anyTrip = false;
+  for (const r of recs) {
+    const st = r.st || []; let idx = stopUID ? st.findIndex(s => s[0] === stopUID) : 0;
+    for (const t of r.tr || []) {
+      const spv = schSpecialHit(r.sp || [], t[3], ymd);
+      if (!(spv === 1 || (spv !== 0 && (t[0] & (1 << dow))))) continue;
+      anyTrip = true;
+      const pat = (r.p || [])[t[2]] || [];
+      let off = idx >= 0 ? pat[idx] : undefined, origin = false;
+      if (off == null || off < 0) { if (pat.filter(x => x >= 0).length === 1) { off = 0; origin = true; } else continue; }   // 只有起站時間的班表：退回起站
+      if (origin) atOrigin = true;
+      times.push({ m: t[1] + off, low: !!t[4], sub: r.sn && recs.length > 1 ? r.sn : '' });
+    }
+    for (const f of r.f || []) if (f[0] & (1 << dow)) freq.push(f);
+  }
+  times.sort((a, b) => a.m - b.m);
+  const seen = new Set(), uniq = times.filter(x => { const k = x.m + '|' + x.sub; if (seen.has(k)) return false; seen.add(k); return true; });
+  freq.sort((a, b) => a[1] - b[1]);
+  return { times: uniq, freq, atOrigin, anyTrip };
+}
+const schHm = m => String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+function schHtml() {
+  const R = S.route, D = S.routeData, X = S.sch; if (!R || !X) return '';
+  const dest = D?.dest?.[R.dirNum] ?? R.dest;
+  let h = `<h2>${esc(R.route)} 時刻表</h2><div class="addr">${esc(dest ? '往 ' + dest : '')}</div>`;
+  const stops = (D && D.stops) || [];
+  h += `<select id="schStop" class="schsel">${stops.map(s => `<option value="${esc(s.uid)}"${s.uid === X.stop ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>`;
+  const ti = SCH_DAYTAB.findIndex(t => t[0] === X.day);
+  h += `<div class="seg" style="--n:4;--i:${ti}"><i></i>${SCH_DAYTAB.map(t => `<button class="${t[0] === X.day ? 'on' : ''}" data-act="schDay" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>`;
+  if (X.loading) return h + `<div class="schnote">讀取時刻表中…</div>`;
+  if (X.err) return h + `<div class="schnote">讀取失敗：${esc(X.err)}</div>`;
+  const all = (X.data && X.data.recs) || [];
+  if (!all.length) return h + `<div class="schnote">雲端還沒有這條路線的時刻表。</div>`;
+  const recs = all.filter(r => r.d === 2 || (r.d === 1 ? 1 : 0) === (R.dirNum ? 1 : 0));
+  const ymd = schDateOf(X.day), isToday = X.day === 'today';
+  const c = schCalc(recs.length ? recs : all, X.stop, ymd);
+  const nowM = (() => { const d = new Date(Date.now() + 8 * 36e5); return d.getUTCHours() * 60 + d.getUTCMinutes(); })();
+  h += `<div class="schnote">${esc(ymd.slice(5).replace('-', '/'))}${isToday ? '（今天）' : ''}${c.atOrigin ? '・這條路線只有起站發車時間' : ''}</div>`;
+  if (c.freq.length) h += `<div class="schgrid">` + c.freq.map(f => `<div class="kv"><span>${schHm(f[1])}–${schHm(f[2])}</span>${f[3] != null && f[4] != null && f[3] !== f[4] ? `每 ${f[3]}–${f[4]} 分` : `每 ${f[3] ?? f[4] ?? '?'} 分`}</div>`).join('') + `</div><div class="schnote">班距是起站的發車間隔，各站實際到站會晚一些。</div>`;
+  if (c.times.length) {
+    const nextI = isToday ? c.times.findIndex(x => x.m >= nowM) : -1, byH = new Map();
+    c.times.forEach((x, i) => { const hh = Math.floor(x.m / 60); if (!byH.has(hh)) byH.set(hh, []); byH.get(hh).push([x, i]); });
+    h += `<div class="schgrid">` + [...byH].map(([hh, l]) => `<div class="schrow"><b>${String(hh % 24).padStart(2, '0')}</b><span>${l.map(([x, i]) => `<i class="${i === nextI ? 'next' : isToday && x.m < nowM ? 'past' : ''}">${String(x.m % 60).padStart(2, '0')}${x.low ? '♿' : ''}${x.sub ? `<small> ${esc(x.sub)}</small>` : ''}</i>`).join('')}</span></div>`).join('') + `</div>`;
+    h += `<div class="schnote">共 ${c.times.length} 班${c.times.some(x => x.low) ? '，♿＝低地板車' : ''}。表定時間，實際以即時到站為準。</div>`;
+  } else if (!c.freq.length) h += `<div class="schnote">${c.anyTrip ? '這一站沒有表定停靠時間。' : '這一天沒有班次。'}</div>`;
+  return h;
+}
+function schRender() { if (S.sheet && S.sheet.type === 'sch') { const el = $('#sheet'); if (el) el.innerHTML = '<div class="grab"></div>' + schHtml(); } }
+async function schOpen() {
+  const R = S.route, D = S.routeData; if (!R || !D) return;
+  const here = (D.stops || []).find(s => s.here);
+  S.sch = { day: 'today', stop: (here && here.uid) || R.stopUID || (D.stops[0] && D.stops[0].uid), data: null, err: null, loading: true, routeUID: R.routeUID };
+  S.sheet = { type: 'sch' }; openSheet(schHtml());
+  try { S.sch.data = await api('schedule', { routeUID: R.routeUID }); } catch (e) { S.sch.err = e.message; }
+  if (S.sch) S.sch.loading = false; schRender();
 }
 
 /* ---------- sheets ---------- */
@@ -2432,6 +2554,7 @@ document.addEventListener('change', e => { if (e.target.id === 'planTime') { S.p
 document.addEventListener('change', e => {
   if (e.target.id === 'stttDate' && e.target.value) stttDate(e.target.value);
   if (e.target.id === 'stttDest' && S.sttt) { S.sttt.dest = e.target.value; renderSttt(); }
+  if (e.target.id === 'schStop' && S.sch) { S.sch.stop = e.target.value; schRender(); }
 });
 document.addEventListener('keydown', e => { if (e.target.id === 'pickQ' && e.key === 'Enter') e.target.blur(); });
 
@@ -2468,6 +2591,11 @@ document.addEventListener('click', e => {
   switch (el.dataset.act) {
     case 'tab': window.tabPager ? tabPager(el.dataset.v) : setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
+    case 'schOpen': schOpen(); break;
+    case 'sbOne': sbRun([el.dataset.v]); break;
+    case 'sbMissing': { const st = SB.st || {}; sbRun(SCH_CITIES.filter(([c]) => !st[c]).map(x => x[0])); break; }
+    case 'sbAll': if (confirm('要重新下載全部 23 區的公車時刻表嗎？約 450 次 TDX 呼叫，可能要分兩天（每日寫入額度）。')) sbRun(SCH_CITIES.map(x => x[0])); break;
+    case 'schDay': if (S.sch) { S.sch.day = el.dataset.v; schRender(); } break;
     case 'closeRoute': closeRoute(); break;
     case 'planNew': if (document.activeElement) document.activeElement.blur(); openPlan(); break;
     case 'planPick': openPick(el.dataset.v); break;
