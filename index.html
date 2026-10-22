@@ -152,7 +152,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .sheet.drag{transition:none}
 .page-dim{position:fixed;inset:0;z-index:29;background:#000;opacity:0;pointer-events:none}
 .page .wrap{padding-bottom:60px}
-.ptop{position:sticky;top:8px;z-index:2;background:rgba(14,16,15,.74);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);margin:8px -10px 10px;padding:8px 14px 14px;border-radius:30px;border:1px solid #2A2C2B}
+.ptop{position:sticky;top:8px;z-index:6;background:rgba(14,16,15,.74);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);margin:8px -10px 10px;padding:8px 14px 14px;border-radius:30px;border:1px solid #2A2C2B}
 .back{display:flex;align-items:center;gap:4px;color:var(--lime);font-size:17px;font-weight:600;padding:6px 0}
 .back svg{width:22px;height:22px}
 .rhead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-top:6px}
@@ -161,7 +161,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rhead h1.trip{white-space:nowrap;flex:none;display:flex;align-items:center;gap:6px}
 .rhead .dirbtn.trip{min-width:0;flex:0 1 auto}
-.lblk{position:relative;overflow:hidden;margin:0 -4px;padding:0 4px}
+.lblk{position:relative;overflow:visible;margin:0 -4px;padding:0 4px}
 .pghost{position:absolute;left:0;right:0;padding:0 4px;pointer-events:none}
 .page.under{transform:none;z-index:29;transition:none;pointer-events:none}
 .dirbtn svg{width:18px;height:18px;color:var(--lime);flex:none}
@@ -260,8 +260,9 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 /* 時刻表頁（v2.23.5）：整頁不捲動（iOS 也不會橡皮筋拉動標題）；標題＋控制區固定在原位，只有下面的清單自己捲動 */
 .page:has(> .ttw){overflow:hidden;overscroll-behavior:none}
 .page .wrap.ttw{height:100%;display:flex;flex-direction:column;padding-bottom:0}
-.stpin{flex:none;padding:8px 0 10px}
+.stpin{position:sticky;top:0;z-index:6;background:var(--bg);flex:none;padding:8px 0 10px}
 .stpin .ptop{position:static;margin:0 -10px 10px}
+#routePage .wrap:not(.ttw) .lblk > .seg{position:sticky;top:var(--rail-head,160px);z-index:5;background:rgba(14,16,15,.94);-webkit-backdrop-filter:blur(16px) saturate(1.4);backdrop-filter:blur(16px) saturate(1.4);box-shadow:0 12px 16px rgba(14,16,15,.92)}
 .stctl .rmeta{margin:8px 4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stctl .sttdir{margin-top:8px}.stctl .sttdir.seg{margin:8px 0 0}.stctl .sttf{margin:8px 2px 0}.stctl .sttf select{margin:0}
 .sttlist{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:calc(40px + env(safe-area-inset-bottom,0px))}
@@ -593,7 +594,7 @@ function moveInd(instant) {
   if (ind.style.transform !== to) ind.style.transform = to;   // 值相同就不動，不打斷進行中的動畫
   if (ind.style.width !== w) ind.style.width = w;
 }
-addEventListener('resize', () => moveInd(true));
+addEventListener('resize', () => { moveInd(true); pinRailHead(); });
 // 膠囊跟手：依滑動進度 p（0～1）在兩個按鈕之間內插位置與寬度
 // 方向分頁的膠囊（.seg i）用 CSS 的等分寬度；底部功能列用按鈕實際位置
 function pillGeo(pill, btn) {
@@ -1491,7 +1492,12 @@ function stationHead(R, cur) {
     <div class="shd-info">${info || up || '&nbsp;'}</div>${info ? up : ''}
     <div class="shd-acts"><button class="navbtn ${cur === 'sttt' ? 'on' : ''}" ${cur === 'sttt' ? 'aria-current="page"' : 'data-act="stttOpen"'}>${I.clock}時刻表</button><button class="navbtn" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}">${I.nav}${R.exit ? '導航到出口' : '導航'}</button></div></div>`;
 }
-function renderRail() { if (S.rail && S.page === 'rail') $('#routePage').innerHTML = railHtml(); }
+function renderRail() { if (S.rail && S.page === 'rail') { $('#routePage').innerHTML = railHtml(); pinRailHead(); } }
+function pinRailHead() {
+  const pg = $('#routePage'); if (!pg || S.page !== 'rail') return;
+  const h = pg.querySelector('.ptop'); if (!h) return;
+  pg.style.setProperty('--rail-head', (8 + h.offsetHeight + 8) + 'px');
+}
 function railHtml() {
   const R = S.rail; if (!R) return '';
   const D = S.railData;
