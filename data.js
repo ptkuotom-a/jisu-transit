@@ -257,6 +257,19 @@ async function cloudSor(uids) {
   }
   return out;
 }
+// v2.42.1：路線頁發現「即時到站有、站序裡沒有」的站，回報雲端；Worker 核對後自動重建該縣市站序。每條路線每次開 App 只報一次。
+const sorReported = new Set();
+function reportSor(routeUID, sor, etas) {
+  if (!routeUID || sorReported.has(routeUID)) return;
+  const have = new Set(); for (const r of sor || []) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
+  const miss = new Map();
+  for (const t of etas || []) if (t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID)) miss.set(t.StopUID, (t.StopName && t.StopName.Zh_tw) || "");
+  if (!miss.size) return;
+  sorReported.add(routeUID);
+  const proxy = getProxy(), s = getSession(); if (!proxy || !s) return;
+  const r = have.size ? [...miss].slice(0, 20).map(([u, n]) => [routeUID, u, n]) : [[routeUID, "", ""]];
+  fetch(proxy + "/bus/sor/report", { method: "POST", headers: { "content-type": "application/json", "x-session": s.token }, body: JSON.stringify({ r }) }).catch(() => {});
+}
 async function loadTravelHead(jobs) {
   const out = {};
   const want = new Map();
@@ -901,6 +914,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     odR ? odR.list : tdx("route", u("EstimatedTimeOfArrival")),
     odR && Array.isArray(odR.near) ? odR.near : tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
+  try { reportSor(routeUID, sor, etas); } catch (e) {}
   if (sc) {
     let have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
     if (!have.size) { const d = await sorCloud(sor); if (d) { sor = d; for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID); } }
