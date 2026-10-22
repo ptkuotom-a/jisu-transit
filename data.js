@@ -257,6 +257,103 @@ async function cloudSor(uids) {
   }
   return out;
 }
+// v2.43.0：公車／公路客運時刻表（雲端 /bus/sch/route，資料格式見 Worker schPut 說明）。手機快取一天。
+// 回傳 { routeUID, recs:[{ u, n, s, sn, d, st, p, tr, sp, f }], t }；recs 空的、或 need 有值＝雲端還沒有這條路線的時刻表
+async function busSchedule({ routeUID, fresh }) {
+  if (!routeUID) throw new Error("缺少路線代碼");
+  const key = "sch|" + routeUID;
+  if (!fresh) { const c = await IDB.get(key).catch(() => null); if (c && Date.now() - c.t < DAY_MS) return c.d; }
+  const j = await authedGet("/bus/sch/route?uid=" + enc(routeUID));
+  const d = { routeUID, recs: (j && j.list) || [], t: j && j.t || null, need: j && j.need || null };
+  if (!d.need) IDB.set(key, { t: Date.now(), d }).catch(() => {});
+  return d;
+}
+// v2.43.0：管理者手動更新時刻表（進階設定）。整個縣市分頁抓 TDX（經 Worker 金鑰 2），在手機／瀏覽器精簡、gzip，
+// 依 RouteUID 分片打包成一包上傳（POST /bus/sch/put）；Worker 只寫 KV，不解析。寫入計入每日額度，滿了會回 503。
+const SCH_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function schMask(sd) { let m = 0; SCH_DAYS.forEach((d, i) => { if (sd && +sd[d] === 1) m |= 1 << i; }); return m; }
+function schMin(t) { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; }
+function schPack(rec) {
+  const zh = x => (x && x.Zh_tw) || "";
+  const trips = rec.Timetables || [];
+  const st = [], at = new Map();
+  // 循環線同一站會出現兩次（起點＝終點）：用「站號＋第幾次出現」當鍵
+  const keyed = t => { const n = new Map(); return (t.StopTimes || []).slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0)).map(s => { const c = (n.get(s.StopUID) || 0) + 1; n.set(s.StopUID, c); return [s.StopUID + "#" + c, s]; }); };
+  const longest = trips.slice().sort((a, b) => (b.StopTimes || []).length - (a.StopTimes || []).length)[0];
+  const addStop = (k, s) => { if (s.StopUID && !at.has(k)) { at.set(k, st.length); st.push([s.StopUID, zh(s.StopName)]); } };
+  if (longest) for (const [k, s] of keyed(longest)) addStop(k, s);
+  for (const t of trips) for (const [k, s] of keyed(t)) addStop(k, s);
+  const p = [], pi = new Map(), sp = [], spi = new Map(), tr = [];
+  for (const t of trips) {
+    const times = new Array(st.length).fill(null);
+    for (const [k, s] of keyed(t)) { const i = at.get(k); if (i == null) continue; const m = schMin(s.DepartureTime) ?? schMin(s.ArrivalTime); if (m != null) times[i] = m; }
+    let first = times.findIndex(x => x != null);
+    if (first < 0) continue;
+    let base = times[first];
+    // 跨午夜：後面的站時間變小就加一天
+    let prev = base;
+    for (let i = first + 1; i < times.length; i++) if (times[i] != null) { while (times[i] < prev - 60) times[i] += 1440; prev = times[i]; }
+    const pat = times.map(x => (x == null ? -1 : x - base));
+    while (pat.length && pat[pat.length - 1] === -1) pat.pop();
+    const pk = pat.join(",");
+    if (!pi.has(pk)) { pi.set(pk, p.length); p.push(pat); }
+    let s = -1;
+    if (t.SpecialDays && t.SpecialDays.length) {
+      for (const d of t.SpecialDays) {
+        const e = [+(d.ServiceStatus || 0) ? 1 : 0, (d.Description || "").slice(0, 30), (d.Dates || []).map(x => x.replace(/-/g, "")).join(","),
+          d.DatePeriod ? `${(d.DatePeriod.StartDate || "").replace(/-/g, "")}~${(d.DatePeriod.EndDate || "").replace(/-/g, "")}` : ""];
+        const k = e.join("|");
+        if (!spi.has(k)) { spi.set(k, sp.length); sp.push(e); }
+      }
+      // 一個班次可能有多筆特殊日：用 "a.b.c" 串起來
+      s = t.SpecialDays.map(d => spi.get([+(d.ServiceStatus || 0) ? 1 : 0, (d.Description || "").slice(0, 30), (d.Dates || []).map(x => x.replace(/-/g, "")).join(","),
+        d.DatePeriod ? `${(d.DatePeriod.StartDate || "").replace(/-/g, "")}~${(d.DatePeriod.EndDate || "").replace(/-/g, "")}` : ""].join("|"))).join(".");
+    }
+    tr.push([schMask(t.ServiceDay), base, pi.get(pk), s, t.IsLowFloor ? 1 : 0]);
+  }
+  tr.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const f = (rec.Frequencys || []).map(q => [schMask(q.ServiceDay), schMin(q.StartTime), schMin(q.EndTime), q.MinHeadwayMins ?? null, q.MaxHeadwayMins ?? null]).filter(x => x[1] != null);
+  const out = { u: rec.RouteUID, n: zh(rec.RouteName), s: rec.SubRouteUID || "", sn: zh(rec.SubRouteName), d: rec.Direction === 1 ? 1 : rec.Direction === 2 ? 2 : 0, v: rec.VersionID ?? null };
+  if (st.length) out.st = st;
+  if (p.length) out.p = p;
+  if (tr.length) out.tr = tr;
+  if (sp.length) out.sp = sp;
+  if (f.length) out.f = f;
+  return out;
+}
+const SCH_N = uid => { let h = 0; for (const ch of String(uid)) h = h * 31 + ch.charCodeAt(0) >>> 0; return h; };
+const gzBytes = async s => new Uint8Array(await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+async function schBuild({ city, onProgress }) {
+  if (!city) throw new Error("缺少縣市");
+  const proxy = getProxy(), sess = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!sess) throw new Error("請重新登入");
+  const path = city === "InterCity" ? "InterCity" : "City/" + city, top = 20, recs = [];
+  let raw = 0, trips = 0;
+  for (let skip = 0, page = 0; page < 1000; page++, skip += top) {
+    const l = await tdx("route", `${BASE}/basic/v2/Bus/Schedule/${path}?%24top=${top}&%24skip=${skip}&%24format=JSON`);
+    if (!Array.isArray(l)) throw new Error("TDX 回傳格式不對");
+    for (const r of l) { raw += JSON.stringify(r).length; const c = schPack(r); trips += (c.tr || []).length; recs.push(c); }
+    if (onProgress) try { onProgress({ city, page: page + 1, recs: recs.length }); } catch (e) {}
+    if (l.length < top) break;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  if (!recs.length) throw new Error("TDX 沒有這個縣市的時刻表");
+  const size = recs.reduce((a, r) => a + JSON.stringify(r).length, 0);
+  const n = Math.max(1, Math.min(64, Math.ceil(size / 600000)));
+  const sh = Array.from({ length: n }, () => []);
+  for (const r of recs) sh[SCH_N(r.u) % n].push(r);
+  const t = Date.now(), parts = [];
+  for (let k = 0; k < n; k++) parts.push(await gzBytes(JSON.stringify({ v: 1, c: city, k, t, r: sh[k] })));
+  const routes = new Set(recs.map(r => r.u)).size;
+  const head = new TextEncoder().encode(JSON.stringify({ n, parts: parts.map(b => b.length), routes, recs: recs.length, trips, raw, ver: Math.max(0, ...recs.map(r => +r.v || 0)) || null }));
+  const body = new Uint8Array(4 + head.length + parts.reduce((a, b) => a + b.length, 0));
+  body.set([head.length >>> 24 & 255, head.length >>> 16 & 255, head.length >>> 8 & 255, head.length & 255], 0); body.set(head, 4);
+  let off = 4 + head.length; for (const b of parts) { body.set(b, off); off += b.length; }
+  if (onProgress) try { onProgress({ city, uploading: true, recs: recs.length }); } catch (e) {}
+  const r = await fetch(proxy + "/bus/sch/put?c=" + enc(city), { method: "POST", headers: { "x-session": sess.token, "content-type": "application/octet-stream" }, body });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.message) || ("錯誤 " + r.status));
+  return { ...j, packed: size };
+}
 // v2.42.1：路線頁發現「即時到站有、站序裡沒有」的站，回報雲端；Worker 核對後自動重建該縣市站序。每條路線每次開 App 只報一次。
 const sorReported = new Set();
 function reportSor(routeUID, sor, etas) {
@@ -1472,6 +1569,8 @@ async function ttRefresh(op, pass, onStep, opt = {}) {
       }
       if (Object.keys(e).length) out.s2s = e;
     } catch (e) { if (isRate(e) || e.stop || e.budget) throw e; }
+    try { const sol = solPack(await get(`${RAIL_BASE}/v2/Rail/Metro/StationOfLine/${op}?%24format=JSON`)); if (sol.length) out.sol = sol; }   // v2.43.0：各線車站順序也存雲端（1次呼叫）
+    catch (e) { if (isRate(e) || e.stop || e.budget) throw e; }
     if (HW_LINES[op]) {   // 沒有站別時刻表的路線：一起存班距＋首末班（2次呼叫）
       const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
       out.hw = hwPack(await get(`${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), await get(`${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`));
@@ -1482,6 +1581,10 @@ async function ttRefresh(op, pass, onStep, opt = {}) {
     for (const f of freq) version = vmax(version, f.VersionID);
     if (!version) version = String((freq[0] && (freq[0].UpdateTime || "").slice(0, 10)) || "");
     out = { v: 1, op, kind: "tmrt", freq, fl };
+    try { const sol = solPack(await get(`${RAIL_BASE}/v2/Rail/Metro/StationOfLine/TMRT?%24format=JSON`)); if (sol.length) out.sol = sol; }   // v2.43.0：車站順序、站間時間也存雲端
+    catch (e) { if (isRate(e) || e.stop || e.budget) throw e; }
+    try { const e2 = s2sPack(await get(`${RAIL_BASE}/v2/Rail/Metro/S2STravelTime/TMRT?%24format=JSON`)); if (Object.keys(e2).length) out.s2s = e2; }
+    catch (e) { if (isRate(e) || e.stop || e.budget) throw e; }
   } else if (sys === "tra") {
     const j = await get(`${RAIL_BASE}/v3/Rail/TRA/GeneralTrainTimetable?%24format=JSON`, true);
     const list = j.TrainTimetables || [];
@@ -1575,14 +1678,15 @@ async function rail7Run(op, pass, get, src7, gen, o = {}) {
 // v2.30.1：TDX 訪客的「一天」是 UTC 日（RateLimit-Reset 指到 UTC 午夜＝台北 08:00），不是台北日期；
 //   以前用台北日期計算，00:00–08:00 跑的檢查會和前一天下午共用同一份 20 次 → 429。額度與「今天跑過沒」都改用 UTC 日（guestDay）。
 //   TDX 對訪客只有每日上限（標頭只有 X-RateLimit-Limit-Day），沒有每秒限制；仍然每次請求間隔 3 秒，遇到 429 等 45 秒重試一次，再 429 才停。
-const GUEST_MAX = 17, GUEST_DAY = 20, GUEST_GAP = 3000, GUEST_BACKOFF = 45000;
+// v2.43.0：改成數「成功」的次數（2xx），成功 20 次才停；失敗的請求不算進上限（401／429 仍然立刻停）
+const GUEST_MAX = 20, GUEST_DAY = 20, GUEST_GAP = 3000, GUEST_BACKOFF = 45000;
 const guestDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);   // TDX 訪客額度的日子（UTC）
 const untilVisible = () => (typeof document === "undefined" || !document.hidden) ? Promise.resolve() : new Promise(res => {   // App 在背景時先暫停，回到前景再繼續
   const f = () => { if (!document.hidden) { document.removeEventListener("visibilitychange", f); res(); } }; document.addEventListener("visibilitychange", f); });
 function guestFetcher(st) {
-  const prog = w => { try { st.onProgress && st.onProgress({ n: st.used - st.used0, total: Math.max(1, GUEST_MAX - st.used0), wait: w || null }); } catch (e) {} };
+  const prog = w => { try { st.onProgress && st.onProgress({ n: st.ok - st.ok0, total: Math.max(1, GUEST_MAX - st.ok0), wait: w || null }); } catch (e) {} };
   return async (url, raw) => {
-    if (st.used >= GUEST_MAX) { const e = new Error("今天的訪客額度已用到上限"); e.budget = true; throw e; }
+    if (st.ok >= GUEST_MAX) { const e = new Error("今天的訪客額度已用到上限"); e.budget = true; throw e; }
     let r;
     for (let attempt = 0; ; attempt++) {
       await untilVisible();
@@ -1591,13 +1695,14 @@ function guestFetcher(st) {
       try { r = await fetch(url, { cache: "no-store", credentials: "omit" }); }   // 不加自訂標頭：簡單請求，不會有 CORS 預檢
       catch (e) { const x = new Error("連不到 TDX"); x.stop = "net"; throw x; }
       st.last = Date.now();
-      if (r.status === 429 && attempt === 0 && !st.retried && st.used < GUEST_MAX) {   // 可能是短時間太密：等 45 秒重試一次（整次檢查只重試一次）
+      if (r.status === 429 && attempt === 0 && !st.retried && st.ok < GUEST_MAX) {   // 可能是短時間太密：等 45 秒重試一次（整次檢查只重試一次）
         st.retried = true; prog("TDX 回 429，45 秒後重試一次"); await sleep(GUEST_BACKOFF); continue;
       }
       break;
     }
     if (r.status === 401 || r.status === 403 || r.status === 429) { const e = new Error("TDX 訪客 " + r.status + (r.status === 429 ? (st.retried ? "（等 45 秒重試仍是 429，可能是同一個 IP 今天的 20 次已用完，例如行動網路共用 IP）" : "") : "")); e.stop = r.status; throw e; }
     if (!r.ok) throw new Error("TDX " + r.status);
+    st.ok++; prog();
     st.bytes += +(r.headers.get("content-length") || 0);
     const j = await r.json();
     if (raw) return j;
@@ -1621,13 +1726,13 @@ async function guestSync(p = {}) {
   const prevQ = prev.qday || (prev.at ? guestDay(Date.parse(prev.at)) : "");   // 舊紀錄沒有 qday：用開始時間換算 UTC 日
   const resume = prev.status === "running" || (prev.status === "stopped" && /連不到/.test(prev.err || ""));   // 上次中途被關掉／斷線：同一天接著跑
   if (!p.force && prevQ === qday && !resume) return { skipped: "done-today", state: prev };
-  const used0 = prevQ === qday ? (prev.used || 0) : 0;
-  const st = { used: used0, used0, bytes: 0, onProgress: p.onProgress }, gget = guestFetcher(st);   // 同一個 TDX 日再跑一次（手動）時接著算
+  const used0 = prevQ === qday ? (prev.used || 0) : 0, ok0 = prevQ === qday ? (prev.ok ?? prev.used ?? 0) : 0;   // 舊紀錄沒有 ok：用 used（保守）
+  const st = { used: used0, used0, ok: ok0, ok0, bytes: 0, onProgress: p.onProgress }, gget = guestFetcher(st);   // 同一個 TDX 日再跑一次（手動）時接著算
   const S = { day: today, qday, at: new Date().toISOString(), status: "running", used: 0, bytes: 0, changed: [], deferred: [], checked: [], notes: [], ptr: prev.ptr || 0, hol: prev.hol || {}, sig: { ...(prev.sig || {}) }, dry: !!p.dry };
   // sig：每個系統上次看到的來源時間；沒有的話拿雲端那份的存放時間比（來源時間比它新＝我們還沒有）
   const isNew = (key, t, storedAt) => newer(t, S.sig[key] || storedAt), seen = (key, t) => { if (t && !p.dry) S.sig[key] = t; };
   if (!p.dry) await gsyncCall("PUT", pass, S).catch(() => {});
-  const left = () => GUEST_MAX - st.used;
+  const left = () => GUEST_MAX - st.ok;
   const force = new Set(p.forceChange || []), only = p.only ? new Set(p.only) : null, skip = op => !!only && !only.has(op);   // only：測試用，只跑這幾個系統
   const log = (op, what) => S.changed.push({ op, what });
   const meta = await ttMeta(true), M = meta.systems || {};
@@ -1729,7 +1834,7 @@ async function guestSync(p = {}) {
   } catch (e) {
     S.status = e.budget ? "budget" : "stopped"; S.err = String(e.message || e);
   }
-  S.used = st.used; S.bytes = st.bytes; S.end = new Date().toISOString();
+  S.used = st.used; S.ok = st.ok; S.bytes = st.bytes; S.end = new Date().toISOString();
   const outs = S.out; delete S.out;
   if (S.checked.length > 60) S.checked = S.checked.slice(0, 60);
   if (!p.dry) { await gsyncCall("PUT", pass, S).catch(() => {}); ttMetaP = null; }
@@ -2076,7 +2181,13 @@ async function railSearch(p) {
 
 // ---------- 路線停靠站（捷運／輕軌）與車次停靠站（台鐵／高鐵） ----------
 const SOL_KEY = "jisu_sol";
+const solPack = list => (Array.isArray(list) ? list : []).map(l => ({ line: l.LineID || l.LineNO, st: (l.Stations || []).slice().sort((a, b) => (a.Sequence ?? 0) - (b.Sequence ?? 0)).map(x => [x.StationID, zh(x.StationName) || x.StationID]) }));
+const s2sPack = list => { const e = {}; for (const r of Array.isArray(list) ? list : []) for (const x of (r.TravelTimes || [])) {
+  const sec = (x.RunTime || 0) + (x.StopTime || 0); if (!sec) continue;
+  for (const k of [x.FromStationID + "|" + x.ToStationID, x.ToStationID + "|" + x.FromStationID]) if (!e[k]) e[k] = sec; } return e; };
 async function stationOfLine(get, op, heal) {   // heal：清單裡找不到要的站，且存了超過一天才重抓
+  // v2.43.0：雲端那份（更新時刻表時一起存的各線車站順序）優先；雲端沒有、或雲端那份也找不到要的站，才用本機快取／向 TDX 查
+  if (!heal) { const stored = await ttLoad(op).catch(() => null); if (stored && Array.isArray(stored.sol) && stored.sol.length) return stored.sol; }
   let c = {}; try { c = JSON.parse(localStorage.getItem(SOL_KEY)) || {}; } catch (e) {}
   const hit = c[op]; if (hit && !(heal && Date.now() - hit.time > DAY_MS) && await rgenOk(op, hit)) return hit.lines;
   const g = await rgenNow(op).catch(() => null);
@@ -3632,6 +3743,9 @@ window.dataApi = async (action, p = {}) => {
   switch (action) {
     case "nearby": return nearby(p);
     case "route": return routeView(p);
+    case "schedule": return busSchedule(p || {});
+    case "schStatus": return authedGet("/bus/sch/meta");
+    case "schBuild": return schBuild(p || {});
     case "railBoard": return railBoard(tdx, p);
     case "loadState": return loadState();
     case "saveState": localStorage.setItem(STATE_KEY, JSON.stringify(p)); return true;
