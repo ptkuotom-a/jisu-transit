@@ -414,7 +414,13 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       odGet(`/od/stops?lat=${lat}&lon=${lon}&r=${qStop}`).catch(() => null),
       odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
-    const city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => !isThbStop(s)) : [];
+    let city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
+    const have = new Set(city.map(s => s.StopUID).filter(Boolean));
+    const missing = (eta || []).some(e => e.StopUID && !isThbStop(e) && !have.has(e.StopUID));
+    if (!city.length || missing) {
+      const extra = await tdx("main", `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`).catch(() => []);
+      for (const s of extra) if (s.StopUID && !have.has(s.StopUID) && s.StopPosition && !isThbStop(s)) { city.push(s); have.add(s.StopUID); }
+    }
     const hw = thb && Array.isArray(thb.list) ? thb.list : [];
     return [eta, [...city, ...hw]];
   })();
