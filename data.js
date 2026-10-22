@@ -217,17 +217,22 @@ function llOf(s) {
   if (p && p.PositionLat != null && p.PositionLon != null) return [+p.PositionLat, +p.PositionLon];
   return null;
 }
-// 往下一站的方位：沿站序只取緊接的下一站。不往終點跳，也不用終點或前一站的方位。
+// 往下一站的方位：沿站序取這一站之後、第一個有座標的下一站。不往終點跳，也不用終點或前一站的方位。
 function travelHead(stops, uid, lat, lon) {
   if (!stops || !uid) return null;
-  const idx = stops.findIndex(s => s.StopUID === uid);
-  if (idx < 0 || idx + 1 >= stops.length) return null;
-  const self = llOf(stops[idx]);
-  const here = lat != null && lon != null ? [+lat, +lon] : self;
-  const p = llOf(stops[idx + 1]);
-  if (!here || !p) return null;
-  if (haversine(here[0], here[1], p[0], p[1]) < 1) return null;
-  return bearingDeg(here[0], here[1], p[0], p[1]);
+  const ordered = stops.some(s => s && s.StopSequence > 0)
+    ? stops.slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0))
+    : stops;
+  const idx = ordered.findIndex(s => s.StopUID === uid);
+  if (idx < 0) return null;
+  const here = lat != null && lon != null ? [+lat, +lon] : llOf(ordered[idx]);
+  if (!here) return null;
+  for (let i = idx + 1; i < ordered.length; i++) {
+    const p = llOf(ordered[i]);
+    if (!p || haversine(here[0], here[1], p[0], p[1]) < 1) continue;
+    return bearingDeg(here[0], here[1], p[0], p[1]);
+  }
+  return null;
 }
 function headFromList(list, routeUID, dirNum, stopUID, lat, lon) {
   for (const r of list || []) {
@@ -630,8 +635,8 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // v2.40.7：同一站名、往下一站的行進方位差 60 度以內，合成一張卡。不是往終點，也不是站名或 StopUID。
-    // 不同方位仍分開。站序讀不到、或已是末站時，才退回 8 公尺內同一根站牌，避免兩側被合成一張。
+    // v2.40.8：同一站名、往下一站的行進方位差 60 度以內，合成一張卡。不是往終點，也不是站名或 StopUID。
+    // 要跟卡上每一條路線都在 60 度內，不同方位仍分開。站序讀不到、或已是末站時，才退回 8 公尺內同一根站牌。
     const rawMap = new Map();
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
@@ -676,7 +681,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     for (const row of raw) {
       const arr = groups[row.name] = groups[row.name] || [];
       const h = heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`];
-      let g = h != null ? arr.find(x => x.head != null && angDiff(h, x.head) <= 60) : arr.find(x => x.head == null && samePole(x, row));
+      let g = h != null ? arr.find(x => x.head != null && x.heads.length && x.heads.every(hh => angDiff(h, hh) <= 60)) : arr.find(x => x.head == null && samePole(x, row));
       if (!g) {
         g = { name: row.name, uids: new Set(row.uid ? [row.uid] : []), dist: row.pos ? row.pos.d : null, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null, bear: row.pos ? row.pos.bear : null, head: h != null ? h : null, heads: h != null ? [h] : [], routes: {} };
         arr.push(g); list.push(g);
