@@ -151,23 +151,25 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
 // 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
 // v2.38.0：這一格還沒存站牌清單 → 先從雲端下載雙北（含公路客運）附近站牌清單（不用 TDX），存成同格式的 geo| 快取；雲端沒涵蓋就回 null，照舊 TDX
 const cloudJobs = new Map();
+// v2.41.0：雲端開始給雙北站牌方向（bearing 欄）。之前存的雲端清單沒有方向，重抓一次。
+const oldCloud = c => !!c && c.src === "od" && !c.hv;
 function cloudStops(geoKey) {
   if (!geoKey) return Promise.resolve(null);
   if (cloudJobs.has(geoKey)) return cloudJobs.get(geoKey);
   const m = /^s\|([\d.-]+),([\d.-]+),(\d+)$/.exec(geoKey);
   const job = (async () => {
     if (!m) return null;
-    const c = await IDB.get("geo|" + geoKey).catch(() => null); if (c) return c;
+    const c = await IDB.get("geo|" + geoKey).catch(() => null); if (c && !oldCloud(c)) return c;
     const j = await Promise.race([odGet(`/od/stops?lat=${m[1]}&lon=${m[2]}&r=${m[3]}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))]).catch(() => null);
     if (!j || j.cov !== 1 || !Array.isArray(j.d)) return null;
-    const v = { t: Date.now(), d: j.d, src: "od" }; await IDB.set("geo|" + geoKey, v).catch(() => {}); return v;
+    const v = { t: Date.now(), d: j.d, src: "od", hv: j.d.some(a => a[5]) ? 1 : 0 }; await IDB.set("geo|" + geoKey, v).catch(() => {}); return v;
   })();
   cloudJobs.set(geoKey, job); job.then(v => { if (!v) cloudJobs.delete(geoKey); }, () => cloudJobs.delete(geoKey));
   return job;
 }
 async function busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey) {
   if (!geoKey) return null;
-  const c = (await IDB.get("geo|" + geoKey).catch(() => null)) || await cloudStops(geoKey); if (!c) return null;
+  let c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c || oldCloud(c)) c = (await cloudStops(geoKey)) || c; if (!c) return null;
   const near = c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
   if (!near.some(a => isNwtR(a[0]))) return null;                       // 附近沒有新北站牌：照舊
   const other = near.some(a => !isTpeR(a[0]) && !isNwtR(a[0]));
@@ -243,6 +245,18 @@ function headFromList(list, routeUID, dirNum, stopUID, lat, lon) {
   return null;
 }
 const sorMem = new Map();
+// v2.42.0：站序先問雲端（Worker 讀 KV 分片，不打 TDX）。雲端沒有這條路線或還沒建這個縣市，才退回 TDX。
+// 回傳 { RouteUID: [各方向／支線站序] }，格式同 sorPack。
+async function cloudSor(uids) {
+  const want = [...new Set((uids || []).filter(Boolean))].slice(0, 60), out = {};
+  for (let i = 0; i < want.length; i += 20) {
+    try {
+      const j = await authedGet("/bus/sor/route?uids=" + want.slice(i, i + 20).map(enc).join(","));
+      for (const r of (j && j.list) || []) (out[r.RouteUID] = out[r.RouteUID] || []).push(r);
+    } catch (e) { if (/登入|NO_PROXY/.test(String(e && e.message))) break; }
+  }
+  return out;
+}
 async function loadTravelHead(jobs) {
   const out = {};
   const want = new Map();
@@ -273,8 +287,14 @@ async function loadTravelHead(jobs) {
     }
     if (hit < info.jobs.length) miss.push(info);
   }));
+  const cloud = miss.length ? await cloudSor(miss.map(info => info.jobs[0].routeUID)).catch(() => ({})) : {};
+  for (const [uid, rs] of Object.entries(cloud)) {
+    sorMem.set("uid|" + uid, rs);
+    const info = miss.find(x => x.jobs[0].routeUID === uid), nm = (rs[0].RouteName && rs[0].RouteName.Zh_tw) || (info && info.route) || "";
+    if (info && nm && nm !== "?") { const key = `sor|${info.path}|${nm}`; sorMem.set(key, rs); IDB.set(key, { t: Date.now(), d: rs, src: "kv" }).catch(() => {}); }
+  }
   const byPath = {};
-  for (const info of miss) (byPath[info.path] = byPath[info.path] || []).push(info);
+  for (const info of miss) if (!cloud[info.jobs[0].routeUID]) (byPath[info.path] = byPath[info.path] || []).push(info);
   const paths = Object.entries(byPath);
   for (let i = 0; i < paths.length; i += 2) {
     await Promise.all(paths.slice(i, i + 2).map(async ([path, infos]) => {
@@ -510,7 +530,7 @@ const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, Stati
 // 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
 async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
   let c = await IDB.get("geo|" + key);
-  if (!c && kind === "stop") c = await cloudStops(key).catch(() => null);
+  if (kind === "stop" && (!c || oldCloud(c))) c = (await cloudStops(key).catch(() => null)) || c;
   const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); IDB.set("geo|" + key, { t: Date.now(), d: l.map(pack) }).catch(() => {}); return l; };
   if (!c) return fresh(false);
   const list = c.d.map(unpack);
@@ -635,8 +655,6 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       const n = s.StopName && s.StopName.Zh_tw;
       if (n && (!byName[n] || d < byName[n].d)) byName[n] = v;
     }
-    // v2.40.8：同一站名、往下一站的行進方位差 60 度以內，合成一張卡。不是往終點，也不是站名或 StopUID。
-    // 要跟卡上每一條路線都在 60 度內，不同方位仍分開。站序讀不到、或已是末站時，才退回 8 公尺內同一根站牌。
     const rawMap = new Map();
     for (const it of eta) {
       const name = (it.StopName && it.StopName.Zh_tw) || "未知站牌";
@@ -655,52 +673,86 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       rawMap.set(key, { name, uid, pos, r });
     }
     const raw = [...rawMap.values()];
-    const uidsOf = {};
+    // v2.41.0：同名公車站分卡。分馬路兩側靠方向，不靠距離（實測同側可差 30 公尺、對側可只差 10 公尺）。
+    // 1. 同一根站牌：同 StationID，沒有 StationID 時同座標（雙北座標只到小數 4 位，同一根站牌座標完全相同）。
+    // 2. 方向：站牌的 Bearing（其他縣市 TDX 原生；雙北由雲端用站序算好）。沒有才用往下一站方位補。
+    // 3. 兩根站牌都有方向：最接近的一對差 45 度以內、相距 60 公尺內才合併；相反或垂直就分開。
+    //    有一邊沒有方向：10 公尺內才合併。用併查集，結果不受資料順序影響。
+    const B8 = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
+    const poleKey = row => row.pos ? (row.pos.sid ? "s" + row.pos.sid : `p${row.pos.lat},${row.pos.lon}`) : row.uid ? "u" + row.uid : "x";
+    const polesOf = {};
     for (const row of raw) {
-      if (!row.uid) continue;
-      const s = uidsOf[row.name] = uidsOf[row.name] || new Set();
-      s.add(row.uid);
+      const ps = polesOf[row.name] = polesOf[row.name] || new Map(), k = poleKey(row);
+      if (!ps.has(k)) ps.set(k, { pos: row.pos, rows: [], dirs: [] });
+      ps.get(k).rows.push(row);
     }
-    const need = raw.filter(row => uidsOf[row.name] && uidsOf[row.name].size > 1 && row.r.routeUID && row.uid).map(row => ({
-      routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid,
-      lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null,
-    }));
+    const need = [];
+    for (const ps of Object.values(polesOf)) {
+      if (ps.size < 2) continue;
+      for (const p of ps.values()) for (const row of p.rows) {
+        if (row.pos && B8[row.pos.bear] != null) continue;
+        if (row.r.routeUID && row.uid) need.push({ routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null });
+      }
+    }
     let heads = {}, destMap = {};
     const [hR, dR] = await Promise.all([
       need.length ? loadTravelHead(need).catch(() => ({})) : {},
       loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
     ]);
     heads = hR || {}; destMap = dR || {};
-    const groups = {}, list = [];
-    const samePole = (g, row) => {
-      if (row.uid && g.uids.has(row.uid)) return true;
-      if (!row.pos || g.lat == null) return false;
-      if (row.pos.bear && g.bear && row.pos.bear !== g.bear) return false;
-      return haversine(g.lat, g.lon, row.pos.lat, row.pos.lon) <= 8;
-    };
-    for (const row of raw) {
-      const arr = groups[row.name] = groups[row.name] || [];
-      const h = heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`];
-      let g = h != null ? arr.find(x => x.head != null && x.heads.length && x.heads.every(hh => angDiff(h, hh) <= 60)) : arr.find(x => x.head == null && samePole(x, row));
-      if (!g) {
-        g = { name: row.name, uids: new Set(row.uid ? [row.uid] : []), dist: row.pos ? row.pos.d : null, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null, bear: row.pos ? row.pos.bear : null, head: h != null ? h : null, heads: h != null ? [h] : [], routes: {} };
-        arr.push(g); list.push(g);
-      } else {
-        if (row.uid) g.uids.add(row.uid);
-        if (h != null) { g.heads.push(h); g.head = circMean(g.heads); }
-        if (row.pos) {
-          if (!g.bear && row.pos.bear) g.bear = row.pos.bear;
-          if (g.dist == null || row.pos.d < g.dist) { g.dist = row.pos.d; g.lat = row.pos.lat; g.lon = row.pos.lon; }
+    const list = [], cardsOf = {};
+    for (const [name, ps] of Object.entries(polesOf)) {
+      const poles = [...ps.values()];
+      for (const p of poles) {
+        for (const row of p.rows) {
+          const b = row.pos ? B8[row.pos.bear] : null;
+          const h = b != null ? b : heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`];
+          if (h != null) p.dirs.push(h);
         }
       }
-      row.r.dest = destOf(row.r.routeUID, row.r.dirNum, destMap);
-      const rk = `${row.r.routeUID}|${row.r.dirNum}`;
-      const old = g.routes[rk];
-      if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) g.routes[rk] = row.r;
+      const up = poles.map((_, i) => i), find = i => (up[i] === i ? i : (up[i] = find(up[i])));
+      for (let i = 0; i < poles.length; i++) for (let j = i + 1; j < poles.length; j++) {
+        const a = poles[i], b = poles[j];
+        if (!a.pos || !b.pos) continue;
+        const d = haversine(a.pos.lat, a.pos.lon, b.pos.lat, b.pos.lon);
+        let ok;
+        if (a.dirs.length && b.dirs.length) {
+          let m = 180;
+          for (const x of a.dirs) for (const y of b.dirs) m = Math.min(m, angDiff(x, y));
+          ok = m <= 45 && d <= 60;
+        } else ok = d <= 10;
+        if (ok) up[find(i)] = find(j);
+      }
+      const byRoot = new Map();
+      for (let i = 0; i < poles.length; i++) {
+        const k = find(i);
+        if (!byRoot.has(k)) byRoot.set(k, []);
+        byRoot.get(k).push(poles[i]);
+      }
+      const cards = cardsOf[name] = [];
+      for (const ms of byRoot.values()) {
+        const near = ms.filter(p => p.pos).sort((a, b) => a.pos.d - b.pos.d)[0] || null;
+        const bc = {};   // 卡片顯示的方向：卡上各路線站牌 Bearing 最多的那個（同票取字母序），不受資料順序影響
+        for (const p of ms) for (const row of p.rows) if (row.pos && B8[row.pos.bear] != null) bc[row.pos.bear] = (bc[row.pos.bear] || 0) + 1;
+        const bear = Object.keys(bc).sort((x, y) => bc[y] - bc[x] || (x < y ? -1 : 1))[0] || null;
+        const g = { name, dist: near ? near.pos.d : null, lat: near ? near.pos.lat : null, lon: near ? near.pos.lon : null, bear, dirs: ms.flatMap(p => p.dirs), routes: {} };
+        for (const p of ms) for (const row of p.rows) {
+          row.r.dest = destOf(row.r.routeUID, row.r.dirNum, destMap);
+          const rk = `${row.r.routeUID}|${row.r.dirNum}`;
+          const old = g.routes[rk];
+          if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) g.routes[rk] = row.r;
+        }
+        cards.push(g); list.push(g);
+      }
     }
-    for (const arr of Object.values(groups)) {
+    for (const arr of Object.values(cardsOf)) {
+      // 「同向／對向」只在剛好兩張卡、而且方向相反（135 度以上）時標
       const located = arr.filter(g => g.lat != null).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
-      if (located.length >= 2) located.forEach((g, i) => { g.side = i === 0 ? "同向" : "對向"; });
+      if (arr.length === 2 && located.length === 2 && located[0].dirs.length && located[1].dirs.length) {
+        let m = 180;
+        for (const x of located[0].dirs) for (const y of located[1].dirs) m = Math.min(m, angDiff(x, y));
+        if (m >= 135) { located[0].side = "同向"; located[1].side = "對向"; }
+      }
       if (arr.length < 2) continue;
       for (const g of arr) {
         const rs = Object.values(g.routes);
@@ -714,7 +766,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      const { uids, head, heads, ...rest } = g;
+      const { dirs, ...rest } = g;
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9) || String(a.dirTxt || "").localeCompare(String(b.dirTxt || ""), "zh-Hant"));
   }
@@ -835,14 +887,23 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
   const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); IDB.set("sor|" + sorKey, { t: Date.now(), d: sorPack(l) }).catch(() => {}); return l; };
+  // v2.42.0：快取沒有這條路線 → 先問雲端，沒有才打 TDX。同名的其他路線保留在同一份快取裡。
+  const sorCloud = async (base = []) => {
+    const l = (await cloudSor([routeUID]).catch(() => ({})))[routeUID];
+    if (!l || !l.length) return null;
+    const d = [...base.filter(r => r.RouteUID !== routeUID), ...l];
+    IDB.set("sor|" + sorKey, { t: Date.now(), d, src: "kv" }).catch(() => {});
+    return d;
+  };
   const odR = await odRouteEta(routeUID, true);   // v2.36.1 台北市公車：到站與公車位置用開放資料，讀不到才用 TDX
   let [sor, etas, near] = await Promise.all([
-    sc ? sc.d : sorFresh(false),
+    sc ? sc.d : sorCloud().then(d => d || sorFresh(false)),
     odR ? odR.list : tdx("route", u("EstimatedTimeOfArrival")),
     odR && Array.isArray(odR.near) ? odR.near : tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
   if (sc) {
-    const have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
+    let have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
+    if (!have.size) { const d = await sorCloud(sor); if (d) { sor = d; for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID); } }
     const stale = !have.size || (Date.now() - sc.t > DAY_MS && etas.some(t => t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID)));
     if (stale) sor = await sorFresh(true).catch(() => sor);
   }
@@ -3444,9 +3505,14 @@ async function busCity(city) {   // 只下載需要的縣市路線清單（存�
   try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
   return [];
 }
-async function sorOf(k, route) {
+async function sorOf(k, route, uid) {
   const key = `${k.path}|${route}`, sc = await IDB.get("sor|" + key);
-  if (sc) return sc.d;
+  if (sc && (!uid || sc.d.some(r => r.RouteUID === uid))) return sc.d;
+  if (uid) {   // v2.42.0：先問雲端
+    const l = (await cloudSor([uid]).catch(() => ({})))[uid];
+    if (l && l.length) { const d = [...(sc ? sc.d.filter(r => r.RouteUID !== uid) : []), ...l]; IDB.set("sor|" + key, { t: Date.now(), d, src: "kv" }).catch(() => {}); return d; }
+    if (sc) return sc.d;
+  }
   const l = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${k.path}/${enc(route)}?%24top=600&%24format=JSON`);
   const d = sorPack(l); IDB.set("sor|" + key, { t: Date.now(), d }).catch(() => {}); return d;
 }
@@ -3458,7 +3524,7 @@ async function planBusMatch(leg) {
     const cands = list.filter(r => pn(r[1]) === pn(leg.name));
     for (const r of cands) {
       const k = routeKind(r[0]); if (!k) continue;
-      let sor; try { sor = await sorOf(k, r[1]); } catch (e) { if (isRate(e)) throw e; continue; }
+      let sor; try { sor = await sorOf(k, r[1], r[0]); } catch (e) { if (isRate(e)) throw e; continue; }
       let best = null;
       for (const dir of sor.filter(x => x.RouteUID === r[0])) {
         const st = dir.Stops || [], nm = x => (x.StopName && x.StopName.Zh_tw) || "";
