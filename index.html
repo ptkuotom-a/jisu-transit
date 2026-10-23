@@ -85,7 +85,8 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 /* stop block (bus tab) */
 .stop{background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:14px}
 .stop-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.side-tag{display:inline-block;vertical-align:middle;font-size:13px;font-weight:700;padding:2px 8px;border-radius:999px;margin-left:6px;background:var(--surface2)}.side-tag.same{color:var(--lime)}.side-tag.opp{color:var(--muted)}
+.side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
+h2 .side-sub{font-size:14px;margin-top:4px}
 .stop-h .name{flex:1;font-size:21px;font-weight:800}
 .rrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--line)}
 .rrow:first-of-type{border-top:0}
@@ -123,7 +124,8 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 @keyframes sh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 
 /* tab bar */
-.tabbar{position:fixed;left:0;right:0;margin:0 auto;bottom:calc(14px + env(safe-area-inset-bottom,0px));
+/* v2.44.0：功能列（圓角膠囊）往下移到螢幕最下方：iPhone 底部 Home 指示條區域內，離底邊約 24px；沒有安全區的裝置離底邊 8px */
+.tabbar{position:fixed;left:0;right:0;margin:0 auto;bottom:max(8px, calc(env(safe-area-inset-bottom,0px) - 10px));
   width:min(560px,calc(100% - 28px));display:grid;grid-template-columns:repeat(5,1fr);gap:2px;padding:7px;
   background:rgba(32,34,33,.72);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4);
   border:1px solid #2E302F;border-radius:40px;z-index:20}
@@ -274,6 +276,38 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .sttlist{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:calc(40px + env(safe-area-inset-bottom,0px))}
 .sttdir .seg button small{display:block;font-size:11.5px;font-weight:500;opacity:.8;margin-top:1px}
 .sttf{margin:10px 2px 0}.sttf .chips{gap:8px}.sttf .chip{padding:7px 13px;font-size:14px}.sttf select{height:44px;margin:10px 0 0;font-size:15px;color-scheme:dark}
+.sttlist{position:relative}
+/* v2.44.0 時刻表格子（車站時刻表、公車時刻表共用）：每小時一段，一列 6 個分鐘；分鐘上方小字是車種／終點，點一下展開那一班 */
+.ttidx{position:sticky;top:6px;float:right;width:30px;height:0;z-index:4}
+.ttidx>div{display:flex;flex-direction:column;align-items:center;gap:1px;padding-top:4px}
+.ttidx button{font-size:12px;font-weight:700;color:var(--blue,#6FB3FF);padding:1px 0;font-variant-numeric:tabular-nums;line-height:1.35}
+.ttidx button.past{color:var(--dim)}
+.ttg{margin-right:32px;margin-top:6px}
+.tth{display:flex;align-items:baseline;gap:8px;background:var(--surface);border-radius:12px;padding:7px 14px;font-size:19px;font-weight:800;margin-top:6px}
+.tth span{margin-left:auto;font-size:12.5px;color:var(--muted);font-weight:600}.tth small{font-size:11px;color:var(--muted)}
+.tth.past{color:var(--dim)}
+.ttr{display:grid;grid-template-columns:repeat(6,1fr);padding:2px 0 4px}
+.ttm{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-height:56px;padding:3px 0 2px;border-radius:10px;color:var(--text)}
+.ttm .ttlb{font-size:11.5px;letter-spacing:-.4px;line-height:1.1;height:14px;white-space:nowrap;margin-bottom:2px;max-width:100%;overflow:hidden;background:none;padding:0;border-radius:0}
+.ttm .ttlb .lf{font-style:normal;color:var(--blue,#6FB3FF);margin-left:1px}
+.ttm .ttlb i{font-style:normal}.ttm .ttlb .ty{font-weight:800;margin-right:2px}.ttm .ttlb .dd{color:var(--text);opacity:.75}
+.ttm.sel .ttlb .ty,.ttm.sel .ttlb .dd{color:var(--ink)!important;opacity:1}
+.ttm .ttn{font-size:23px;font-weight:600;font-variant-numeric:tabular-nums;border-bottom:2px solid currentColor;padding:0 3px;line-height:1.15;display:flex;align-items:center;gap:2px}
+.ttm .ttn .tto{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;font-style:normal}
+.ttm.past{opacity:.38}
+.ttm.next{background:rgba(198,241,53,.16)}
+.ttm.next::after{content:"下一班";position:absolute;top:-1px;right:1px;font-size:9.5px;color:var(--lime);font-weight:800}
+.ttm.sel{background:var(--lime);opacity:1}.ttm.sel,.ttm.sel .ttlb,.ttm.sel .ttlb .lf{color:var(--ink)!important}
+.ttdet{grid-column:1/-1;margin:6px 0 4px;border:2px solid var(--lime);border-radius:16px;background:var(--bg);overflow:hidden}
+.ttdet .h{display:flex;align-items:center;gap:12px;padding:10px 14px;font-size:21px;font-weight:700;border-bottom:1px solid var(--line)}
+.ttdet .h button{color:var(--blue,#6FB3FF);font-size:20px;line-height:1}
+.ttdet .h .eta{margin-left:auto;font-size:13px;color:var(--lime);font-weight:700}
+.ttdet .kv2{display:grid;grid-template-columns:84px 1fr;gap:6px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:15px}
+.ttdet .kv2>span:first-child{color:var(--muted);font-weight:700}
+.ttdet .more{display:block;width:100%;padding:13px;text-align:center;color:var(--blue,#6FB3FF);font-size:16px;font-weight:700}
+.tthw{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:8px 32px 0 0;padding:11px 14px;border:1px dashed var(--dim);border-radius:14px;font-size:14.5px}
+.tthw b{font-size:17px}.tthw small{display:block;color:var(--muted);font-size:12px;font-weight:600}
+.ttleg{margin:14px 32px 0 2px;color:var(--muted);font-size:12.5px;line-height:1.7}
 .sttrow.past{opacity:.38}.sttrow .ttime small{display:block;font-size:11px;font-weight:600;color:var(--muted)}
 .sttarr{flex:none;text-align:right;font-size:17px;font-weight:800}.sttarr small{display:block;font-size:12px;font-weight:500;color:var(--muted)}
 .hwb{display:flex;justify-content:space-between;padding:10px 4px;border-top:1px solid var(--line);font-size:15px}.hwb:first-child{border-top:0}.hwb b{color:var(--lime)}
@@ -290,6 +324,29 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .inp:focus{border-color:var(--lime)}
 .src dl{margin:0} .src dt{font-weight:700;font-size:15px;margin-top:12px} .src dt:first-child{margin-top:0} .src dd{margin:2px 0 0;color:var(--muted);font-size:14px;line-height:1.45}
 .scurl{margin-top:10px;padding:12px;border-radius:12px;background:rgba(255,255,255,.06);font:13px/1.45 ui-monospace,Menlo,monospace;word-break:break-all;user-select:all;-webkit-user-select:all}.scsteps ol{margin:0;padding-left:22px;display:grid;gap:10px;font-size:15px;line-height:1.55}.scsteps code{font-size:13px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,.08)}.scsteps p{margin-top:12px}
+/* v2.44.0 設定頁：分組清單 */
+.sgh{margin:22px 8px 8px;font-size:14px;font-weight:700;color:var(--muted)}
+.sgh:first-child{margin-top:14px}
+.sg{background:var(--surface);border:1px solid var(--line);border-radius:22px;overflow:hidden}
+.sg .row{display:flex;align-items:center;gap:12px;width:100%;min-height:54px;padding:12px 16px;text-align:left;color:var(--text);font-size:16px;background:none;border:0}
+.sg .row .t{flex:1;min-width:0;line-height:1.3} .sg .row .t small{display:block;margin-top:3px;color:var(--muted);font-size:13px;line-height:1.4}
+.sg .row .v{flex:none;color:var(--muted);font-size:15px} .sg .row .v.ok{color:var(--lime)} .sg .row .v.bad{color:var(--warn)}
+.sg .row.act .t{color:var(--lime);font-weight:600} .sg .row.act.bad .t{color:var(--bad)}
+.sg button.row:active{background:var(--surface2)}
+.sg>*+.row,.sg>*+.blk,.sg>*+.sgd{border-top:1px solid var(--line)}
+.sg .blk{padding:14px 16px 16px}
+.sg .blk .hd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px;font-size:16px}
+.sg .blk .hd span{color:var(--lime);font-weight:700;font-size:15px}
+.sg .sseg{padding:4px;gap:4px} .sg .sseg button{padding:8px 0;font-size:14px}
+.sg .chips{gap:8px} .sg .chip{padding:7px 14px;font-size:15px;background:var(--bg)}
+.sg .chip.chip-on{background:var(--lime)}
+.tgl{flex:none;position:relative;width:50px;height:30px;border-radius:99px;background:var(--surface2);border:1px solid var(--line);transition:background .2s,border-color .2s}
+.tgl::after{content:"";position:absolute;top:2px;left:2px;width:24px;height:24px;border-radius:50%;background:#9A9D98;transition:transform .2s,background .2s}
+.tgl.on{background:var(--lime);border-color:var(--lime)} .tgl.on::after{transform:translateX(20px);background:var(--ink)}
+.sgf{margin:8px 10px 0;color:var(--muted);font-size:13px;line-height:1.5} .sgf .kmsg{display:block;margin-top:4px}
+.sgd summary{list-style:none;cursor:pointer} .sgd summary::-webkit-details-marker{display:none}
+.sgd summary .chev{transition:transform .2s} .sgd[open] summary .chev{transform:rotate(90deg)}
+.sgd .set{border:0;border-radius:0;margin:0;padding:4px 16px 16px;background:none}
 .kmsg{margin-top:10px;font-size:14px;color:var(--muted)} .kmsg.ok{color:var(--lime)} .kmsg.bad{color:var(--bad)}
 .sseg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;background:var(--bg);border-radius:999px;padding:5px}
 .sseg button{padding:10px 0;border-radius:999px;font-weight:700;font-size:15px;color:var(--muted)}
@@ -307,7 +364,7 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top,0px));transform:translate(-50%,-20px);opacity:0;z-index:60;background:var(--lime);color:var(--ink);font-weight:700;font-size:15px;padding:10px 18px;border-radius:999px;transition:opacity .3s,transform .3s;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion: reduce){ .toast{transition:none} }
-.rbar{position:fixed;left:0;right:0;margin:0 auto;width:min(560px,calc(100% - 28px));bottom:calc(108px + env(safe-area-inset-bottom,0px));z-index:32;display:flex;align-items:center;gap:10px;
+.rbar{position:fixed;left:0;right:0;margin:0 auto;width:min(560px,calc(100% - 28px));bottom:calc(94px + max(8px, calc(env(safe-area-inset-bottom,0px) - 10px)));z-index:32;display:flex;align-items:center;gap:10px;
   background:rgba(32,34,33,.9);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);border:1px solid var(--lime);border-radius:22px;padding:10px 10px 10px 16px;font-size:15px;font-weight:600}
 .rbar[hidden]{display:none !important}
 .rbar .t{flex:1;min-width:0;line-height:1.35}.rbar .t small{display:block;color:var(--muted);font-weight:500;font-size:13px}
@@ -435,14 +492,20 @@ html.locked,html.locked body{overflow:hidden}
 .xsg.th .by b{color:var(--text);font-size:15px}.xsg.th .by svg{width:15px;height:15px;color:var(--lime)}
 .xsg .sl{position:absolute;left:70px;width:11px;height:3px;background:var(--bg);transform:rotate(-30deg);top:50%;z-index:2}
 /* v2.35.0 公車目的地篩選 */
-.bf{margin:6px 0 6px;display:flex;gap:8px;align-items:center}
-.bf .box{flex:1;min-width:0;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:10px 12px;font-size:16px;color:var(--muted)}
-.bf .box b{color:var(--text);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bf .box input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font-size:16px;padding:0}
-.bf .box input::placeholder{color:var(--muted)}
-.bf .flag{flex:none;width:20px;height:20px;border-radius:50%;background:#16A86B;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:800}
-.bf .bfm{flex:none;font-size:13px;margin-left:auto}
-.bf .x{flex:none;background:none;border:0;color:var(--muted);font-size:15px;padding:6px 2px}
+.bf{margin:2px 0 12px;display:flex;gap:10px;align-items:center}
+.bf .box{flex:1;min-width:0;height:44px;display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid transparent;border-radius:14px;padding:0 6px 0 14px;font-size:15px;color:var(--muted);transition:border-color .15s,background .15s}
+.bf .box:focus-within{border-color:var(--lime)}
+.bf .ic{flex:none;width:18px;height:18px;color:var(--dim)}
+.bf .box:focus-within .ic,.bf .box.on .ic{color:var(--lime)}
+.bf .box b{color:var(--text);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bf .box .bfto{flex:none;color:var(--muted);font-size:14px}
+.bf .box input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;color:var(--text);font-size:16px;padding:0}
+.bf .box input::placeholder{color:var(--dim)}
+.bf .box.on{background:color-mix(in srgb,var(--lime) 10%,var(--surface));border-color:color-mix(in srgb,var(--lime) 35%,transparent)}
+.bf .bfm{flex:none;font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
+.bf .xi{flex:none;width:32px;height:32px;border-radius:50%;border:0;background:var(--surface2);color:var(--muted);font-size:13px;display:grid;place-items:center;margin-left:auto}
+.bf .bfm+.xi{margin-left:0}
+.bf .x{flex:none;background:none;border:0;color:var(--lime);font-size:15px;padding:6px 2px}
 .bfsug{background:var(--surface);border:1px solid var(--line);border-radius:18px;margin:6px 0 12px;overflow:hidden}
 .bfsug .hd{padding:10px 14px 4px;font-size:13px;color:var(--muted)}
 .bfsug .it{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;text-align:left;padding:12px 14px;border-top:1px solid var(--line);font-size:16px;color:var(--text)}
@@ -582,7 +645,7 @@ function brandProgress(from, to, p) {   // p：0～1滑動進度
 }
 function renderChrome() {
   if (!brandLock) showBrand(S.tab);
-  $('#searchRow').hidden = S.tab === 'settings';
+  $('#searchRow').hidden = false;   // v2.44.0：設定頁也有搜尋列，和其他分頁對齊
   $('#searchIco').innerHTML = I.search;
   const tabs = [['home','首頁',I.home],['bus','公車',I.busFill],['bike','YouBike',I.bike],['rail','軌道',I.train],['settings','設定',I.gear]];
   // 功能列只建一次，之後只切換 on 與移動膠囊（重建會讓動畫中的膠囊被換掉而跳一下）
@@ -681,7 +744,7 @@ function mountMap() {
     if (D === mapKey) return; mapKey = D;
     mapMarks.forEach(m => m.remove()); mapMarks = [];
     const add = (o, cls, svg, fn) => { if (o.lat == null) return;
-      const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side ? ' ' + o.side : ''));
+      const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side === '對向' ? ' 對面' : ''));
       el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
       mapMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP)); };
     D.bikes.slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
@@ -700,11 +763,14 @@ function errBox() {
   return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
 }
 
+// v2.44.0：同名站牌的方向改放站名下一行小字：「↗ 往 淡水」，對面那一張加「對面・」；拿掉「同向」和「向東北」文字（改用箭頭）
+const BEAR_ARR = { N: '↑', NE: '↗', E: '→', SE: '↘', S: '↓', SW: '↙', W: '←', NW: '↖' };
+const BEAR_TXT_ARR = { 向北: '↑', 向東北: '↗', 向東: '→', 向東南: '↘', 向南: '↓', 向西南: '↙', 向西: '←', 向西北: '↖' };
 const sideTag = s => {
-  const bits = [s.side, s.bearTxt, s.dirTxt].filter(Boolean);
-  if (!bits.length) return '';
-  const cls = s.side === '同向' ? 'same' : s.side === '對向' ? 'opp' : '';
-  return ` <span class="side-tag ${cls}">${bits.map(esc).join('・')}</span>`;
+  const opp = s.side === '對向';
+  if (!s.dirTxt && !opp) return '';   // 只有一張站牌（沒有同名對面站）就不標
+  const ar = BEAR_ARR[s.bear] || BEAR_TXT_ARR[s.bearTxt] || '';
+  return `<span class="side-sub">${opp ? '對面・' : ''}${ar ? `<b>${ar}</b>` : ''}${esc(s.dirTxt || '')}</span>`;
 };
 function stopCard(s) {
   const routes = [...new Set(s.routes.map(r => r.route))].join('、');
@@ -856,12 +922,12 @@ function placeSearch(q, nearStops, nearBikes) {
   return { stops, bikes, loading };
 }
 function refreshSearch() {
-  if (!S.q || S.tab === 'settings' || S.route || S.rail || S.line) return;
+  if (!S.q || S.route || S.rail || S.line) return;
   $('#main').innerHTML = viewOf(S.tab)();
 }
 function viewOf(tab) {
-  if (tab === 'settings') return vSettings;
   if (S.q && S.error !== 'NO_PROXY') return vSearch;
+  if (tab === 'settings') return vSettings;
   return { home:vHome, bus:vBus, bike:vBike, rail:vRail }[tab];
 }
 function vSearch() {
@@ -905,14 +971,15 @@ function vBus() {
 const BF_RECENT_KEY = 'jisu_bf_recent';
 const bfRecent = () => { try { const a = JSON.parse(localStorage.getItem(BF_RECENT_KEY) || '[]'); return Array.isArray(a) ? a.slice(0, 3) : []; } catch (e) { return []; } };
 const bfLabel = o => o.type === 'place' ? o.name : o.name;
+const BF_PIN = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>';
 function bfBox() {
   const B = S.bf = S.bf || { q:'' };
-  if (B.sel) return `<div class="bf"><div class="box"><span class="flag">到</span><b>${esc(bfLabel(B.sel))}</b>${B.sel.type === 'place' ? `<span class="bfm">400公尺內的站牌</span>` : ''}</div><button class="x" data-act="bfClear">✕ 清除</button></div>`;
-  return `<div class="bf"><label class="box"><span class="flag">到</span><input id="bfq" type="text" enterkeyhint="search" autocomplete="off" placeholder="到哪裡？只看會到的路線" value="${esc(B.q || '')}"></label>${B.q ? `<button class="x" data-act="bfCancel">取消</button>` : ''}</div><div id="bfSug">${bfSugHtml()}</div>`;
+  if (B.sel) return `<div class="bf"><div class="box on">${BF_PIN}<span class="bfto">到</span><b>${esc(bfLabel(B.sel))}</b>${B.sel.type === 'place' ? `<span class="bfm">附近400公尺</span>` : ''}<button class="xi" data-act="bfClear" aria-label="清除篩選">✕</button></div></div>`;
+  return `<div class="bf"><label class="box">${BF_PIN}<input id="bfq" type="text" enterkeyhint="search" autocomplete="off" placeholder="要去哪？列出會到的路線" value="${esc(B.q || '')}"></label>${B.q ? `<button class="x" data-act="bfCancel">取消</button>` : ''}</div><div id="bfSug">${bfSugHtml()}</div>`;
 }
 function bfSugHtml() {
   const B = S.bf || {}, q = (B.q || '').trim();
-  if (!q) { const rec = bfRecent(); return rec.length ? `<div class="bfrec">${rec.map(o => `<button data-act="bfSel" data-i="${reg(o)}">${esc(bfLabel(o))}</button>`).join('')}</div>` : ''; }
+  if (!q) return '';   // v2.44.0：不列最近搜尋的目的地
   const item = (o, title, desc, tag) => `<button class="it" data-act="bfSel" data-i="${reg(o)}"><span>${esc(title)}<small>${esc(desc)}</small></span><span class="tag">${tag}</span></button>`;
   let h = '';
   const sug = B.sugQ === q ? B.sug : null;
@@ -1010,26 +1077,41 @@ function vBike() {
 function seg(key, opts, fmt) {
   return `<div class="sseg">${opts.map(o => `<button class="${S.settings[key]===o?'on':''}" data-act="set" data-k="${key}" data-v="${o}">${fmt(o)}</button>`).join('')}</div>`;
 }
+// v2.44.0：設定頁改成分組清單（同類設定放在同一張卡片、一列一項），開關用切換鈕，資料來源收合
+const sgTgl = (key, label, desc) => { const on = !!S.settings[key]; return `<button class="row" data-act="set" data-k="${key}" data-v="${on ? 0 : 1}" role="switch" aria-checked="${on}"><span class="t">${label}${desc ? `<small>${desc}</small>` : ''}</span><span class="tgl${on ? ' on' : ''}"></span></button>`; };
+const sgSeg = (key, label, opts, fmt) => `<div class="blk"><div class="hd">${label}</div>${seg(key, opts, fmt)}</div>`;
 function vSettings() {
-  const px = S.proxy || {};
-  return `  <div class="sec"><h2>搜尋範圍</h2></div>
-  <div class="set"><h3>公車站牌</h3><p>以目前位置為中心，找這個距離內的站牌。</p>${seg('busR',[200,300,500,800],v=>v+'m')}</div>
-  <div class="set"><h3>YouBike 站點</h3><p>範圍越大，站點越多，讀取也越久。</p>${seg('bikeR',[300,500,800,1000],v=>v+'m')}</div>
-  <div class="set"><h3>軌道：步行範圍</h3><p>只列出走得到的車站，距離以最近的出口計算。範圍內沒有車站時，改列最近的2站。</p>${seg('railWalk',[0.8,1.5,3],v=>v<1? v*1000+'m' : v+'公里')}</div>
-  <div class="set"><h3>附上最近的台鐵站</h3><p>即使不在步行範圍，也在車站清單最後列出最近的台鐵站。</p>${seg('railFarTra',[1,0],v=>v?'顯示':'不顯示')}</div>
-  <div class="set"><h3>附上最近的高鐵站</h3><p>即使不在步行範圍，也在車站清單最後列出最近的高鐵站。</p>${seg('railFarThsr',[1,0],v=>v?'顯示':'不顯示')}</div>
-  <div class="set"><h3>要顯示的系統</h3><p>只勾你會搭的系統，其他的就不會出現。全部不勾等於全部顯示。</p>
-    <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => { const on = (S.settings.railSys || []).includes(k); return `<button class="chip ${on?'chip-on':''}" data-act="railSys" data-v="${k}">${l}</button>`; }).join('')}</div></div>
-  <div class="sec"><h2>通知</h2></div>
-  <div class="set"><p>下車提醒用推播通知。iPhone 需 iOS 16.4以上，並從主畫面圖示開啟。目前權限：${'Notification' in window ? ({granted:'已允許',denied:'已拒絕（到 iPhone 設定 › 通知 › 極速通勤 開啟）',default:'尚未詢問'})[Notification.permission] : '這個環境不支援'}</p>
-    <div class="btns" style="grid-template-columns:1fr;margin-top:8px"><button class="btn pri" data-act="pushTest">傳送測試通知</button></div><div class="kmsg" id="pushMsg"></div></div>
-  ${!DEMO && S.auth ? `<button class="card advrow" data-act="openSiri"><span class="body"><div class="title">Siri 捷徑</div><div class="desc">說「嘿 Siri，最近車站」，推播最近車站的下一班</div></span><span class="chev">${I.chev}</span></button>` : ''}
+  const sys = S.settings.railSys || [];
+  const perm = 'Notification' in window ? Notification.permission : 'na';
+  const permTxt = { granted:'<span class="v ok">已允許</span>', denied:'<span class="v bad">已拒絕</span>', default:'<span class="v">尚未詢問</span>', na:'<span class="v">不支援</span>' }[perm];
+  return `<div class="sgh">附近範圍</div>
+  <div class="sg">
+    ${sgSeg('busR', '公車站牌', [200,300,500,800], v => v + 'm')}
+    ${sgSeg('bikeR', 'YouBike 站點', [300,500,800,1000], v => v + 'm')}
+    ${sgSeg('railWalk', '軌道車站（步行）', [0.8,1.5,3], v => v < 1 ? v * 1000 + 'm' : v + 'km')}
+  </div>
+  <div class="sgf">以目前位置為中心找。範圍越大，讀取越久；軌道距離以最近的出口計算，範圍內沒有車站時改列最近的 2 站。</div>
+  <div class="sgh">軌道車站</div>
+  <div class="sg">
+    ${sgTgl('railFarTra', '附上最近的台鐵站', '不在步行範圍也列在最後')}
+    ${sgTgl('railFarThsr', '附上最近的高鐵站', '不在步行範圍也列在最後')}
+    <div class="blk"><div class="hd">要顯示的系統<span>${sys.length ? `已選 ${sys.length} 個` : '全部'}</span></div>
+      <div class="chips">${RAIL_SYS_OPTS.map(([k,l]) => `<button class="chip${sys.includes(k) ? ' chip-on' : ''}" data-act="railSys" data-v="${k}">${l}</button>`).join('')}</div></div>
+  </div>
+  <div class="sgf">只勾你會搭的系統，其他的就不會出現；全部不勾等於全部顯示。</div>
+  <div class="sgh">通知</div>
+  <div class="sg">
+    <div class="row"><span class="t">下車提醒推播</span>${permTxt}</div>
+    <button class="row act" data-act="pushTest"><span class="t">傳送測試通知</span></button>
+  </div>
+  <div class="sgf">iPhone 需 iOS 16.4 以上，並從主畫面圖示開啟。${perm === 'denied' ? '已拒絕的話，到 iPhone 設定 › 通知 › 極速通勤 開啟。' : ''}<span class="kmsg" id="pushMsg"></span></div>
+  ${!DEMO && S.auth ? `<div class="sgh">捷徑</div><div class="sg"><button class="row" data-act="openSiri"><span class="t">Siri 捷徑<small>說「嘿 Siri，最近車站」，推播最近車站的下一班</small></span><span class="chev">${I.chev}</span></button></div>` : ''}
   ${vAccount()}
-  ${!DEMO && S.auth?.role === 'admin' ? `<button class="card advrow" data-act="openAdv"><span class="body"><div class="title">進階設定</div><div class="desc">Worker 網址、更新時刻表、每日訪客檢查</div></span><span class="pill">僅管理者</span><span class="chev">${I.chev}</span></button>` : ''}
-  <div class="sec"><h2>關於</h2></div>
-  <div class="note">極速通勤${esc(S.version || '')}　YouBike 站點名單從雲端下載；附近車位由這支手機直接讀 YouBike 統一 feed。讀不到車位時，雙北改用市府開放資料，其餘改用 TDX。公車即時資料來自交通部 TDX，以及臺北市、新北市政府開放資料。<br>${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>
-  <div class="sub" style="margin:16px 4px 8px;font-weight:700;color:var(--text)">資料來源</div>
-  <div class="set src"><dl>
+  <div class="sgh">關於</div>
+  <div class="sg">
+    <div class="row"><span class="t">版本</span><span class="v">${esc(S.version || '—')}</span></div>
+    <details class="sgd"><summary class="row"><span class="t">資料來源</span><span class="chev">${I.chev}</span></summary>
+      <div class="set src"><dl>
     <dt>YouBike 站點</dt><dd>YouBike 官方統一 feed 的站名與座標。手機比對站號和站名，有變才寫回雲端，一天最多一次；沒變不更新。車位不寫進雲端</dd>
     <dt>YouBike 車位</dt><dd>由這支手機直接讀 YouBike 官方統一 feed，不經雲端轉發。讀不到時，台北與新北改用市府開放資料，其餘縣市改用 TDX</dd>
     <dt>公車與軌道車站、時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
@@ -1046,7 +1128,9 @@ function vSettings() {
     <dt>行程規劃</dt><dd>TDX 公共運輸旅運規劃（長途、TDX 查不到或沒收錄的車站等情況也會問 Google 地圖，兩邊的路線合併後一起依官方時刻表校正、去重、排序，每條標示來源；深夜查不到、起訖點都在台鐵／高鐵車站旁時，直接用官方時刻表列出直達車）；班次再依官方時刻表校正：捷運、輕軌用各站時刻表，台鐵、高鐵用七天班表（國定假日、連假和其前一天用當天時刻表）並補上車次</dd>
     <dt>國定假日</dt><dd>行政院人事行政總處辦公日曆表（政府資料開放平臺）</dd>
     <dt>地圖</dt><dd>OpenFreeMap／OpenStreetMap 貢獻者</dd>
-  </dl><p class="sub" style="margin-top:8px">臺北市政府交通局、新北市政府交通局（政府資料開放授權條款第1版）</p></div>`;
+  </dl><p class="sub" style="margin-top:8px">臺北市政府交通局、新北市政府交通局（政府資料開放授權條款第1版）</p></div></details>
+  </div>
+  <div class="sgf">${DEMO ? '目前是示範資料。' : '在 Safari 按「分享 › 加入主畫面」，就能像 app 一樣全螢幕開啟。'}</div>`;
 }
 
 /* ---------- 帳號與進階設定（進階設定只有管理者看得到） ---------- */
@@ -1151,7 +1235,8 @@ function vAdvanced() {
 // ---------- v2.43.0 公車時刻表（雲端）：管理者手動更新 ----------
 const SCH_CITIES = [['Taipei','台北市'],['NewTaipei','新北市'],['Keelung','基隆市'],['Taoyuan','桃園市'],['Hsinchu','新竹市'],['HsinchuCounty','新竹縣'],['MiaoliCounty','苗栗縣'],['Taichung','台中市'],['ChanghuaCounty','彰化縣'],['NantouCounty','南投縣'],['YunlinCounty','雲林縣'],['Chiayi','嘉義市'],['ChiayiCounty','嘉義縣'],['Tainan','台南市'],['Kaohsiung','高雄市'],['PingtungCounty','屏東縣'],['YilanCounty','宜蘭縣'],['HualienCounty','花蓮縣'],['TaitungCounty','台東縣'],['PenghuCounty','澎湖縣'],['KinmenCounty','金門縣'],['LienchiangCounty','連江縣'],['InterCity','公路客運']];
 const SB = { st:null, loading:false, busy:false, msg:'', bad:false, prog:'' };
-async function sbLoad() { SB.loading = true; try { SB.st = await api('schStatus'); } catch (e) { SB.st = { err: e.message }; } SB.loading = false; if (S.page === 'adv') renderPage(); }
+async function sbLoad() { SB.loading = true; try { SB.st = await api('schStatus'); } catch (e) { SB.st = { err: e.message }; }
+  try { SB.khh = await api('khhSchDate'); } catch (e) { SB.khh = { err: e.message }; }  /* v2.44.0：高雄每日站別時刻表的日期 */ SB.loading = false; if (S.page === 'adv') renderPage(); }
 function sbSay(t, bad) { SB.msg = t; SB.bad = !!bad; if (S.page === 'adv') renderPage(); }
 async function sbRun(cities) {
   if (SB.busy || S.auth?.role !== 'admin') return;
@@ -1171,13 +1256,17 @@ function vBusSch() {
   if (DEMO || S.auth?.role !== 'admin') return '';
   if (!SB.st && !SB.loading) sbLoad();
   const st = SB.st || {}, fmt = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
-  const missing = SCH_CITIES.filter(([c]) => !st[c]).map(x => x[0]);
+  const missing = SCH_CITIES.filter(([c]) => !st[c] && c !== 'Kaohsiung').map(x => x[0]);   // 高雄 TDX 沒有班表，不列入
+  // 高雄：TDX 只有每日站別時刻表；日期在 3 天內＝恢復每天更新
+  const kd = SB.khh && SB.khh.busDate, kFresh = kd && (Date.now() - Date.parse(kd + 'T00:00:00+08:00')) < 3 * 864e5;
+  const khhTxt = !SB.khh ? '檢查中…' : SB.khh.err ? '查不到 TDX 狀態' : !kd ? 'TDX 沒有資料' : kFresh ? `<b style="color:var(--lime)">TDX 每日站別時刻表已恢復更新（${+kd.slice(5, 7)}/${+kd.slice(8)}），可以做匯入了</b>` : `TDX 沒有班表；每日站別時刻表停在 ${+kd.slice(5, 7)}/${+kd.slice(8)}`;
   let h = `<div class="sec"><h2>公車時刻表</h2><span class="side">存在雲端</span></div><div class="set">
     <p>全台公車與公路客運的表定時刻表，存一份在雲端，路線頁的「時刻表」從這裡讀。目前只能手動更新：按下去會在這支手機分頁向 TDX 下載整個縣市（經 Worker 金鑰 2）、壓縮後上傳。每區約 1～60 次 TDX 呼叫，寫入算在每天 400 次的雲端額度裡，額度用完會自動停下，明天再按。</p>`;
   if (SB.loading && !SB.st) h += `<p>讀取中…</p>`;
   else if (st.err) h += `<p class="kmsg bad">${esc(st.err)}</p>`;
   else {
     h += SCH_CITIES.map(([c, name]) => { const m = st[c];
+      if (c === 'Kaohsiung' && !m) return `<div class="kv"><span>${esc(name)}</span><span style="color:var(--muted);font-size:13px;text-align:right">${khhTxt}</span></div>`;
       return `<div class="kv"><span>${esc(name)}</span><span>${m ? `${fmt(m.t)}・${m.routes} 條` : '<span style="color:var(--muted)">尚未下載</span>'}
         <button class="chip" style="padding:4px 12px;font-size:13px;margin-left:8px" data-act="sbOne" data-v="${c}"${SB.busy ? ' disabled' : ''}>更新</button></span></div>`; }).join('');
     h += `<div class="btns" style="grid-template-columns:1fr 1fr;margin-top:10px">
@@ -1189,9 +1278,12 @@ function vBusSch() {
 }
 function vAccount() {
   if (DEMO || !S.auth) return '';
-  return `<div class="sec"><h2>帳號</h2></div>
-  <div class="set"><div class="acct"><span><b>${esc(S.auth.name || '')}</b><span class="role">${ROLE_ZH[S.auth.role] || ''}</span></span></div>
-    <div class="btns" style="grid-template-columns:1fr;margin-top:12px"><button class="btn out" data-act="logout">登出</button></div></div>`;
+  return `<div class="sgh">帳號</div>
+  <div class="sg">
+    <div class="row"><span class="t"><b>${esc(S.auth.name || '')}</b></span><span class="v">${ROLE_ZH[S.auth.role] || ''}</span></div>
+    ${S.auth.role === 'admin' ? `<button class="row" data-act="openAdv"><span class="t">進階設定<small>Worker 網址、更新時刻表、每日訪客檢查</small></span><span class="chev">${I.chev}</span></button>` : ''}
+    <button class="row act bad" data-act="logout"><span class="t">登出</span></button>
+  </div>`;
 }
 
 /* ---------- 時刻表（存在 Worker 雲端） ---------- */
@@ -1280,7 +1372,7 @@ async function ttRun() {
 }
 
 /* ---------- rail ---------- */
-const RAIL_SYS_OPTS = [['TRA','台鐵'],['THSR','高鐵'],['TRTC','北捷'],['TYMC','桃捷'],['TMRT','中捷'],['KRTC','高捷'],['NTDLRT','淡海輕軌'],['NTALRT','安坑輕軌'],['KLRT','高雄輕軌'],['NTMC','新北捷運']];
+const RAIL_SYS_OPTS = [['TRA','台鐵'],['THSR','高鐵'],['TRTC','北捷'],['NTMC','新北捷運'],['TYMC','桃捷'],['TMRT','中捷'],['KRTC','高捷'],['NTDLRT','淡海輕軌'],['NTALRT','安坑輕軌'],['KLRT','高雄輕軌']];
 const LINE_COLOR = {
   // 依各營運單位路線圖的官方色（v2.11.0核對）
   // 支線（v2.27.3）：新北投支線 RA 淺粉紅、小碧潭支線 GA 淺綠（捷運局指定 Pantone 708C／381C；路線圖上站號 R22A、G03A 也是這兩色、黑字），標示字母沿用 R／G
@@ -1486,12 +1578,14 @@ const pgSeg = (blk, k) => {
 const pgBtns = (blk, k) => { const g = pgSeg(blk, k); return g ? [...g.querySelectorAll('button')] : []; };
 const pgPill = (blk, k) => { const g = pgSeg(blk, k); return g && g.querySelector('i'); };
 const pgBlkOf = btn => btn.closest('.stctl') ? document.querySelector('#routePage .sttlist') : btn.closest('.lblk');
-const pagerHtml = () => S.page === 'sttt' ? stttHtml() : railHtml();
+const pagerHtml = () => S.page === 'sttt' ? stttHtml() : S.page === 'bustt' ? busttHtml() : railHtml();
 function pagerSet(btn) {   // 套用分頁按鈕的狀態，回傳還原用的函式
   const v = btn.dataset.v, k = btn.dataset.k;
-  if (k && S.sttt) {
-    const T = S.sttt, was = { date:T.date, data:T.data, err:T.err, dir:T.dir, grp:T.grp, dest:T.dest };
-    if (k === 'date') { T.date = v; T.data = T.cache[v] || null; T.err = null; }
+  if (k && curTT()) {
+    const T = curTT(), was = { date:T.date, data:T.data, err:T.err, dir:T.dir, grp:T.grp, dest:T.dest, sel:T.sel };
+    T.sel = null;
+    if (k === 'date' && S.page === 'bustt') T.date = v;   // 公車時刻表：資料不分日期，只換日子
+    else if (k === 'date') { T.date = v; T.data = T.cache[v] || null; T.err = null; }
     else { T[k] = v; if (k === 'dir' && T.dest && T.data && (T.data.dests || []).some(x => x.id === T.dest && (x.dir === 0 || x.dir === 1) && String(x.dir) !== v)) T.dest = ''; }
     return () => Object.assign(T, was);
   }
@@ -1526,7 +1620,7 @@ function selectRailTab(btn, fromSwipe) {
   if (op && oon) { const sr = op.parentElement.getBoundingClientRect(), r = op.getBoundingClientRect(); pos = { x: r.left - sr.left - op.parentElement.clientLeft - 4, w: r.width }; }
   const go = () => {
     pagerSet(btn);
-    if (S.page === 'sttt') { renderSttt(); if (!S.sttt.data) loadSttt(); } else renderRail();
+    if (S.page === 'sttt') { renderSttt(); if (!S.sttt.data) loadSttt(); } else if (S.page === 'bustt') renderBustt(); else renderRail();
     const nb = pgBlocks()[bi];
     const np = pgPill(nb, pk), non = pgBtns(nb, pk).find(b => b.classList.contains('on'));
     if (np && non && pos && fromSwipe) { np.style.transition = 'none'; np.style.width = pos.w + 'px'; np.style.transform = `translateX(${pos.x}px)`; pillSettle(np, non, 200); }
@@ -1575,6 +1669,7 @@ function railHtml() {
 /* ---------- 車站時刻表查詢（v2.23） ---------- */
 const svcIso = off => { const d = new Date(); if (d.getHours() < 3) d.setDate(d.getDate() - 1); d.setDate(d.getDate() + off); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 function railUnder() {
+  if (S.page === 'bustt') { const keep = S.page; S.page = 'route'; const html = routeHtml() || ''; S.page = keep; return { html, scroll: S.routeScroll || 0 }; }
   if (S.page === 'line' && S.lineFrom === 'sttt' && S.sttt) return { html: stttHtml(), scroll: S.stttScroll || 0 };
   return { html: railHtml(), scroll: S.railScroll || 0 };
 }
@@ -1645,6 +1740,35 @@ function stttHtml() {
   return `<div class="wrap ttw"><div class="stpin">${stationHead(R, 'sttt')}<div class="stctl">${ctl}</div></div><div class="lblk sttlist">${body}</div></div>`;
 }
 const tClk = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+// ---------- v2.44.0 時刻表格子（車站時刻表、公車時刻表共用） ----------
+// items：[{ t:分鐘（可超過1440＝隔日）, key, lb:小字（車種／終點）, col:顏色, dot:本站始發, low:低地板, det:()=>展開內容 }]，已依時間排序
+const p2 = n => String(n).padStart(2, '0');
+function ttGrid(items, o) {
+  if (!items.length) return '';
+  const now = o.now, byH = new Map();
+  for (const x of items) { const h = Math.floor(x.t / 60); if (!byH.has(h)) byH.set(h, []); byH.get(h).push(x); }
+  const next = now >= 0 && now < 1e6 ? items.find(x => x.t >= now) : null, nh = next ? Math.floor(next.t / 60) : null;
+  let h = `<div class="ttidx" data-noswipe><div>${[...byH.keys()].map(hh => `<button class="${now >= (hh + 1) * 60 ? 'past' : ''}" data-act="ttHr" data-v="${hh}">${p2(hh % 24)}</button>`).join('')}</div></div><div class="ttg">`;
+  for (const [hh, l] of byH) {
+    h += `<div class="tth${now >= (hh + 1) * 60 ? ' past' : ''}" id="tth${hh}">${hh === nh ? '<i id="stttNext"></i>' : ''}${p2(hh % 24)} 時${hh >= 24 ? '<small>隔日</small>' : ''}<span>${l.length} 班</span></div>`;
+    for (let i = 0; i < l.length; i += 6) {
+      const row = l.slice(i, i + 6);
+      h += `<div class="ttr">` + row.map(x => `<button class="ttm${now >= 0 && x.t < now ? ' past' : ''}${x === next ? ' next' : ''}${o.sel === x.key ? ' sel' : ''}"${x.col ? ` style="color:${x.col}"` : ''} data-act="ttSel" data-v="${esc(x.key)}"><span class="ttlb">${x.lbh || (x.lb ? esc(x.lb) : '')}${x.low ? '<i class="lf">♿</i>' : ''}</span><span class="ttn">${p2(x.t % 60)}${x.dot ? '<i class="tto"></i>' : ''}</span></button>`).join('');
+      const s = row.find(x => x.key === o.sel); if (s) h += s.det(now >= 0 && s.t >= now && now < 1e6 ? s.t - now : null);
+      h += `</div>`;
+    }
+  }
+  return h + `</div>`;
+}
+const ttDet = (time, wait, rows, btn) => `<div class="ttdet"><div class="h"><button data-act="ttClose" aria-label="收起">✕</button>${time}${wait != null ? `<span class="eta">${wait < 1 ? '即將發車' : wait + ' 分後'}</span>` : ''}</div>${rows.filter(Boolean).map(([k, v]) => `<div class="kv2"><span>${k}</span><span>${v}</span></div>`).join('')}${btn || ''}</div>`;
+const curTT = () => S.page === 'bustt' ? S.bustt : S.sttt;
+// 台鐵車種：小字縮寫與顏色（區間車最常見，不標）
+// 用完整車種名稱判斷（TDX：「自強(3000)(EMU3000 型電車)」「自強(普悠瑪)」「自強(太魯閣)」）
+const TR_AB = [['3000', '新自', '#FF8A4C', 'EMU3000 新自強'], ['普悠瑪', '普悠', '#FF8FB1', '普悠瑪'], ['太魯閣', '太', '#E86AD8', '太魯閣'], ['區間快', '快', '#5AD1E6', '區間快'], ['自強', '自', '#FF6B6B', '自強'], ['莒光', '莒', '#FFB03A', '莒光'], ['復興', '復', '#FFB03A', '復興'], ['普快', '普快', '#B9A7FF', '普快'], ['區間', '', '', '區間']];
+const trAb = ty => (TR_AB.find(x => (ty || '').includes(x[0])) || ['', (ty || '').replace(/\(.*?\)|（.*?）/g, '').slice(0, 2), '', (ty || '').replace(/\(.*?\)|（.*?）/g, '')]);
+// 終點縮寫：主要大站一個字（含中和新蘆線、淡海輕軌的支線端點），其餘取前兩字
+const D_AB = { 臺北: '北', 台北: '北', 板橋: '板', 樹林: '樹', 基隆: '基', 新竹: '竹', 苗栗: '苗', 臺中: '中', 台中: '中', 彰化: '彰', 員林: '員', 嘉義: '嘉', 臺南: '南', 台南: '南', 高雄: '高', 新左營: '新左', 左營: '左', 屏東: '屏', 潮州: '潮', 枋寮: '枋', 臺東: '東', 台東: '東', 花蓮: '花', 宜蘭: '宜', 蘇澳新: '蘇新', 蘇澳: '蘇', 桃園: '桃', 中壢: '壢', 鳳山: '鳳', 玉里: '玉', 瑞芳: '瑞', 雲林: '雲', 沙鹿: '沙', 迴龍: '迴', 蘆洲: '蘆', 淡水漁人碼頭: '漁', 漁人碼頭: '漁', 崁頂: '崁', 北投: '投', 大安: '大', 亞東醫院: '亞', 台電大樓: '台', 象山: '象', '廣慈/奉天宮': '廣' };
+const dAb = n => { n = (n || '').replace(/站$/, ''); return D_AB[n] || n.slice(0, 2); };
 const stttDone = (D, list) => D.today && list.length && list.every(t => t.t < D.now) ? `<div class="note" style="margin:10px 0 0">今天的班次都已開出。<button class="navbtn" style="margin-left:6px" data-act="stttDay" data-v="1">看明天</button></div>` : '';
 function stttTrain(R, T, D) {
   const tra = R.op === 'TRA', dn = tra ? ['順行', '逆行'] : ['南下', '北上'];
@@ -1657,14 +1781,23 @@ function stttTrain(R, T, D) {
   const destName = T.dest ? (D.dests.find(x => x.id === T.dest) || {}).name || '' : '';
   h += `<div class="tgrp">${T.dest ? `往 ${esc(destName)}` : `${dn[+T.dir] || ''}・停靠本站`}<span>${list.length}班</span></div>`;
   if (!list.length) return { ctl, body: h + `<div class="note">沒有符合條件的班次。</div>` };
-  let mark = false;
-  h += stttDone(D, list) + `<div class="board">` + list.map(t => {
-    const past = t.t < D.now, nx = !past && !mark; if (nx) mark = true;
+  // v2.44.0：改成時刻表格子。小字＝車種縮寫（區間車不標）＋終點縮寫（高鐵只標不到南港／左營的）；● 本站始發
+  const used = new Map(), dUsed = new Map();
+  const items = list.map(t => {
+    const [, ab, col, tyName] = tra ? trAb(t.tf || t.type) : ['', '', '', ''], dd = t.dest && (tra || !/^(南港|左營)(站)?$/.test(t.dest)) ? dAb(t.dest) : '';   // 高鐵：往南港、左營不標
+    if (ab) used.set(ab, [ab, col, tyName]); if (dd && dd !== t.dest.replace(/站$/, '')) dUsed.set(dd, t.dest);
     const arr = T.dest ? t.next[T.dest] : null, dur = arr != null ? arr - t.t : null;
-    return `<button class="lnk trlnk" data-act="stttTrain" data-v="${esc(t.no)}"${nx ? ' id="stttNext"' : ''}><div class="trow sttrow ${past ? 'past' : ''}"><span class="ttime">${tClk(t.t)}${t.t >= 1440 ? '<small>隔日</small>' : ''}</span>
-      <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${tra ? esc(t.type || '') + ' ' : ''}${esc(t.no)}次</div></span>
-      ${arr != null ? `<span class="sttarr">${tClk(arr)}<small>${dur >= 60 ? `${Math.floor(dur / 60)}時${dur % 60 ? `${dur % 60}分` : ''}` : `${dur}分`}</small></span>` : ''}</div></button>`;
-  }).join('') + `</div>`;
+    return { t: t.t, key: t.no, col, lbh: (ab ? `<i class="ty">${esc(ab)}</i>` : '') + (dd ? `<i class="dd">${esc(dd)}</i>` : ''), dot: !!t.start && t.start === R.name,
+      det: w => ttDet(tClk(t.t) + (t.t >= 1440 ? ' <small style="font-size:12px;color:var(--muted)">隔日</small>' : ''), w, [
+        [tra ? '車種' : '列車', esc(tra ? (t.tf || t.type || '').replace(/\(([^)]*型[^)]*)\)$/, '').trim() : '高鐵')], ['車次', esc(t.no) + ' 次'], ['往', esc(t.dest || '?')],
+        t.start && t.start !== R.name ? ['始發', esc(t.start)] : ['注意', '● 本站始發'],
+        arr != null ? [`到 ${esc(destName)}`, `${tClk(arr)}（${dur >= 60 ? `${Math.floor(dur / 60)}時${dur % 60 ? `${dur % 60}分` : ''}` : `${dur}分`}）`] : null],
+        `<button class="more" data-act="stttTrain" data-v="${esc(t.no)}">停靠站一覽</button>`) };
+  });
+  h += stttDone(D, list) + ttGrid(items, { now: D.now, sel: T.sel });
+  const leg = [...used.values()].map(([ab, col, ty]) => `<b style="color:${col || 'var(--text)'}">${esc(ab)}</b> ${esc(ty)}`);
+  const dleg = [...dUsed].map(([a, n]) => `<b>${esc(a)}</b> ${esc(n)}`);
+  h += `<div class="ttleg">${leg.length ? '車種：' + leg.join('　') + (tra ? '　（區間車不標）' : '') + '<br>' : ''}${dleg.length ? '終點：' + dleg.join('　') + (tra ? '' : '　（往南港、左營不標）') + '<br>' : ''}● 本站始發</div>`;
   return { ctl, body: h };
 }
 function stttMetro(R, T, D) {
@@ -1679,11 +1812,16 @@ function stttMetro(R, T, D) {
     h += `<div class="tgrp">${esc(g.label)}<span>${list.length}班</span></div>`;
     if (!list.length) h += `<div class="note">沒有符合條件的班次。</div>`;
     else {
-      let mark = false;
-      h += stttDone(D, list) + `<div class="board">` + list.map(t => {
-        const past = t.t < D.now, nx = !past && !mark; if (nx) mark = true;
-        return `<div class="trow sttrow ${past ? 'past' : ''}"${nx ? ' id="stttNext"' : ''}><span class="ttime">${esc(t.time)}</span><span class="tmain"><div class="td">${lineBadge(R.op, t.line)}往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}</div></span></div>`;
-      }).join('') + `</div>`;
+      // v2.44.0：時刻表格子。終點是路線起迄站（含支線端點）就不標，其他終點（區間車）用小字標出；沒有起迄站資料時改成最常見的終點不標
+      const common = topDests(list, 1)[0], others = new Set(), isEnd = t => { const E = (D.ends || {})[t.line]; return E ? E.includes(t.dest) || E.includes(String(t.dest).replace(/站$/, '')) : t.dest === common; };
+      const items = list.map(t => {
+        const dd = !isEnd(t) ? dAb(t.dest) : '', br = ((D.brEnds || {})[t.line] || []).includes(t.dest); if (dd) others.add(t.dest);   // 支線端點（迴龍、蘆洲…）不上色
+        const ri = reg({ op: t.line === 'Y' ? 'NTMC' : R.op, line: t.line, destId: t.destId || null, dest: t.dest, via: t.via || null, t: t.t, delay: 0, time: t.time, est: false, live: false });
+        return { t: t.t, key: t.time + '|' + t.line + '|' + t.dest, lb: dd, col: dd && !br ? '#5AD1E6' : '',
+          det: w => ttDet(esc(t.time), w, [['路線', lineBadge(R.op, t.line) + esc(lineName(t.line))], ['往', esc(t.dest) + (t.via ? `（${esc(t.via)}）` : '')]], `<button class="more" data-act="tripOpen" data-i="${ri}">停靠站一覽</button>`) };
+      });
+      h += stttDone(D, list) + ttGrid(items, { now: D.now, sel: T.sel });
+      if (others.size) h += `<div class="ttleg">小字＝終點：${[...others].map(d => `<b style="color:${Object.values(D.brEnds || {}).some(x => x.includes(d)) ? 'var(--text)' : '#5AD1E6'}">${esc(dAb(d))}</b> ${esc(d)}`).join('　')}　（${D.ends ? '往路線起迄站' : `往「${esc(common)}」`}不標）</div>`;
     }
   }
   const HW = (D.hw || []).filter(x => !T.line || x.line === T.line);
@@ -1746,7 +1884,7 @@ async function loadLine(scroll) {
   try {
     L.data = q.kind === 'trip' ? await api('tripView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, t:q.t, delay:q.delay, est:q.est })
       : q.kind === 'line' ? await api('lineView', { op:q.op, line:q.line, ids:q.ids, dests:q.dests, via:q.via, curEta:q.curEta, label:q.label })
-      : await api('trainView', { kind:q.kind, no:q.no, ids:q.ids }); L.err = null;
+      : await api('trainView', { kind:q.kind, no:q.no, ids:q.ids, date:q.date || null }); L.err = null;
   } catch (e) { L.err = e.message; }
   if (S.line !== L) return;
   renderLine();
@@ -1765,7 +1903,7 @@ function renderLine() {
     ? `${D.stops.length}站；${q.est && !q.live ? '依班距估算發車時間，' : ''}各站時間${D.noS2S ? '以每站約2分鐘估算' : '依 TDX 站間行駛時間推算'}${D.delay ? `，已含即時晚約${D.delay}分` : q.live ? '，本站為即時到站' : ''}`
     : q.kind === 'line'
     ? `${D.stops.length}站，目前在${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
-    : `${D.stops.length}站${q.kind === 'tra' ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚${D.delay}分` : '；目前準點') : ''}`;
+    : `${D.today === false && D.date ? `${+D.date.slice(5, 7)}/${+D.date.slice(8)}・` : ''}${D.suspended ? '這一天停駛（依台鐵當天時刻表）' : `${D.stops.length}站`}${q.kind === 'tra' && !D.suspended && D.today !== false ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚${D.delay}分` : '；目前準點') : ''}`;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1 class="${q.kind === 'trip' ? 'trip' : ''}" style="font-size:${q.kind === 'trip' ? (title.length > 4 ? 22 : 26) : title.length > 4 ? 30 : 38}px">${isLine ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn ${q.kind === 'trip' ? 'trip' : ''}"><span>${esc(sub)}</span></span>` : ''}</div>
@@ -1791,6 +1929,10 @@ function openRoute(r) {
   renderRoute(); if (!hit) loadRoute(true); else requestAnimationFrame(() => { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); });
 }
 function closeRoute(quiet) {
+  if (S.page === 'bustt' && S.route) {   // v2.44.0：公車時刻表 → 回路線頁
+    if (!quiet) { popAnim(); return; }
+    S.page = 'route'; S.bustt = null; renderRoute(); $('#routePage').scrollTop = S.routeScroll || 0; return;
+  }
   if ((S.page === 'line' || S.page === 'sttt') && S.rail) {
     if (!quiet) { popAnim(); return; }
     if (S.page === 'line' && S.lineFrom === 'sttt' && S.sttt) { S.page = 'sttt'; S.line = null; S.lineFrom = null; renderSttt(); setPageScroll($('#routePage'), S.stttScroll); return; }
@@ -1811,8 +1953,9 @@ async function loadRoute(scroll) {
   S.routeLoading = false; renderRoute();
   if (scroll) { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); }
 }
-function renderRoute() {
-  const R = S.route; if (!R || S.page !== 'route') return;
+function renderRoute() { const h = routeHtml(); if (h != null) $('#routePage').innerHTML = h; }
+function routeHtml() {
+  const R = S.route; if (!R || S.page !== 'route') return null;
   const D = S.routeData;
   const dest = D?.dest?.[R.dirNum] ?? R.dest;
   const canSwap = D && D.dirs && D.dirs.length > 1;
@@ -1831,7 +1974,7 @@ function renderRoute() {
         <button class="fav ${on?'on':''}" data-act="favBus" data-i="${reg(f)}" aria-label="${on?'取消收藏':'收藏'}">${on ? I.star : I.starO}</button></div>`;
     }).join('') + `</div>`;
   }
-  $('#routePage').innerHTML = h + '</div>';
+  return h + '</div>';
 }
 
 /* ---------- v2.43.0 公車時刻表（雲端；路線頁「時刻表」按鈕） ---------- */
@@ -1864,7 +2007,7 @@ function schCalc(recs, stopUID, ymd) {
       let off = idx >= 0 ? pat[idx] : undefined, origin = false;
       if (off == null || off < 0) { if (pat.filter(x => x >= 0).length === 1) { off = 0; origin = true; } else continue; }   // 只有起站時間的班表：退回起站
       if (origin) atOrigin = true;
-      times.push({ m: t[1] + off, low: !!t[4], sub: r.sn && recs.length > 1 ? r.sn : '' });
+      times.push({ m: t[1] + off, low: !!t[4], sub: r.sn && recs.length > 1 ? r.sn : '', r, tr: t, idx });
     }
     for (const f of r.f || []) if (f[0] & (1 << dow)) freq.push(f);
   }
@@ -1901,13 +2044,75 @@ function schHtml() {
   return h;
 }
 function schRender() { if (S.sheet && S.sheet.type === 'sch') { const el = $('#sheet'); if (el) el.innerHTML = '<div class="grab"></div>' + schHtml(); } }
-async function schOpen() {
+// v2.44.0：公車時刻表改成獨立一頁（和車站時刻表同樣：上方固定、左右滑動換日期、時刻表格子）
+function schOpen() {
   const R = S.route, D = S.routeData; if (!R || !D) return;
   const here = (D.stops || []).find(s => s.here);
-  S.sch = { day: 'today', stop: (here && here.uid) || R.stopUID || (D.stops[0] && D.stops[0].uid), data: null, err: null, loading: true, routeUID: R.routeUID };
-  S.sheet = { type: 'sch' }; openSheet(schHtml());
-  try { S.sch.data = await api('schedule', { routeUID: R.routeUID }); } catch (e) { S.sch.err = e.message; }
-  if (S.sch) S.sch.loading = false; schRender();
+  S.routeScroll = $('#routePage').scrollTop;
+  const T = { routeUID: R.routeUID, route: R.route, dirNum: R.dirNum, dest: D?.dest?.[R.dirNum] ?? R.dest, stops: (D.stops || []).map(s => ({ uid: s.uid, name: s.name })),
+    stop: (here && here.uid) || R.stopUID || (D.stops[0] && D.stops[0].uid), date: svcIso(0), data: null, err: null, sel: null, next: true, t0: Date.now() };
+  pushAnim(() => { S.page = 'bustt'; S.bustt = T; $('#routePage').scrollTop = 0; renderBustt(); });
+  loadBustt();
+}
+async function loadBustt() {
+  const T = S.bustt; if (!T) return;
+  try { T.data = await api('schedule', { routeUID: T.routeUID }); T.err = null; } catch (e) { T.err = e.message; }
+  const wait = NAV_MS + 40 - (Date.now() - (T.t0 || 0)); if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  if (S.bustt !== T) return;
+  const first = T.next; T.next = false; renderBustt(first ? 'next' : '');
+}
+function renderBustt(scroll) {
+  if (!S.bustt || S.page !== 'bustt') return;
+  const pg = $('#routePage'), ol = pg.querySelector('.sttlist'), cur = ol ? ol.scrollTop : 0;
+  pg.innerHTML = busttHtml(); pg.scrollTop = 0;
+  const list = pg.querySelector('.sttlist'); if (!list) return;
+  if (scroll === 'next') { const el = list.querySelector('#stttNext'); list.scrollTop = el ? Math.max(0, el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 6) : 0; return; }
+  list.scrollTop = cur;
+}
+function busttHtml() {
+  const T = S.bustt; if (!T) return '';
+  const d0 = svcIso(0), d1 = svcIso(1);
+  const days = [[d0, '今天'], [d1, '明天']]; if (T.date !== d0 && T.date !== d1) days.push([T.date, `${+T.date.slice(5, 7)}/${+T.date.slice(8)}`]);
+  const head = `<div class="ptop shd"><button class="back" data-act="closeRoute">${I.back}返回</button>
+    <h1 class="shd-name">${esc(T.route)}</h1><div class="shd-row"><span class="sys">公車時刻表</span></div>
+    <div class="shd-info">${esc(T.dest ? '往 ' + T.dest : '')}</div></div>`;
+  const all = (T.data && T.data.recs) || [];
+  const recs0 = all.filter(r => r.d === 2 || (r.d === 1 ? 1 : 0) === (T.dirNum ? 1 : 0)), recs = recs0.length ? recs0 : all;
+  const wk = '日一二三四五六'[new Date(Date.parse(T.date + 'T12:00:00+08:00')).getUTCDay()];
+  const c = all.length ? schCalc(recs, T.stop, T.date) : null;
+  const meta = T.err ? '讀取失敗：' + esc(T.err) : !T.data ? '讀取時刻表中…' : !all.length ? '' : `${+T.date.slice(5, 7)}/${+T.date.slice(8)} 週${wk}・${c.times.length ? c.times.length + ' 班' : c.freq.length ? '只有班距' : '沒有班次'}${c.atOrigin ? '・只有起站發車時間' : ''}`;
+  const ctl = `<div class="sttd">${stSeg('date', days.map(([k, label]) => ({ k, label })), T.date)}
+      <input id="busttDate" class="inp" type="date" value="${esc(T.date)}" min="${d0}" max="${svcIso(90)}"></div>
+    <div class="sttf"><select id="busttStop" class="inp">${T.stops.map(s => `<option value="${esc(s.uid)}"${s.uid === T.stop ? ' selected' : ''}>上車站：${esc(s.name)}</option>`).join('')}</select></div>
+    <div class="rmeta">${meta}</div>`;
+  let body = '';
+  if (!T.data) body = T.err ? '' : `<div>${skel(5)}</div>`;
+  else if (!all.length) body = `<div class="note" style="margin-top:12px">這條路線沒有表定時刻表（TDX 沒有提供），請看路線頁的即時到站。</div>`;
+  else {
+    const isToday = T.date === d0, nowM = isToday ? (new Date().getHours() < 3 ? nowMinUI() + 1440 : nowMinUI()) : -1;
+    for (const f of c.freq) body += `<div class="tthw"><div><b>${schHm(f[1])}–${schHm(f[2])}</b><small>這段沒有固定時刻</small></div><div style="text-align:right"><b>每 ${f[3] != null && f[4] != null && f[3] !== f[4] ? `${f[3]}–${f[4]}` : f[3] ?? f[4] ?? '?'} 分</b><small>起站發車間隔</small></div></div>`;
+    // 副線小字：去掉路線名稱後剩下的字（837副繞 →「繞」、837區經紅樹林路 →「紅樹」）；跟路線同名的主線不標
+    const subLb = x => { let r = (x || '').replace(T.route, '').trim().replace(/^[（(]|[)）]$/g, ''); if (!r) return ''; if (/^經/.test(r) && r.length > 1) r = r.slice(1, 3); return r.slice(0, 3); };
+    const subs = [...new Set(c.times.map(x => x.sub).filter(x => x && subLb(x)))], SUBC = ['#5AD1E6', '#FFB03A', '#FF8FB1', '#B9A7FF'];
+    const items = c.times.map(x => ({ t: x.m, key: x.m + '|' + x.sub + '|' + x.tr[1], low: x.low, lb: subLb(x.sub), col: subs.includes(x.sub) ? SUBC[subs.indexOf(x.sub) % 4] : '',
+      det: w => ttDet(schHm(x.m) + (x.m >= 1440 ? ' <small style="font-size:12px;color:var(--muted)">隔日</small>' : ''), w, [
+        x.r.sn && x.r.sn !== T.route ? ['班別', esc(x.r.sn)] : null, ['往', esc(T.dest || '')], x.low ? ['注意', '♿ 低地板車'] : null,
+        c.atOrigin ? ['說明', '只有起站發車時間，其他站要加上行車時間'] : null],
+        `<button class="more" data-act="busTrip" data-v="${esc(x.m + '|' + x.sub + '|' + x.tr[1])}">停靠站一覽</button>`) }));
+    if (items.length) body += ttGrid(items, { now: nowM, sel: T.sel });
+    else if (!c.freq.length) body += `<div class="note" style="margin-top:12px">${c.anyTrip ? '這一站沒有表定停靠時間，換別的上車站看看。' : '這一天沒有班次。'}</div>`;
+    const leg = [subs.length ? subs.map((x, i) => `<b style="color:${SUBC[i % 4]}">${esc(subLb(x))}</b> ${esc(x)}`).join('　') + '　（沒標＝' + esc(T.route) + '）' : '', items.some(x => x.low) ? '♿ 低地板車' : ''].filter(Boolean);
+    body += `<div class="ttleg">${leg.length ? leg.join('　') + '<br>' : ''}表定時間，實際以即時到站為準。</div>`;
+  }
+  return `<div class="wrap ttw"><div class="stpin">${head}<div class="stctl">${ctl}</div></div><div class="lblk sttlist">${body}</div></div>`;
+}
+function busTripSheet(key) {   // 停靠站一覽：這一班在各站的表定時間
+  const T = S.bustt; if (!T || !T.data) return;
+  const recs = (T.data.recs || []); const c = schCalc(recs.filter(r => r.d === 2 || (r.d === 1 ? 1 : 0) === (T.dirNum ? 1 : 0)).length ? recs.filter(r => r.d === 2 || (r.d === 1 ? 1 : 0) === (T.dirNum ? 1 : 0)) : recs, T.stop, T.date);
+  const x = c.times.find(y => y.m + '|' + y.sub + '|' + y.tr[1] === key); if (!x) return;
+  const pat = (x.r.p || [])[x.tr[2]] || [], base = x.tr[1];
+  const li = (x.r.st || []).map((st, i) => pat[i] >= 0 ? `<div class="trow"><span class="ttime" style="${st[0] === T.stop ? 'color:var(--lime)' : ''}">${schHm(base + pat[i])}</span><span class="tmain"><div class="td" style="${st[0] === T.stop ? 'color:var(--lime);font-weight:800' : ''}">${esc(st[1])}</div></span></div>` : '').join('');
+  openSheet(`<h2>${schHm(x.m)}　${esc(T.route)}</h2><div class="addr">${esc(x.r.sn || '')}${T.dest ? '・往 ' + esc(T.dest) : ''}</div><div class="board" style="margin-top:10px">${li || '<div class="note">這一班只有起站時間。</div>'}</div>`);
 }
 
 /* ---------- sheets ---------- */
@@ -1997,6 +2202,7 @@ function stackPop(quiet) {
 // 右滑返回時墊在底下的頁面
 function underPage() {
   if ((S.page === 'line' || S.page === 'sttt') && S.rail) return railUnder();
+  if (S.page === 'bustt' && S.route) return railUnder();
   if (S.back && S.back.length) { const e = S.back[S.back.length - 1], keep = S.page; S.page = e.page; const html = pageHtml(e.page); S.page = keep; return { html, scroll: e.scroll || 0 }; }
   return null;
 }
@@ -2027,7 +2233,7 @@ function planHtml() {
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
   // v2.34.0：TDX 和 Google 的路線合併列出：照這次實際列出的路線標示用到哪些來源
-  const has = s => !!(P.res && P.res.some(r => r.src === s)), srcs = [has('tdx') && '交通部 TDX 公共運輸旅運規劃', has('google') && 'Google 地圖', has('tt') && '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）'].filter(Boolean);
+  const has = s => !!(P.res && P.res.some(r => r.src === s)), srcs = [has('tdx') && '交通部 TDX 公共運輸旅運規劃', has('google') && 'Google 地圖', has('tt') && '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）', has('self') && '軌道官方時刻表自算（用台鐵、高鐵、捷運、輕軌的時刻表自己排；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；文湖線、台中捷運依班距估計；起訖點不是車站時，頭尾的公車接駁時間為估計，第一段公車有即時預估就用即時）'].filter(Boolean);
   return h + `<div class="sub" style="margin-top:18px">路線來源：${srcs.length ? srcs.join('、') : '交通部 TDX 公共運輸旅運規劃'}；地點搜尋：© OpenStreetMap 貢獻者</div></div>`;
 }
 const minTxt = m => m >= 60 ? `${Math.floor(m / 60)}小時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
@@ -2150,7 +2356,7 @@ function planCard(r, i) {
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : r.src === 'tt' ? `<div class="sub pnote">路線資料：官方時刻表</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
+    ${segBar(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${r.src === 'google' ? `<div class="sub pnote gsrc">路線資料：Google 地圖</div>` : r.src === 'tt' ? `<div class="sub pnote">路線資料：官方時刻表</div>` : r.src === 'self' ? `<div class="sub pnote">路線資料：官方時刻表自算</div>` : ''}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -2475,7 +2681,7 @@ function detailHtml() {
     });
     if (i1 < legs.length - 1) { legs.slice(i1 + 1).forEach(l => { h += xWalkRow(l); }); h += xStation(hmOf(r.end), P.d?.name || '終點', '', '到', null, 'xo'); }
   }
-  return h + `</div><div class="sub" style="margin-top:14px">${r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
+  return h + `</div>${r.busNote ? `<div class="sub pnote" style="margin-top:14px">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="margin-top:14px;color:var(--warn)">${esc(r.tightNote)}</div>` : ''}<div class="sub" style="margin-top:14px">${r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : r.src === 'self' ? '路線資料：依台鐵、高鐵、捷運、輕軌官方時刻表自己排出（文湖線、台中捷運沒有時刻表，依班距估計；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；公車接駁的等車與行駛時間為估計，第一段公車有即時預估就用即時）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
@@ -2555,6 +2761,8 @@ document.addEventListener('change', e => {
   if (e.target.id === 'stttDate' && e.target.value) stttDate(e.target.value);
   if (e.target.id === 'stttDest' && S.sttt) { S.sttt.dest = e.target.value; renderSttt(); }
   if (e.target.id === 'schStop' && S.sch) { S.sch.stop = e.target.value; schRender(); }
+  if (e.target.id === 'busttStop' && S.bustt) { S.bustt.stop = e.target.value; S.bustt.sel = null; renderBustt('next'); }
+  if (e.target.id === 'busttDate' && e.target.value && S.bustt && S.bustt.date !== e.target.value) { const b = document.querySelector(`#routePage .sttd .seg button[data-v="${e.target.value}"]`); if (b) selectRailTab(b); else { S.bustt.date = e.target.value; S.bustt.sel = null; renderBustt(); } }
 });
 document.addEventListener('keydown', e => { if (e.target.id === 'pickQ' && e.key === 'Enter') e.target.blur(); });
 
@@ -2592,9 +2800,13 @@ document.addEventListener('click', e => {
     case 'tab': window.tabPager ? tabPager(el.dataset.v) : setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'schOpen': schOpen(); break;
+    case 'ttSel': { const T = curTT(); if (T) { T.sel = T.sel === el.dataset.v ? null : el.dataset.v; S.page === 'bustt' ? renderBustt() : renderSttt(); } break; }
+    case 'ttClose': { const T = curTT(); if (T) { T.sel = null; S.page === 'bustt' ? renderBustt() : renderSttt(); } break; }
+    case 'ttHr': { const L = document.querySelector('#routePage .sttlist'), h = L && L.querySelector('#tth' + el.dataset.v); if (h) L.scrollTo({ top: Math.max(0, h.offsetTop - 4), behavior: reduceMotion() ? 'auto' : 'smooth' }); break; }
+    case 'busTrip': busTripSheet(el.dataset.v); break;
     case 'sbOne': sbRun([el.dataset.v]); break;
     case 'sbMissing': { const st = SB.st || {}; sbRun(SCH_CITIES.filter(([c]) => !st[c]).map(x => x[0])); break; }
-    case 'sbAll': if (confirm('要重新下載全部 23 區的公車時刻表嗎？約 450 次 TDX 呼叫，可能要分兩天（每日寫入額度）。')) sbRun(SCH_CITIES.map(x => x[0])); break;
+    case 'sbAll': if (confirm('要重新下載全部 22 區（高雄 TDX 沒有班表，不含）的公車時刻表嗎？約 450 次 TDX 呼叫，可能要分兩天（每日寫入額度）。')) sbRun(SCH_CITIES.map(x => x[0]).filter(c => c !== 'Kaohsiung')); break;
     case 'schDay': if (S.sch) { S.sch.day = el.dataset.v; schRender(); } break;
     case 'closeRoute': closeRoute(); break;
     case 'planNew': if (document.activeElement) document.activeElement.blur(); openPlan(); break;
@@ -2618,7 +2830,7 @@ document.addEventListener('click', e => {
     case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
     case 'trainOpen': if (o && S.rail) openLine({ kind:o.kind, no:o.no, ids:S.rail.ids }); break;
     case 'stttOpen': if (S.rail) openSttt(); break;
-    case 'stttTrain': if (S.rail && S.sttt) openLine({ kind:S.rail.op === 'THSR' ? 'thsr' : 'tra', no:el.dataset.v, ids:S.rail.ids }); break;
+    case 'stttTrain': if (S.rail && S.sttt) openLine({ kind:S.rail.op === 'THSR' ? 'thsr' : 'tra', no:el.dataset.v, ids:S.rail.ids, date:S.sttt.date }); break;
     case 'stttDay': stttDate(svcIso(+el.dataset.v)); break;
     case 'stttF': if (S.sttt) { const k = el.dataset.k; S.sttt[k] = el.dataset.v; if (k === 'line') S.sttt.grp = ''; renderSttt(); } break;
     case 'lineSwap': if (S.line?.req.alts) { const q = S.line.req, n = (q.alt + 1) % q.alts.length; S.line.data = null; openLine({ ...lineReqFromGroup({ op:q.op, line:q.line, g:q.alts[n] }) }); } break;
@@ -2729,6 +2941,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0; mode = '';
     pgK = undefined;
     if (S.page === 'sttt') { blk = x0 > 24 && (e.target.closest('.stctl') || e.target.closest('.sttlist')) ? pg.querySelector('.sttlist') : null; if (blk && e.target.closest('.sttd')) pgK = 'date'; }
+    else if (S.page === 'bustt') { blk = x0 > 24 && (e.target.closest('.stctl') || e.target.closest('.sttlist')) ? pg.querySelector('.sttlist') : null; pgK = 'date'; }   // 公車時刻表：左右滑＝換日期
     else blk = S.page === 'rail' && x0 > 24 ? e.target.closest('.lblk') : null;
   }, { passive:true });
   pg.addEventListener('touchmove', e => {
@@ -2794,7 +3007,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       for (const e of pe) { e.style.transition = `transform ${dur}ms ease`; e.style.transform = ''; }
       setTimeout(() => {
         for (const e of pe) e.style.transition = '';
-        const toRail = ((S.page === 'line' || S.page === 'sttt') && S.rail) || (S.back && S.back.length > 0);
+        const toRail = ((S.page === 'line' || S.page === 'sttt') && S.rail) || (S.page === 'bustt' && S.route) || (S.back && S.back.length > 0);
         closeRoute(true);
         if (toRail) { pg.style.transition = 'none'; pg.style.transform = ''; pg.offsetWidth; pg.style.transition = ''; requestAnimationFrame(dropUnder); }
         else { pg.style.transition = ''; pg.style.transform = ''; dropUnder(); }
