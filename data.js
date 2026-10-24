@@ -143,10 +143,10 @@ function ybMaybePush(cloud, live, lat, lon, r) {
     .catch(() => {}).finally(() => { ybUploadBusy = false; });
 }
 function withoutBikeLive(s) {
-  return { ...s, AvailableRentBikes: null, AvailableReturnBikes: null, AvailableRentBikesDetail: null, ServiceStatus: null, SrcUpdateTime: null, UpdateTime: null };
+  return { ...s, AvailableRentBikes: null, AvailableReturnBikes: null, AvailableRentBikesDetail: null, ServiceStatus: null, SrcUpdateTime: null, UpdateTime: null, src: null };
 }
 function withYoubikeFeed(stations, map) {
-  return stations.map(s => map[s.StationUID] ? { ...withoutBikeLive(s), ...map[s.StationUID] } : withoutBikeLive(s));
+  return stations.map(s => map[s.StationUID] ? { ...withoutBikeLive(s), ...map[s.StationUID], src: "yb" } : withoutBikeLive(s));
 }
 const inNorth = (lat, lon) => lat > 24.6 && lat < 25.35 && lon > 121.25 && lon < 122.05;   // 雙北大致範圍（開放資料讀不到時判斷用）
 const ODB_ERR = "台北、新北開放資料暫時連不上，請稍後下拉更新";
@@ -730,7 +730,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     const northMiss = list.filter(s => isOdBike(s.StationUID) && (!feed || !feed[s.StationUID])).map(s => s.StationUID);
     if (northMiss.length) try {
       const od = await odLive(northMiss);
-      live = live.map(s => od[s.StationUID] ? { ...withoutBikeLive(s), ...od[s.StationUID] } : s);
+      live = live.map(s => od[s.StationUID] ? { ...withoutBikeLive(s), ...od[s.StationUID], src: "od" } : s);
     } catch (e) {}
     return [list, live];
   })();
@@ -917,6 +917,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
         general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
         status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null,
         update: a.SrcUpdateTime || a.UpdateTime || null,
+        src: a.src || null,
       });
     }
     bikes.sort((x, y) => x.dist - y.dist);
@@ -973,7 +974,7 @@ async function liveFavs(favs, fresh) {
       try {
         const map = await youbikeFeed(fresh);
         for (const uid of feedU) {
-          if (map[uid]) out.bike[uid] = odBikeLive(map[uid]);
+          if (map[uid]) out.bike[uid] = odBikeLive(map[uid], "yb");
           else if (isOdBike(uid)) northU.push(uid);
           else { const city = UID_CITY[uid.slice(0, 3)]; if (city) (tdxKg[city] = tdxKg[city] || []).push(uid); }
         }
@@ -983,12 +984,12 @@ async function liveFavs(favs, fresh) {
       }
     }
     if (northU.length) {
-      try { const j = await odMemoGet(`/od/bike?ids=${[...new Set(northU)].join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a); } catch (e) {}
+      try { const j = await odMemoGet(`/od/bike?ids=${[...new Set(northU)].join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a, "od"); } catch (e) {}
     }
     await Promise.all(Object.entries(tdxKg).map(([city, uids]) => {
       const filter = [...new Set(uids)].map(u => `StationUID eq '${u}'`).join(" or ");
       return memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, fresh ? 0 : 90000).then(list => {
-        for (const a of list) out.bike[a.StationUID] = odBikeLive(a);
+        for (const a of list) out.bike[a.StationUID] = odBikeLive(a, "tdx");
       }).catch(() => {});
     }));
   })());
@@ -996,10 +997,10 @@ async function liveFavs(favs, fresh) {
   return out;
 }
 
-function odBikeLive(a) {
+function odBikeLive(a, src = null) {
   const det = a.AvailableRentBikesDetail || null;
   return { rent: a.AvailableRentBikes ?? null, ret: a.AvailableReturnBikes ?? null, general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
-    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || null };
+    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || null, src };
 }
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
 const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence, ...(x.StopPosition && x.StopPosition.PositionLat ? { P: [+x.StopPosition.PositionLat.toFixed(5), +x.StopPosition.PositionLon.toFixed(5)] } : {}) })) }));
@@ -2719,17 +2720,17 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
 async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
   const city = UID_CITY[(uid || "").slice(0, 3)];
   let a = {};
-  let feedHit = false;
-  if (city && isCloudBike(uid)) try { const feed = await youbikeFeed(false); if (feed[uid]) { a = feed[uid]; feedHit = true; } } catch (e) {}
+  let feedHit = false, src = null;
+  if (city && isCloudBike(uid)) try { const feed = await youbikeFeed(false); if (feed[uid]) { a = feed[uid]; feedHit = true; src = "yb"; } } catch (e) {}
   // 官網沒有此站或失敗時，雙北才改市府資料；其他原本可查的城市維持既有 TDX 備援。
-  if (!feedHit && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) a = b; } catch (e) {} }
-  if (!feedHit && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) a = b; } catch (e) {} }
+  if (!feedHit && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) { a = b; src = "od"; } } catch (e) {} }
+  if (!feedHit && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) { a = b; src = "tdx"; } } catch (e) {} }
   if (a.StationUID) try { placeHeal([], [a.StationUID]); } catch (e) {}
   const det = a.AvailableRentBikesDetail || null;
   return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
     rent: typeof a.AvailableRentBikes === "number" ? a.AvailableRentBikes : null, ret: typeof a.AvailableReturnBikes === "number" ? a.AvailableReturnBikes : null,
     general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
-    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || a.UpdateTime || null };
+    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || a.UpdateTime || null, src };
 }
 
 // 推播／下車提醒（Worker 端點）
