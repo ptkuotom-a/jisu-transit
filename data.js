@@ -42,11 +42,12 @@ async function tdx(profile, url) {
   const proxy = getProxy();
   if (!proxy) throw new Error("NO_PROXY");
   const target = proxy + url.slice(TDX_ORIGIN.length) + "&__k=" + (profile === "rail" ? 3 : profile === "route" ? 2 : 1);
+  const session = getSession(), opt = session && session.role === "admin" ? { headers: { "x-session": session.token } } : undefined;
   let last = "";
   for (let i = 0; i < 3; i++) {
     let code = 0, res;
     try {
-      const r = await fetchT(target, 20000);
+      const r = await fetchT(target, 20000, opt);
       code = r.status; res = await r.json();
     } catch (e) { res = { message: String(e) }; }
     if (Array.isArray(res)) return res;
@@ -616,6 +617,11 @@ const IDB = (() => {
       }
       mem.set(k, v);
     },
+    async del(k) {
+      mem.delete(k);
+      const db = await open(); if (!db) return;
+      try { const t = db.transaction(["kv", "meta"], "readwrite"); t.objectStore("kv").delete(k); t.objectStore("meta").delete(k); await done(t); } catch (e) {}
+    },
     open,
   };
 })();
@@ -624,14 +630,20 @@ const stopPack = s => [s.StopUID || "", (s.StopName && s.StopName.Zh_tw) || "", 
 const stopUnpack = a => ({ StopUID: a[0] || null, StopName: { Zh_tw: a[1] }, StopPosition: a[2] == null ? null : { PositionLat: a[2], PositionLon: a[3] }, StationID: a[4] || null, Bearing: a[5] || null });
 const bikePack = s => [s.StationUID, (s.StationName && s.StationName.Zh_tw) || "", (s.StationAddress && s.StationAddress.Zh_tw) || "", s.BikesCapacity ?? null, s.ServiceType ?? null, s.StationPosition ? s.StationPosition.PositionLat : null, s.StationPosition ? s.StationPosition.PositionLon : null];
 const bikeUnpack = a => ({ StationUID: a[0], StationName: { Zh_tw: a[1] }, StationAddress: { Zh_tw: a[2] || null }, BikesCapacity: a[3], ServiceType: a[4], StationPosition: a[5] == null ? null : { PositionLat: a[5], PositionLon: a[6] } });
-// 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號、且快取超過一天，就重抓一次（站牌異動時自動修正）
+// 取得格子裡的靜態清單；即時資料出現清單裡沒有的代號才重抓（站牌異動時自動修正）
 async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
   let c = await IDB.get("geo|" + key);
   if (kind === "stop" && (!c || oldCloud(c))) c = (await cloudStops(key).catch(() => null)) || c;
-  const fresh = async heal => { const l = await tdx(profile, url + (heal ? FRESH : "")); IDB.set("geo|" + key, { t: Date.now(), d: l.map(pack) }).catch(() => {}); return l; };
+  const fresh = async heal => {
+    if (kind === "stop") {
+      const v = await cloudStops(key).catch(() => null);
+      return v && Array.isArray(v.d) ? v.d.map(unpack) : [];
+    }
+    const l = await tdx(profile, url + (heal ? FRESH : "")); IDB.set("geo|" + key, { t: Date.now(), d: l.map(pack) }).catch(() => {}); return l;
+  };
   if (!c) return fresh(false);
   const list = c.d.map(unpack);
-  if (liveUIDs && Date.now() - c.t > DAY_MS) {
+  if (liveUIDs) {
     const have = new Set(list.map(x => x.StopUID || x.StationUID));
     if ((await liveUIDs).some(u => u && !have.has(u))) return fresh(true).catch(() => list);
   }
@@ -660,12 +672,22 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
     let city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
-    const have = new Set(city.map(s => s.StopUID).filter(Boolean));
-    const missing = (eta || []).some(e => e.StopUID && !isThbStop(e) && !have.has(e.StopUID));
-    if (!city.length || missing) {
-      const extra = await tdx("main", `${BASE}/advanced/v2/Bus/Stop/NearBy${nearbyQ(lat, lon, qStop)}&%24top=600&%24format=JSON`).catch(() => []);
-      for (const s of extra) if (s.StopUID && !have.has(s.StopUID) && s.StopPosition && !isThbStop(s)) { city.push(s); have.add(s.StopUID); }
+    if (od && od.cov === 1) {
+      const have = new Set(city.map(s => s.StopUID)), miss = new Map();
+      for (const e of eta || []) if (e.StopUID && !isThbStop(e) && !have.has(e.StopUID)) miss.set(e.StopUID, [e.RouteUID || "", e.StopUID, (e.StopName && e.StopName.Zh_tw) || ""]);
+      if (miss.size) {
+        const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10), rk = `jisu_sor_near_report|${lat},${lon},${qStop}`;
+        IDB.del(`geo|s|${lat},${lon},${qStop}`).catch(() => {});
+        const rows = [...miss.values()].filter(x => x[0]).slice(0, 20), proxy = getProxy(), session = getSession();
+        try {
+          if (rows.length && proxy && session && localStorage.getItem(rk) !== day) {
+            localStorage.setItem(rk, day);
+            fetch(proxy + "/bus/sor/report", { method: "POST", headers: { "content-type": "application/json", "x-session": session.token }, body: JSON.stringify({ r: rows }) }).catch(() => {});
+          }
+        } catch (e) {}
+      }
     }
+    // /od/stops 與 /od/thbstn 是手機端附近站牌唯一的靜態來源；雲端不完整時安靜略過。
     const hw = thb && Array.isArray(thb.list) ? thb.list : [];
     return [eta, [...city, ...hw]];
   })();
@@ -978,10 +1000,9 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (!k) throw new Error("缺少路線識別資訊");
   const name = enc(route);
   const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
-  // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站、且快取超過一天，或找不到這條路線，就重抓
+  // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
-  const sorFresh = async heal => { const l = await tdx("route", u("StopOfRoute") + (heal ? FRESH : "")); IDB.set("sor|" + sorKey, { t: Date.now(), d: sorPack(l) }).catch(() => {}); return l; };
-  // v2.42.0：快取沒有這條路線 → 先問雲端，沒有才打 TDX。同名的其他路線保留在同一份快取裡。
+  // 雲端 KV 的全 23 地區站序是手機端唯一來源；同名的其他路線保留在同一份快取裡。
   const sorCloud = async (base = []) => {
     const l = (await cloudSor([routeUID]).catch(() => ({})))[routeUID];
     if (!l || !l.length) return null;
@@ -991,7 +1012,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   };
   const odR = await odRouteEta(routeUID, true);   // v2.36.1 台北市公車：到站與公車位置用開放資料，讀不到才用 TDX
   let [sor, etas, near] = await Promise.all([
-    sc ? sc.d : sorCloud().then(d => d || sorFresh(false)),
+    sc ? sc.d : sorCloud().then(d => d || []),
     odR ? odR.list : tdx("route", u("EstimatedTimeOfArrival")),
     odR && Array.isArray(odR.near) ? odR.near : tdx("route", u("RealTimeNearStop")).catch(() => []),
   ]);
@@ -999,8 +1020,8 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (sc) {
     let have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
     if (!have.size) { const d = await sorCloud(sor); if (d) { sor = d; for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID); } }
-    const stale = !have.size || (Date.now() - sc.t > DAY_MS && etas.some(t => t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID)));
-    if (stale) sor = await sorFresh(true).catch(() => sor);
+    const stale = !have.size || etas.some(t => t.RouteUID === routeUID && t.StopUID && !have.has(t.StopUID));
+    if (stale) sor = await sorCloud(sor).catch(() => null) || sor;
   }
   try { placeHeal(etas.map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw }))); } catch (e) {}
   const mine = sor.filter(r => r.RouteUID === routeUID);
@@ -1010,7 +1031,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (!cand.length) cand = sor;
   cand.sort((a, b) => (b.Stops || []).length - (a.Stops || []).length);
   const stops = ((cand[0] && cand[0].Stops) || []).slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0));
-  if (!stops.length) throw new Error("查無此路線的站序資料");
+  if (!stops.length) return { routeUID, route, dirs: [dirNum], dest: { 0: null, 1: null }, stops: [] };
 
   const em = {};
   for (const t of etas) {
@@ -1178,8 +1199,7 @@ async function traBoard(get, st) {
   const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
   // 本站 StationLiveBoard ＋ 全台列車動態（Worker 共用快取60秒），讓已發車的每一班都有誤點
   const [tt, slive, tlive] = await Promise.allSettled([
-    storedRows ? Promise.resolve([]) : get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyStationTimetable/Today/Station/${id}?%24format=JSON`)
-      .catch(() => get("rail", `${RAIL_BASE}/v2/Rail/TRA/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)),
+    Promise.resolve([]),
     get("rail", `${RAIL_BASE}/v3/Rail/TRA/StationLiveBoard?%24filter=${filter}&%24format=JSON`),
     traAllPeek() || Promise.reject(new Error("skip")),
   ]);
@@ -1218,7 +1238,7 @@ async function traBoard(get, st) {
 async function thsrBoard(get, st) {
   const id = st.ids[0];
   const storedRows = await ttTrainRows("THSR", id, await dayInfo(svcDate(0))).catch(() => null);
-  const tt = storedRows ? { status: "fulfilled", value: [] } : await Promise.resolve(get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Station/${id}/${todayStr()}?%24format=JSON`)).then(v => ({ status: "fulfilled", value: v }), e => ({ status: "rejected", reason: e }));
+  const tt = { status: "fulfilled", value: [] };
   const seatMap = {};
   const seatList = [];
   let rows;
@@ -1227,9 +1247,7 @@ async function thsrBoard(get, st) {
     rows = tt.value.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
   } else if (seatList.length) {
     rows = seatList.map(t => ({ no: String(t.TrainNo), type: "高鐵", dest: zh(t.EndingStationName), dir: t.Direction, time: hm(t.DepartureTime) }));
-  } else {
-    throw (tt.reason || new Error("高鐵時刻表讀取失敗"));
-  }
+  } else rows = [];
   const now = nowMin();
   rows = rows.filter(r => r.time).map(r => ({ ...r, t: toMin(r.time), seats: seatMap[r.no] || null }))
     .filter(r => r.t >= now - 1).sort((a, b) => a.t - b.t);
@@ -1302,12 +1320,7 @@ const HW_KEY = "jisu_hw_";
 async function loadHw(get, op, stored) {
   if (stored && stored.hw) { try { localStorage.removeItem(HW_KEY + op); } catch (e) {} return stored.hw; }
   try { const c = JSON.parse(localStorage.getItem(HW_KEY + op)); if (c && c.hw && await rgenOk(op, c)) return c.hw; } catch (e) {}
-  const f = encodeURIComponent(HW_LINES[op].map(l => `LineID eq '${l}'`).join(" or "));
-  const [freq, fl] = await Promise.all([get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/${op}?%24filter=${f}&%24format=JSON`), get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/${op}?%24filter=${f}&%24format=JSON`)]);
-  const hw = hwPack(freq || [], fl || []);
-  const g = await rgenNow(op).catch(() => null);
-  try { localStorage.setItem(HW_KEY + op, JSON.stringify({ time: Date.now(), g: g || "", hw })); } catch (e) {}
-  return hw;
+  return hwPack([], []);
 }
 // 依班距排出本站整天的估算班次（班距取最小與最大的平均）；今日已收班就列明日
 async function hwTimetable(hw, ids, op) {
@@ -2038,7 +2051,7 @@ async function metroTimetable(get, st, filter, all) {
   let recs = [];
   const stored = await ttLoad(st.op).catch(() => null);
   if (stored && stored.rows) recs = ttMetroRecs(stored, st.ids);
-  else { try { recs = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationTimeTable/${st.op}?%24filter=${filter}&%24format=JSON`); } catch (e) { if (isRate(e)) throw e; } }
+  // 手機端時刻表只讀 /tt/data；雲端尚未建置時不向 TDX 補抓。
   // 北捷與環狀線合併的轉乘站（板橋、大坪林、景安、頭前庄）：另一個系統的時刻表也要帶進來
   const other = st.op === "TRTC" && st.ids.some(i => /^Y\d/.test(i)) ? "NTMC" : st.op === "NTMC" && st.ids.some(i => !/^(Y|LB)\d/.test(i)) ? "TRTC" : null;
   if (other && stored && stored.rows) { const o2 = await ttLoad(other).catch(() => null); if (o2 && o2.rows) recs = recs.concat(ttMetroRecs(o2, st.ids)); }
@@ -2180,15 +2193,11 @@ const s2sPack = list => { const e = {}; for (const r of Array.isArray(list) ? li
   const sec = (x.RunTime || 0) + (x.StopTime || 0); if (!sec) continue;
   for (const k of [x.FromStationID + "|" + x.ToStationID, x.ToStationID + "|" + x.FromStationID]) if (!e[k]) e[k] = sec; } return e; };
 async function stationOfLine(get, op, heal) {   // heal：清單裡找不到要的站，且存了超過一天才重抓
-  // v2.43.0：雲端那份（更新時刻表時一起存的各線車站順序）優先；雲端沒有、或雲端那份也找不到要的站，才用本機快取／向 TDX 查
-  if (!heal) { const stored = await ttLoad(op).catch(() => null); if (stored && Array.isArray(stored.sol) && stored.sol.length) return stored.sol; }
+  // 雲端那份（更新時刻表時一起存的各線車站順序）優先，否則只用本機快取。
+  { const stored = await ttLoad(op).catch(() => null); if (stored && Array.isArray(stored.sol) && stored.sol.length) return stored.sol; }
   let c = {}; try { c = JSON.parse(localStorage.getItem(SOL_KEY)) || {}; } catch (e) {}
   const hit = c[op]; if (hit && !(heal && Date.now() - hit.time > DAY_MS) && await rgenOk(op, hit)) return hit.lines;
-  const g = await rgenNow(op).catch(() => null);
-  const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/StationOfLine/${op}?%24format=JSON`);
-  const lines = (list || []).map(l => ({ line: l.LineID || l.LineNO, st: (l.Stations || []).slice().sort((a, b) => (a.Sequence ?? 0) - (b.Sequence ?? 0)).map(x => [x.StationID, zh(x.StationName) || x.StationID]) }));
-  if (lines.length) { c[op] = { time: Date.now(), g: g || "", lines }; try { localStorage.setItem(SOL_KEY, JSON.stringify(c)); } catch (e) {} }
-  return lines;
+  return [];
 }
 // 依站序串成路網：帶字尾的支線站（G03A、R22A）若前一站不是本站則接到本站；蘆洲支線 O50接大橋頭 O12；高雄輕軌是環狀
 const LINE_BRANCH = { TRTC: { O50: "O12" } };
@@ -2264,22 +2273,12 @@ async function lineView(get, p) {
 }
 const S2S_KEY = "jisu_s2s";
 async function s2sEdges(get, op) {
-  // 雲端那份（更新時刻表時一起存的站間行駛時間）優先；雲端沒有才用舊的本機快取／向 TDX 查
+  // 雲端那份（更新時刻表時一起存的站間行駛時間）優先；雲端沒有才用舊的本機快取。
   const stored = await ttLoad(op).catch(() => null);
   if (stored && stored.s2s) { try { localStorage.removeItem(S2S_KEY); } catch (e) {} return stored.s2s; }
   let c = {}; try { c = JSON.parse(localStorage.getItem(S2S_KEY)) || {}; } catch (e) {}
   const hit = c[op]; if (hit && (Object.keys(hit.e).length || Date.now() - hit.time < DAY_MS) && await rgenOk(op, hit)) return hit.e;   // 有資料就永久（直到換代）；空的明天再試
-  const g = await rgenNow(op).catch(() => null);
-  const e = {};
-  try {
-    const list = await get("rail", `${RAIL_BASE}/v2/Rail/Metro/S2STravelTime/${op}?%24format=JSON`);
-    for (const r of Array.isArray(list) ? list : []) for (const x of (r.TravelTimes || [])) {
-      const sec = (x.RunTime || 0) + (x.StopTime || 0); if (!sec) continue;
-      for (const k of [x.FromStationID + "|" + x.ToStationID, x.ToStationID + "|" + x.FromStationID]) if (!e[k]) e[k] = sec;
-    }
-  } catch (err) { if (isRate(err)) throw err; }
-  c[op] = { time: Date.now(), g: g || "", e }; try { localStorage.setItem(S2S_KEY, JSON.stringify(c)); } catch (err) {}
-  return e;
+  return {};
 }
 // 單一班次停靠站時間：本站發車時間 ± TDX 站間行駛時間（S2STravelTime）；沒有站間資料的系統以每站約2分推估
 // 從 KV 的 TRIPS_系統 找這一班車（同線、同終點、今天的日別、本站時刻相同）
@@ -2363,20 +2362,8 @@ async function trainView(get, p) {
   } else if (!isToday) {
     throw new Error("這一天的時刻表裡沒有這個車次");
   } else if (p.kind === "tra") {
-    const [tt, lv] = await Promise.allSettled([
-      get("rail", `${RAIL_BASE}/v3/Rail/TRA/DailyTrainTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`),
-      traAllLive().then(l => l.filter(x => String(x.TrainNo) === no))]);
-    if (tt.status !== "fulfilled") throw tt.reason;
-    const T = (tt.value.TrainTimetables || tt.value || [])[0]; if (!T) throw new Error("查無這個車次今日的時刻");
-    info = { type: shortType(zh(T.TrainInfo.TrainTypeName)), from: zh(T.TrainInfo.StartingStationName), to: zh(T.TrainInfo.EndingStationName) };
-    if (T.TrainInfo.SuspendedFlag === 1) suspended = true;   // 今天停駛（TDX 每站 SuspendedFlag 也都是 1）
-    else stops = (T.StopTimes || []).filter(x => x.SuspendedFlag !== 1).map(x => ({ id: x.StationID, name: zh(x.StationName), arr: hm(x.ArrivalTime), dep: hm(x.DepartureTime) }));
-    if (lv.status === "fulfilled") { const b = (lv.value.TrainLiveBoards || lv.value || [])[0]; if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } }
-  } else {
-    const r = await get("rail", `${RAIL_BASE}/v2/Rail/THSR/DailyTimetable/Today/TrainNo/${encodeURIComponent(no)}?%24format=JSON`);
-    const T = (r || [])[0]; if (!T) throw new Error("查無這個車次今日的時刻");
-    info = { type: "高鐵", from: zh(T.DailyTrainInfo.StartingStationName), to: zh(T.DailyTrainInfo.EndingStationName) };
-    stops = (T.StopTimes || []).map(x => ({ id: x.StationID, name: zh(x.StationName), arr: hm(x.ArrivalTime), dep: hm(x.DepartureTime) }));
+    // 今日車次明細沒有雲端時刻表時仍可保留即時位置；不向 TDX 補抓靜態停靠站。
+    try { const lv = await traAllLive(); const b = lv.find(x => String(x.TrainNo) === no); if (b) { delay = b.DelayTime ?? null; pos = { id: b.StationID, status: b.TrainStationStatus }; } } catch (e) { if (isRate(e)) throw e; }
   }
   const ci = stops.findIndex(s => here.has(String(s.id)));
   return { kind: p.kind, no, ...info, delay, pos, suspended, date: isoDay(day), today: isToday, stops: stops.map((s, i) => ({ ...s, here: i === ci, at: pos && pos.id === s.id })) };
@@ -2387,14 +2374,7 @@ const TMRT_KEY = "jisu_tmrt";
 async function loadTmrt(get) {
   const stored = await ttLoad("TMRT").catch(() => null); if (stored && stored.freq) { try { localStorage.removeItem(TMRT_KEY); } catch (e) {} return stored; }
   try { const c = JSON.parse(localStorage.getItem(TMRT_KEY)); if (c && c.freq && c.fl && await rgenOk("TMRT", c)) return c; } catch (e) {}
-  const g = await rgenNow("TMRT").catch(() => null);
-  const [freq, fl] = await Promise.all([
-    get("rail", `${RAIL_BASE}/v2/Rail/Metro/Frequency/TMRT?%24format=JSON`),
-    get("rail", `${RAIL_BASE}/v2/Rail/Metro/FirstLastTimetable/TMRT?%24format=JSON`),
-  ]);
-  const c = { time: Date.now(), g: g || "", freq, fl };
-  try { localStorage.setItem(TMRT_KEY, JSON.stringify(c)); } catch (e) {}
-  return c;
+  return { freq: [], fl: [] };
 }
 const DAY_KEYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 async function tmrtBoard(get, st) {
@@ -2478,8 +2458,8 @@ async function loadRailExits() {
 }
 
 // ---------- 永久清單的自動補救（v2.12.6）：和站牌／YouBike 同一套規則 ----------
-// 即時資料、搜尋、點進路線時出現清單沒有的站／路線，且這份清單存了超過一天 → 重讀既有雲端索引；一般使用者不觸發重抓。
-// 重抓後還是找不到的代碼（號誌站、資料不一致）記在 ign，之後不再觸發；失敗也記時間，明天再試
+// 即時資料、搜尋、點進路線時出現清單沒有的站／路線才重讀既有雲端索引；一般使用者不觸發重抓。
+// 重抓後還是找不到的代碼（號誌站、資料不一致）記在 ign，之後不再觸發；同縣市每天最多重抓一次。
 const healBusy = {};
 const newMiss = (ids, have, ign) => [...new Set(ids.filter(Boolean).map(String))].filter(i => !have.has(i) && !ign.has(i));
 function railHeal(op, ids) { railHealA(op, ids || []).catch(() => {}); }
@@ -2566,9 +2546,11 @@ async function busHealA(uids, cities) {
   const proxy = getProxy(); let changed = false, touched = false;
   for (const [city, ids] of Object.entries(want)) {
     const list = c.cities[city], k = "bus|" + city;
-    if (!list || healBusy[k] || !proxy || Date.now() - (c.ct[city] || c.time || 0) < DAY_MS) continue;
+    if (!list || healBusy[k] || !proxy) continue;
     const ign = new Set(c.ign[city] || []), miss = newMiss(ids, new Set(list.map(r => r[0])), ign);
-    if (!miss.length && !cities.includes(city)) continue;
+    if (!miss.length) continue;
+    const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10), dk = "jisu_bus_heal_day|" + city;
+    try { if (localStorage.getItem(dk) === day) continue; localStorage.setItem(dk, day); } catch (e) { continue; }
     healBusy[k] = true;
     let refreshed = false;
     try {
@@ -2639,7 +2621,7 @@ async function placeIndex({ city }) {
     if (st.status === "rejected" && bk.status === "rejected") throw st.reason;
     const now = Date.now();
     const c = { t: now, ts: now, tb: now, city, stops: st.status === "fulfilled" ? st.value : [], bikes: bk.status === "fulfilled" ? bk.value : [],
-      part: st.status === "rejected" || bk.status === "rejected" };
+      part: st.status === "rejected" || bk.status === "rejected" || !(st.value && st.value.length) };   // 雲端沒站牌時不存成永久空名單
     if (!c.part) placeSave(c);
     return c;
   })().finally(() => { delete placeJobs[city]; });
@@ -2654,13 +2636,17 @@ async function placeHealA(stops = [], bikes = []) {
     const c = await placeLoad(city); if (!c) continue;
     const S = placeSets[city] = placeSets[city] || { s: new Set(c.stops.map(x => x[0])), b: new Set(c.bikes.map(x => x[0])) };
     const now = Date.now();
-    const needS = now - c.ts > DAY_MS && [...w.s].some(n => !S.s.has(n));
+    // 對不上才重讀；同縣市每天最多一次（只防重複下載，不讓資料過期）
+    const sDay = new Date(now + 8 * 3600000).toISOString().slice(0, 10), sKey = "jisu_place_heal_day|" + city;
+    let needS = [...w.s].some(n => !S.s.has(n));
+    if (needS) { try { if (localStorage.getItem(sKey) === sDay) needS = false; else localStorage.setItem(sKey, sDay); } catch (e) { needS = false; } }
     const needB = now - c.tb > DAY_MS && [...w.b].some(u => !S.b.has(u));
     for (const [need, kind] of [[needS, "s"], [needB, "b"]]) {
       if (!need || healing[city + kind]) continue;
       healing[city + kind] = true;
       (kind === "s" ? placeStops(city, true) : placeBikes(city, true)).then(l => {
         const cur = placeMem[city] || c;
+        if (!Array.isArray(l) || !l.length) return;   // 雲端沒資料：不覆蓋舊名單
         if (kind === "s") { cur.stops = l; cur.ts = Date.now(); } else { cur.bikes = l; cur.tb = Date.now(); }
         placeSave(cur);
       }).catch(() => {
@@ -4155,8 +4141,7 @@ async function sorOf(k, route, uid) {
     if (l && l.length) { const d = [...(sc ? sc.d.filter(r => r.RouteUID !== uid) : []), ...l]; IDB.set("sor|" + key, { t: Date.now(), d, src: "kv" }).catch(() => {}); return d; }
     if (sc) return sc.d;
   }
-  const l = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${k.path}/${enc(route)}?%24top=600&%24format=JSON`);
-  const d = sorPack(l); IDB.set("sor|" + key, { t: Date.now(), d }).catch(() => {}); return d;
+  return sc ? sc.d : [];
 }
 async function planBusMatch(leg) {
   const ag = (leg.agency || "").slice(0, 3).toUpperCase(), c0 = UIDC[ag];
