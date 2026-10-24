@@ -618,6 +618,13 @@ function eta(r) {
 const etaRank = r => r.status === 0 && r.sec != null ? r.sec : r.status === 1 ? 1e6 : 2e6 + (r.status ?? 9);
 const etaPill = r => { const e = eta(r); return `<span class="eta ${e.k}">${esc(e.t)}</span>`; };
 function bikeCls(n, status) { if (status != null && status !== 1) return 'c-off'; if (n == null) return 'c-off'; if (n === 0) return 'c-bad'; if (n <= 3) return 'c-warn'; return 'c-ok'; }
+function bikeSrcNote(bikes) {
+  const src = new Set((bikes || []).map(b => b && b.src).filter(Boolean)), out = [];
+  if (src.has('yb')) out.push('YouBike 官網');
+  if (src.has('od')) out.push('臺北市政府交通局／新北市政府交通局開放資料（政府資料開放授權條款第1版）');
+  if (src.has('tdx')) out.push('TDX 運輸資料流通服務');
+  return out.length ? `<span class="bfnote">車位資料：${out.join('；')}</span>` : '';
+}
 const destTxt = r => r.dest ? `往 ${r.dest}` : (r.dirNum === 1 ? '返程' : '去程');
 const busKey = f => `${f.routeUID}|${f.dirNum}|${f.stopUID}`;
 const isFavBus = f => S.favs.bus.some(x => busKey(x) === busKey(f));
@@ -829,11 +836,11 @@ function vFavs() {
   for (const f of fk) {
     const b = live.bike?.[f.uid];
     const d = !b ? '讀取中' : (b.status != null && b.status !== 1) ? '暫停營運' : `借 <b class="${bikeCls(b.rent,b.status)}">${b.rent ?? '?'}</b>　還 <b class="${bikeCls(b.ret,b.status)}">${b.ret ?? '?'}</b>`;
-    h += `<button class="card" data-act="bikeSheet" data-i="${reg({ ...f, ...(b || {}), uid:f.uid, name:f.name, fromFav:true })}">
+    h += `<button class="card" data-act="bikeSheet" data-i="${reg({ ...f, ...(b || {}), uid:f.uid, name:f.name, src:b?.src || null, fromFav:true })}">
       <span class="badge">${I.bike}</span>
       <span class="body"><div class="title">${esc(f.name)}</div><div class="desc">${d}</div></span><span class="chev">${I.chev}</span></button>`;
   }
-  return h;
+  return h + bikeSrcNote(fk.map(f => live.bike?.[f.uid]));
 }
 /* ---------- 全台路線搜尋 ---------- */
 const CITY_ZH = { Taipei:'臺北市', NewTaipei:'新北市', Keelung:'基隆市', Taoyuan:'桃園市', Hsinchu:'新竹市', HsinchuCounty:'新竹縣', MiaoliCounty:'苗栗縣',
@@ -1072,7 +1079,7 @@ function vBike() {
         <div class="num"><b class="${bikeCls(b.rent,b.status)}">${off ? '—' : b.rent ?? '?'}</b><span>${off ? '暫停營運' : b.electric ? `可借（電輔${b.electric}）` : '可借'}</span></div>
         <div class="num"><b class="${bikeCls(b.ret,b.status)}">${off ? '—' : b.ret ?? '?'}</b><span>可還空位</span></div>
       </div></button>`;
-  }).join('') + (bikes.some(b => /^(TPE|NWT)/.test(b.uid || '')) ? `<span class="bfnote">台北、新北車位：臺北市政府交通局、新北市政府交通局開放資料（政府資料開放授權條款第1版）</span>` : '');
+  }).join('') + bikeSrcNote(bikes);
 }
 function seg(key, opts, fmt) {
   return `<div class="sseg">${opts.map(o => `<button class="${S.settings[key]===o?'on':''}" data-act="set" data-k="${key}" data-v="${o}">${fmt(o)}</button>`).join('')}</div>`;
@@ -2138,6 +2145,7 @@ function bikeSheet(b) {
     ${b.dist != null ? `<div class="kv"><span>距離</span>${distTxt(b.dist)}</div>` : ''}
     ${off ? `<div class="kv"><span>狀態</span>暫停營運</div>` : ''}
     ${b.update ? `<div class="kv"><span>資料時間</span>${hhmm(b.update)}</div>` : ''}
+    ${bikeSrcNote([b])}
     <div class="btns">${b.lat ? `<button class="btn pri" data-act="nav" data-lat="${b.lat}" data-lon="${b.lon}">${I.nav}步行前往</button>` : '<span></span>'}
     <button class="btn sec2 ${on?'on':''}" data-act="favBike" data-i="${reg(b)}">${on ? I.star : I.starO}${on ? '已收藏' : '收藏'}</button></div>`);
 }
