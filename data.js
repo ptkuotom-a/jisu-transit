@@ -262,8 +262,11 @@ async function cloudSor(uids) {
 async function busSchedule({ routeUID, fresh }) {
   if (!routeUID) throw new Error("缺少路線代碼");
   const key = "sch|" + routeUID;
-  if (!fresh) { const c = await IDB.get(key).catch(() => null); if (c && Date.now() - c.t < DAY_MS) return c.d; }
-  const j = await authedGet("/bus/sch/route?uid=" + enc(routeUID));
+  // v2.44.1：雲端時刻表可能隨時更新（例如補上逐站時刻）：手機快取只用 10 分鐘，之後一律重抓；抓不到才退回手機存的那份
+  const c = fresh ? null : await IDB.get(key).catch(() => null);
+  if (c && Date.now() - c.t < 10 * 60000) return c.d;
+  let j;
+  try { j = await authedGet("/bus/sch/route?uid=" + enc(routeUID)); } catch (e) { if (c) return c.d; throw e; }
   const d = { routeUID, recs: (j && j.list) || [], t: j && j.t || null, need: j && j.need || null };
   if (!d.need) IDB.set(key, { t: Date.now(), d }).catch(() => {});
   return d;
@@ -1369,6 +1372,17 @@ async function metroBoard(get, st) {
   const fix = await destFixer(st.op);
   b.tt = (tt || []).map(fix).map(t => ({ ...t, side: metroSide(t, st.ids) })).filter(t => !(t.destId && st.ids.includes(t.destId)));
   b.ttKind = "official";
+  // v2.44.1：即時來源偶爾給出離譜的到站時間（例：Bus+ 兩個方向都回「59:37」，其實幾分鐘就有車）。
+  // 即時說 30 分以上才到、但時刻表上同線同方向早 20 分以上就有車：這筆即時不採用；全部都不可信就只用時刻表
+  if (b.live && b.tt.length) {
+    const sideOf = t => metroSide(fix(t), st.ids);
+    const bogus = t => t.eta != null && t.eta > 30 && b.tt.some(x => x.line === t.line && x.eta >= 0 && x.eta < t.eta - 20 && (x.dest === t.dest || (x.side && x.side === sideOf(t))));
+    if (b.trains.some(bogus)) {
+      b.trains = b.trains.filter(t => !bogus(t));
+      if (b.trains.some(t => t.eta != null)) b.groups = groupTrains("metro", st.ids, b.trains);
+      else { b.live = false; b.trains = b.tt; }
+    }
+  }
   if (!b.live) b.groups = [];          // 沒有即時資料時，看板只用時刻表（避免同方向出現兩個分頁）
   else { b.groups = b.groups.map(g => ({ ...g, trains: g.trains.map(fix) })); }
   if (b.tt.length && !b.live) b.note = null;
