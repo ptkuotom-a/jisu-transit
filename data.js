@@ -691,46 +691,21 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     const hw = thb && Array.isArray(thb.list) ? thb.list : [];
     return [eta, [...city, ...hw]];
   })();
-  // v2.39.1：站點跟雲端要；附近車位由這支手機直接抓 YouBike 統一 feed。feed 失敗才退雙北市府、其餘 TDX
-  const avUrl = `${BASE}/advanced/v2/Bike/Availability/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`, bkKey = `b|${lat},${lon},${qBike}`;
+  // 官網全台靜態站點由 Worker 的格子索引提供；即時車位仍優先由既有 YouBike feed 提供。
+  const bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
-    let cloud = null;
-    try { cloud = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000); noteCloudSha(cloud); } catch (e) { cloud = null; }
-    if (cloud && Array.isArray(cloud.list) && cloud.list.length) {
-      try { return [cloud.list, withYoubikeFeed(cloud.list, await youbikeFeed(fresh))]; } catch (e) {}
-      const north = cloud.list.filter(s => isOdBike(s.StationUID)).map(s => s.StationUID);
-      let av = cloud.list.slice();
-      if (north.length) {
-        try {
-          const od = await odMemoGet(`/od/bike?ids=${north.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000);
-          const am = {}; for (const a of od.list || []) am[a.StationUID] = a;
-          av = av.map(s => am[s.StationUID] || s);
-        } catch (e) {}
-      }
-      if (cloud.list.some(s => !isOdBike(s.StationUID))) {
-        try {
-          const t = await memoTdx("route", avUrl, fresh ? 0 : 90000);
-          const am = {}; for (const a of t) if (a.StationUID && !isOdBike(a.StationUID)) am[a.StationUID] = a;
-          av = av.map(s => am[s.StationUID] || s);
-        } catch (e) {}
-      }
-      return [cloud.list, av];
-    }
-    let od = null, odErr = null;
-    try { od = await odMemoGet(`/od/bike?lat=${lat}&lon=${lon}&r=${qBike}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); } catch (e) { odErr = e; }
-    const covered = od ? od.near != null && od.near <= 3000 : inNorth(+lat, +lon);
-    if (!covered) {
-      const avP = memoTdx("route", avUrl, fresh ? 0 : 90000);
-      return Promise.all([geoList("bike", bkKey, `${BASE}/advanced/v2/Bike/Station/NearBy${nearbyQ(lat, lon, qBike)}&%24top=200&%24format=JSON`,
-        "route", bikePack, bikeUnpack, avP.then(l => l.map(a => a.StationUID)).catch(() => [])), avP]);
-    }
-    if (!od) throw new Error(odErr && odErr.message === "NO_PROXY" ? "NO_PROXY" : ODB_ERR);
-    if (od.err && !od.list.length) throw new Error(ODB_ERR);
-    const c = await IDB.get("geo|" + bkKey).catch(() => null);
-    const others = c ? c.d.map(bikeUnpack).filter(x => !isOdBike(x.StationUID)) : [];
-    let av2 = [];
-    if (others.length) av2 = (await memoTdx("route", avUrl, fresh ? 0 : 90000).catch(() => [])).filter(a => !isOdBike(a.StationUID));
-    return [[...od.list, ...others], [...od.list, ...av2]];
+    const j = await odMemoGet(`/od/ybnear?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000);
+    const list = Array.isArray(j.list) ? j.list : [];
+    IDB.set("geo|" + bkKey, { t: Date.now(), d: list.map(bikePack) }).catch(() => {});
+    try { return [list, withYoubikeFeed(list, await youbikeFeed(fresh))]; } catch (e) {}
+    // feed 失敗時，雙北仍可用既有市府即時資料；其他縣市只回靜態清單，不問 TDX。
+    const north = list.filter(s => isOdBike(s.StationUID)).map(s => s.StationUID);
+    if (!north.length) return [list, list];
+    try {
+      const od = await odMemoGet(`/od/bike?ids=${north.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000);
+      const am = {}; for (const a of od.list || []) am[a.StationUID] = a;
+      return [list, list.map(s => am[s.StationUID] || s)];
+    } catch (e) { return [list, list]; }
   })();
   // v2.36.3：收藏的公車、YouBike 分開查，YouBike 慢不拖住公車
   const favBusP = doBus && (favs.bus || []).length ? liveFavs({ bus: favs.bus, bike: [] }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
@@ -1379,12 +1354,11 @@ async function metroBoard(get, st) {
     const bogus = t => t.eta != null && t.eta > 30 && b.tt.some(x => x.line === t.line && x.eta >= 0 && x.eta < t.eta - 20 && (x.dest === t.dest || (x.side && x.side === sideOf(t))));
     if (b.trains.some(bogus)) {
       b.trains = b.trains.filter(t => !bogus(t));
-      if (b.trains.some(t => t.eta != null)) b.groups = groupTrains("metro", st.ids, b.trains);
-      else { b.live = false; b.trains = b.tt; }
+      if (!b.trains.some(t => t.eta != null)) { b.live = false; b.trains = b.tt; }
     }
   }
   if (!b.live) b.groups = [];          // 沒有即時資料時，看板只用時刻表（避免同方向出現兩個分頁）
-  else { b.groups = b.groups.map(g => ({ ...g, trains: g.trains.map(fix) })); }
+  else { b.groups = groupTrains("metro", st.ids, b.trains.map(fix)); }
   if (b.tt.length && !b.live) b.note = null;
   return b;
 }
@@ -2473,27 +2447,33 @@ async function railBoard(get, st) {
 }
 
 function loadRailCache() { try { const c = JSON.parse(localStorage.getItem(RAIL_KEY)); if (c && c.systems) return c; } catch (e) {} return { systems: {} }; }
+const railCloudJobs = {};
+function railCloud(kind) {
+  if (railCloudJobs[kind]) return railCloudJobs[kind];
+  return railCloudJobs[kind] = authedGet("/static/rail/" + kind).finally(() => { delete railCloudJobs[kind]; });
+}
 async function loadRailStations() {
   const cache = loadRailCache(), now = Date.now();
-  let rateErr = null;
-  const todo = [];   // v2.40：車站名單只讀已下載的雲端／本機快取，不再為了補清單打 TDX
-  for (let i = 0; i < todo.length; i += 3) {           // 一次3個系統，避免限流
-    await Promise.all(todo.slice(i, i + 3).map(async s => {
-      try {
-        const st = mapRailStations(await tdx("rail", s.url), s);
-        if (st.length) cache.systems[s.key] = { time: now, stations: st };
-      } catch (e) { if (isRate(e)) rateErr = e; }
-    }));
-  }
-  if (todo.length) { try { localStorage.setItem(RAIL_KEY, JSON.stringify(cache)); } catch (e) {} }
+  const todo = RAIL_SYSTEMS.filter(s => { const c = cache.systems[s.key]; return !c || !c.stations || Date.now() - c.time > 30 * DAY_MS; });
+  if (todo.length) try {
+    const j = await railCloud("stations"), systems = (j && j.systems) || {};
+    for (const s of todo) { const st = mapRailStations(systems[s.key] || [], s); if (st.length) cache.systems[s.key] = { time: now, stations: st }; }
+    localStorage.setItem(RAIL_KEY, JSON.stringify(cache));
+  } catch (e) {}
   const all = Object.values(cache.systems).flatMap(s => s.stations);
-  if (!all.length) throw (rateErr || new Error("車站清單讀取失敗"));
+  if (!all.length) throw new Error("車站清單讀取失敗");
   return all;
 }
 
 function loadExitCache() { try { const c = JSON.parse(localStorage.getItem(EXIT_KEY)); if (c && c.systems) return c; } catch (e) {} return { systems: {} }; }
 async function loadRailExits() {
-  const cache = loadExitCache();
+  const cache = loadExitCache(), now = Date.now();
+  const todo = RAIL_SYSTEMS.filter(s => s.kind === "metro" && !s.optional && !NO_EXIT.has(s.key) && (!cache.systems[s.key] || !cache.systems[s.key].exits || Date.now() - cache.systems[s.key].time > 30 * DAY_MS));
+  if (todo.length) try {
+    const j = await railCloud("exits"), systems = (j && j.systems) || {};
+    for (const s of todo) { const exits = mapExits(systems[s.key] || [], s.key); if (Object.keys(exits).length) cache.systems[s.key] = { time: now, exits }; }
+    localStorage.setItem(EXIT_KEY, JSON.stringify(cache));
+  } catch (e) {}
   return Object.assign({}, ...Object.values(cache.systems).map(s => s.exits || {}));
 }
 
@@ -2511,7 +2491,7 @@ async function railHealA(op, ids, force) {
   if (!force && !miss.length) return false;
   healBusy[k] = true;
   let ok = false, st = null;
-  try { st = mapRailStations(await tdx("rail", sys.url + FRESH), sys); ok = st.length > 0; } catch (e) {}
+  try { const j = await railCloud("stations"); st = mapRailStations(((j && j.systems) || {})[op] || [], sys); ok = st.length > 0; } catch (e) {}
   const cache = loadRailCache(), have = new Set((ok ? st : c.stations).map(s => s.id));
   cache.systems[op] = { time: Date.now(), stations: ok ? st : c.stations, ign: [...ign, ...miss.filter(i => !have.has(i))].slice(-300) };
   try { localStorage.setItem(RAIL_KEY, JSON.stringify(cache)); } catch (e) {}
@@ -2530,9 +2510,18 @@ async function railHealAll() {
   }
   return any;
 }
-// 附近捷運站沒有出口資料：重抓那個系統的出口清單
-function exitHeal(near) {}
-async function exitHealA(near) {}
+// 附近捷運站沒有出口資料：從雲端重新下載該系統的出口清單
+function exitHeal(near) { exitHealA(near).catch(() => {}); }
+async function exitHealA(near) {
+  const cache = loadExitCache(), want = [...new Set((near || []).map(s => s.op).filter(op => !NO_EXIT.has(op)))];
+  if (!want.some(op => { const c = cache.systems[op]; return c && Date.now() - c.time >= DAY_MS; })) return false;
+  try {
+    const j = await railCloud("exits"), systems = (j && j.systems) || {}; let ok = false;
+    for (const op of want) { const exits = mapExits(systems[op] || [], op); if (Object.keys(exits).length) { cache.systems[op] = { time: Date.now(), exits }; ok = true; } }
+    if (ok) localStorage.setItem(EXIT_KEY, JSON.stringify(cache));
+    return ok;
+  } catch (e) { return false; }
+}
 
 // ---------- 設定 / 收藏 ----------
 function loadState() {
@@ -2627,19 +2616,14 @@ async function placeStops(city, heal) {
 async function placeBikes(city, heal) {
   const pack = x => [x.StationUID, ((x.StationName && x.StationName.Zh_tw) || "").replace(/^YouBike[12]\.0_/, ""),
     (x.StationAddress && x.StationAddress.Zh_tw) || "", r5(x.StationPosition.PositionLat), r5(x.StationPosition.PositionLon), x.BikesCapacity ?? null, x.ServiceType ?? null];
-  if (YB_CLOUD_CITY.has(city)) {
-    try {
-      const j = await odGet(`/od/ybstn?city=${city}`);
-      noteCloudSha(j);
-      if (j && Array.isArray(j.list) && j.list.length) return j.list.filter(x => x.StationPosition).map(pack);
-    } catch (e) {}
-  }
   if (city === "Taipei" || city === "NewTaipei") {
     const j = await odGet(`/od/bike?city=${city}`);
     return (j.list || []).filter(x => x.StationPosition).map(pack);
   }
-  const l = await tdx("route", `${BASE}/basic/v2/Bike/Station/City/${city}?%24select=${enc("StationUID,StationName,StationAddress,StationPosition,BikesCapacity,ServiceType")}&%24top=5000&%24format=JSON` + (heal ? FRESH : ""));
-  return l.filter(x => x.StationPosition).map(pack);
+  try {
+    const j = await odGet(`/od/ybnear?city=${city}`);
+    return (j.list || []).filter(x => x.StationPosition).map(pack);
+  } catch (e) { return []; }
 }
 async function placeIndex({ city }) {
   if (!city || !UID_CITY_SET.has(city)) return null;
