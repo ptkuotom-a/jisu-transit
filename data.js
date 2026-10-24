@@ -135,10 +135,13 @@ function ybMaybePush(cloud, live, lat, lon, r) {
   ybUploadBusy = true;
   Promise.resolve(live).then(async list => {
     if (!Array.isArray(list)) throw new Error("feed");
-    const raw = new TextEncoder().encode(JSON.stringify(list));
-    let body = raw;
-    if (typeof CompressionStream === "function") body = await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
-    return fetchT(proxy + "/od/ybup", 30000, { method: "POST", headers: { "content-type": "application/octet-stream", "x-session": session.token }, body });
+    const body = { list: list.flatMap(s => {
+      const pre = s && YB_AREA[String(s.area_code)], no = s && s.station_no != null ? String(s.station_no) : "";
+      const lat = +(s && s.lat), lng = +(s && s.lng);
+      if (!pre || !no || !isFinite(lat) || !isFinite(lng)) return [];
+      return [[pre + no, String(s.name_tw || "").trim(), s.address_tw || "", lat, lng, s.parking_spaces ?? null]];
+    }) };
+    return fetchT(proxy + "/od/ybstn", 30000, { method: "POST", headers: { "content-type": "application/json", "x-session": session.token }, body: JSON.stringify(body) });
   })
     .catch(() => {}).finally(() => { ybUploadBusy = false; });
 }
@@ -433,47 +436,6 @@ async function loadTravelHead(jobs) {
     const info = miss.find(x => x.jobs[0].routeUID === uid), nm = (rs[0].RouteName && rs[0].RouteName.Zh_tw) || (info && info.route) || "";
     if (info && nm && nm !== "?") { const key = `sor|${info.path}|${nm}`; sorMem.set(key, rs); IDB.set(key, { t: Date.now(), d: rs, src: "kv" }).catch(() => {}); }
   }
-  const byPath = {};
-  for (const info of miss) if (!cloud[info.jobs[0].routeUID]) (byPath[info.path] = byPath[info.path] || []).push(info);
-  const paths = Object.entries(byPath);
-  for (let i = 0; i < paths.length; i += 2) {
-    await Promise.all(paths.slice(i, i + 2).map(async ([path, infos]) => {
-      const uids = [...new Set(infos.map(x => x.jobs[0].routeUID))];
-      for (let n = 0; n < uids.length; n += 12) {
-        const chunk = uids.slice(n, n + 12);
-        const filter = chunk.map(u => `RouteUID eq '${u}'`).join(" or ");
-        let list = [];
-        try { list = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${path}?%24filter=${enc(filter)}&%24top=200&%24format=JSON`); } catch (e) { list = []; }
-        const byUid = {};
-        for (const r of list || []) if (r.RouteUID) (byUid[r.RouteUID] = byUid[r.RouteUID] || []).push(r);
-        for (const [uid, rs] of Object.entries(byUid)) {
-          const packed = sorPack(rs);
-          const nm = (rs[0].RouteName && rs[0].RouteName.Zh_tw) || "";
-          sorMem.set("uid|" + uid, packed);
-          if (nm && nm !== "?") {
-            const key = `sor|${path}|${nm}`;
-            sorMem.set(key, packed);
-            IDB.set(key, { t: Date.now(), d: packed }).catch(() => {});
-          }
-        }
-        const left = chunk.filter(u => !byUid[u]);
-        await Promise.all(left.slice(0, 8).map(async uid => {
-          const info = infos.find(x => x.jobs[0].routeUID === uid);
-          const route = info && info.route;
-          if (!route || route === "?") return;
-          try {
-            const one = await tdx("route", `${BASE}/basic/v2/Bus/StopOfRoute/${path}/${enc(route)}?%24top=600&%24format=JSON`);
-            const packed = sorPack((one || []).filter(r => r.RouteUID === uid));
-            if (!packed.length) return;
-            sorMem.set("uid|" + uid, packed);
-            const key = `sor|${path}|${route}`;
-            sorMem.set(key, packed);
-            IDB.set(key, { t: Date.now(), d: packed }).catch(() => {});
-          } catch (e) {}
-        }));
-      }
-    }));
-  }
   for (const info of miss) for (const j of info.jobs) {
     const hk = `${j.routeUID}|${j.dirNum}|${j.stopUID}`;
     if (out[hk] != null) continue;
@@ -535,7 +497,7 @@ function readDestCache() {
   try { const c = JSON.parse(localStorage.getItem(DEST_KEY)); if (c && c.routes) return c; } catch (e) {}
   return { routes: {} };
 }
-// 永久保存（v2.12.6）；沒有的先從已下載的全台路線清單（busidx）找，找不到才查 TDX
+// 永久保存（v2.12.6）；沒有的先從已下載的全台路線清單（busidx）找，再讀 Worker 的 br: 索引；絕不回退 TDX。
 async function loadRouteDest(profile, uids) {
   const cache = readDestCache(), now = Date.now();
   let missing = [...new Set(uids)].filter(u => u && !cache.routes[u]);
@@ -552,19 +514,14 @@ async function loadRouteDest(profile, uids) {
   }
   if (missing.length) {
     const groups = {};
-    for (const u of missing) { const k = routeKind(u); if (k) (groups[k.path] = groups[k.path] || []).push(u); }
-    for (const [path, list] of Object.entries(groups)) {
-      for (let i = 0; i < list.length; i += 20) {
-        const chunk = list.slice(i, i + 20);
-        const url = `${BASE}/basic/v2/Bus/Route/${path}?%24select=${enc("RouteUID,DepartureStopNameZh,DestinationStopNameZh")}` +
-          `&%24filter=${enc(chunk.map(u => `RouteUID eq '${u}'`).join(" or "))}&%24top=100&%24format=JSON`;
-        try {
-          for (const r of await tdx(profile, url)) {
-            if (r.RouteUID) cache.routes[r.RouteUID] = { time: now, dep: r.DepartureStopNameZh || null, dest: r.DestinationStopNameZh || null };
-          }
-        } catch (e) {}
-      }
-    }
+    for (const u of missing) { const k = routeKind(u); if (k) (groups[k.kind === "intercity" ? "InterCity" : k.city] = groups[k.kind === "intercity" ? "InterCity" : k.city] || []).push(u); }
+    await Promise.all(Object.entries(groups).map(async ([city, list]) => {
+      try {
+        const rows = await authedGet("/bus/routes?c=" + enc(city));
+        const wanted = new Set(list);
+        for (const r of Array.isArray(rows) ? rows : []) if (wanted.has(r[0])) cache.routes[r[0]] = { time: now, dep: r[2] || null, dest: r[3] || null };
+      } catch (e) {}
+    }));
   }
   if (uids.some(u => u && cache.routes[u] && cache.routes[u].time === now)) { try { localStorage.setItem(DEST_KEY, JSON.stringify(cache)); } catch (e) {} }
   return cache.routes;
@@ -712,19 +669,31 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     const hw = thb && Array.isArray(thb.list) ? thb.list : [];
     return [eta, [...city, ...hw]];
   })();
-  // /od/ybnear 只提供靜態站點；全台 YouBike 即時車位一律先取官網 feed。
+  // /od/ybstn 只提供靜態站點；全台 YouBike 即時車位一律先取官網 feed。
   const bkKey = `b|${lat},${lon},${qBike}`;
   const bikeP = !doBike ? SKIP : (async () => {
-    const j = await odMemoGet(`/od/ybnear?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000);
-    const list = Array.isArray(j.list) ? j.list.map(withoutBikeLive) : [];
-    IDB.set("geo|" + bkKey, { t: Date.now(), d: list.map(bikePack) }).catch(() => {});
+    // 雲端站點尚未就緒（503 fallback:tdx）或讀取失敗時，不把空清單寫進永久快取。
+    let list = [], cloudOK = false;
+    try {
+      const j = await odMemoGet(`/od/ybstn?lat=${lat}&lon=${lon}&r=${qBike}`, fresh ? 0 : 6 * 3600000);
+      if (Array.isArray(j.list)) { list = j.list.map(withoutBikeLive); cloudOK = true; }
+    } catch (e) {
+      const old = await IDB.get("geo|" + bkKey).catch(() => null);
+      if (old && Array.isArray(old.d)) list = old.d.map(bikeUnpack);
+      // 雙北的市府即時 API 也可依位置給附近站點，作為沒有舊清單時的備援。
+      if (!list.length && inNorth(+lat, +lon)) try {
+        const od = await odMemoGet(`/od/bike?lat=${lat}&lon=${lon}&r=${qBike}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000);
+        if (Array.isArray(od.list)) list = od.list.map(withoutBikeLive);
+      } catch (e) {}
+    }
+    if (cloudOK && list.length) IDB.set("geo|" + bkKey, { t: Date.now(), d: list.map(bikePack) }).catch(() => {});
     const odLive = async ids => {
       const od = await odMemoGet(`/od/bike?ids=${ids.join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000);
       const am = {}; for (const a of od.list || []) am[a.StationUID] = a;
       return am;
     };
     let feed = null;
-    try { feed = await youbikeFeed(fresh); ybMaybePush(list, ybFeedSnap && ybFeedSnap.list, +lat, +lon, qBike); } catch (e) {}
+    try { feed = await youbikeFeed(fresh); if (cloudOK) ybMaybePush(list, ybFeedSnap && ybFeedSnap.list, +lat, +lon, qBike); } catch (e) {}
     let live = withYoubikeFeed(list, feed || {});
     // 官網沒有該雙北站、或官網失敗時，才以市府資料補缺；其他縣市附近清單原本沒有 TDX 即時查詢。
     const northMiss = list.filter(s => isOdBike(s.StationUID) && (!feed || !feed[s.StationUID])).map(s => s.StationUID);
@@ -2509,7 +2478,7 @@ async function loadRailExits() {
 }
 
 // ---------- 永久清單的自動補救（v2.12.6）：和站牌／YouBike 同一套規則 ----------
-// 即時資料、搜尋、點進路線時出現清單沒有的站／路線，且這份清單存了超過一天 → 只重抓那一份（帶 __fresh=1，Worker 端同一份每天最多略過快取一次並覆寫 KV）
+// 即時資料、搜尋、點進路線時出現清單沒有的站／路線，且這份清單存了超過一天 → 重讀既有雲端索引；一般使用者不觸發重抓。
 // 重抓後還是找不到的代碼（號誌站、資料不一致）記在 ign，之後不再觸發；失敗也記時間，明天再試
 const healBusy = {};
 const newMiss = (ids, have, ign) => [...new Set(ids.filter(Boolean).map(String))].filter(i => !have.has(i) && !ign.has(i));
@@ -2573,13 +2542,14 @@ async function busIndex() {
   if (todo.length && !idxLoading) {
     idxLoading = (async () => {
       const proxy = getProxy(); if (!proxy) return;
+      let saved = false;
       for (let i = 0; i < todo.length; i += 3) {
         await Promise.all(todo.slice(i, i + 3).map(async city => {
-          try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) { c.cities[city] = j; c.ct[city] = Date.now(); } } } catch (e) {}
+          try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); saved = true; } } } catch (e) {}
         }));
         await sleep(300);
       }
-      await IDB.set("busidx", c).catch(() => {});
+      if (saved) await IDB.set("busidx", c).catch(() => {});
     })().finally(() => { idxLoading = null; });
     await idxLoading;
   } else if (idxLoading) await idxLoading;
@@ -2599,14 +2569,18 @@ async function busHealA(uids, cities) {
     if (!list || healBusy[k] || !proxy || Date.now() - (c.ct[city] || c.time || 0) < DAY_MS) continue;
     const ign = new Set(c.ign[city] || []), miss = newMiss(ids, new Set(list.map(r => r[0])), ign);
     if (!miss.length && !cities.includes(city)) continue;
-    healBusy[k] = true; touched = true;
+    healBusy[k] = true;
+    let refreshed = false;
     try {
-      const r = await fetch(`${proxy}/bus/routes?c=${city}&fresh=1`);
-      if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; changed = true; } }
+      const r = await fetch(`${proxy}/bus/routes?c=${city}`);
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; changed = true; refreshed = true; } }
     } catch (e) {}
-    const have = new Set(c.cities[city].map(r => r[0]));
-    c.ign[city] = [...ign, ...miss.filter(u => !have.has(u))].slice(-300);
-    c.ct[city] = Date.now();
+    if (refreshed) {
+      const have = new Set(c.cities[city].map(r => r[0]));
+      c.ign[city] = [...ign, ...miss.filter(u => !have.has(u))].slice(-300);
+      c.ct[city] = Date.now();
+      touched = true;
+    }
     delete healBusy[k];
   }
   if (touched) await IDB.set("busidx", c).catch(() => {});
@@ -2652,7 +2626,7 @@ async function placeBikes(city, heal) {
     return (j.list || []).filter(x => x.StationPosition).map(pack);
   }
   try {
-    const j = await odGet(`/od/ybnear?city=${city}`);
+    const j = await odGet(`/od/ybstn?city=${city}`);
     return (j.list || []).filter(x => x.StationPosition).map(pack);
   } catch (e) { return []; }
 }
@@ -4170,7 +4144,7 @@ async function busCity(city) {   // 只下載需要的縣市路線清單（存�
   c.ct = c.ct || {}; c.ign = c.ign || {}; idxMem = c;
   if (c.cities[city]) return c.cities[city];
   const proxy = getProxy(); if (!proxy) return [];
-  try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
+  try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
   return [];
 }
 async function sorOf(k, route, uid) {
