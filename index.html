@@ -1561,8 +1561,8 @@ function railTabsMetro(R, D, G) {
           const late = t.live != null && t.time && t.eta != null && !t.liveOnly ? t.live - t.eta : 0;
           const right = t.live != null ? cdPill(t.live, late >= 2 ? `即時・晚${late}` : '即時', { live: true, late: late >= 2 }) : cdPill(t.eta, lest && t.est ? '估算' : '表定', { tomorrow: tmr });
           const tt0 = t.t ?? (nowM + (t.live || 0));
-          const ri = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, destId:t.destId || null, dest:t.dest, via:t.via || null, t: (t.live != null && t.t == null) ? nowM + t.live : tt0, delay: (t.live != null && t.eta != null && t.t != null) ? Math.max(0, t.live - t.eta) : 0, time: tm, est: lest && (t.est || t.liveOnly || est), live: t.live != null });
-          return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div></span>${right}</div></button>`;
+          const ri = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, destId:t.destId || null, dest:t.dest, via:t.via || null, t: (t.live != null && t.t == null) ? nowM + t.live : tt0, delay: (t.live != null && t.eta != null && t.t != null) ? Math.max(0, t.live - t.eta) : 0, time: tm, est: lest && (t.est || t.liveOnly || est), live: t.live != null, ex: !!t.ex });
+          return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}${t.ex ? ` <small style="font-size:11px;font-weight:700;color:${EX_COL}">直達</small>` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div></span>${right}</div></button>`;
         }).join('') + `</div>` + moreBtn(id, n, show);
     } else h += `<div class="note">這個方向目前沒有班次資料。</div>`;
     return `<div class="lblk">${h}</div>`;
@@ -1810,6 +1810,7 @@ function ttShowDet() {
 // 台鐵車種：小字縮寫與顏色（區間車最常見，不標）
 // 用完整車種名稱判斷（TDX：「自強(3000)(EMU3000 型電車)」「自強(普悠瑪)」「自強(太魯閣)」）
 const TR_AB = [['3000', '新自', '#FF8A4C', 'EMU3000 新自強'], ['普悠瑪', '普悠', '#FF8FB1', '普悠瑪'], ['太魯閣', '太', '#E86AD8', '太魯閣'], ['區間快', '快', '#5AD1E6', '區間快'], ['自強', '自', '#FF6B6B', '自強'], ['莒光', '莒', '#FFB03A', '莒光'], ['復興', '復', '#FFB03A', '復興'], ['普快', '普快', '#B9A7FF', '普快'], ['區間', '', '', '區間']];
+const EX_COL = '#B57BFF';   // v2.46.4 捷運直達車（桃園捷運）
 const trAb = ty => (TR_AB.find(x => (ty || '').includes(x[0])) || ['', (ty || '').replace(/\(.*?\)|（.*?）/g, '').slice(0, 2), '', (ty || '').replace(/\(.*?\)|（.*?）/g, '')]);
 // 終點縮寫：主要大站一個字（含中和新蘆線、淡海輕軌的支線端點），其餘取前兩字
 const D_AB = { 臺北: '北', 台北: '北', 板橋: '板', 樹林: '樹', 基隆: '基', 新竹: '竹', 苗栗: '苗', 臺中: '中', 台中: '中', 彰化: '彰', 員林: '員', 嘉義: '嘉', 臺南: '南', 台南: '南', 高雄: '高', 新左營: '新左', 左營: '左', 屏東: '屏', 潮州: '潮', 枋寮: '枋', 臺東: '東', 台東: '東', 花蓮: '花', 宜蘭: '宜', 蘇澳新: '蘇新', 蘇澳: '蘇', 桃園: '桃', 中壢: '壢', 鳳山: '鳳', 玉里: '玉', 瑞芳: '瑞', 雲林: '雲', 沙鹿: '沙', 迴龍: '迴', 蘆洲: '蘆', 淡水漁人碼頭: '漁', 漁人碼頭: '漁', 崁頂: '崁', 北投: '投', 大安: '大', 亞東醫院: '亞', 台電大樓: '台', 象山: '象', '廣慈/奉天宮': '廣' };
@@ -1859,13 +1860,16 @@ function stttMetro(R, T, D) {
     else {
       // v2.44.0：時刻表格子。終點是路線起迄站（含支線端點）就不標，其他終點（區間車）用小字標出；沒有起迄站資料時改成最常見的終點不標
       const common = topDests(list, 1)[0], others = new Set(), isEnd = t => { const E = (D.ends || {})[t.line]; return E ? E.includes(t.dest) || E.includes(String(t.dest).replace(/站$/, '')) : t.dest === common; };
+      const hasEx = list.some(t => t.ex);   // v2.46.4：桃園捷運直達車：小字「直」＋紫色（比照台鐵車種小字），普通車不標
       const items = list.map(t => {
         const dd = !isEnd(t) ? dAb(t.dest) : '', br = ((D.brEnds || {})[t.line] || []).includes(t.dest); if (dd) others.add(t.dest);   // 支線端點（迴龍、蘆洲…）不上色
-        const ri = reg({ op: t.line === 'Y' ? 'NTMC' : R.op, line: t.line, destId: t.destId || null, dest: t.dest, via: t.via || null, t: t.t, delay: 0, time: t.time, est: false, live: false });
-        return { t: t.t, key: t.time + '|' + t.line + '|' + t.dest, lb: dd, col: dd && !br ? '#5AD1E6' : '',
-          det: w => ttDet(esc(t.time), w, [['路線', lineBadge(R.op, t.line) + esc(lineName(t.line))], ['往', esc(t.dest) + (t.via ? `（${esc(t.via)}）` : '')]], `<button class="more" data-act="tripOpen" data-i="${ri}">停靠站一覽</button>`) };
+        const ri = reg({ op: t.line === 'Y' ? 'NTMC' : R.op, line: t.line, destId: t.destId || null, dest: t.dest, via: t.via || null, t: t.t, delay: 0, time: t.time, est: false, live: false, ex: !!t.ex });
+        return { t: t.t, key: t.time + '|' + t.line + '|' + t.dest + (t.ex ? '|X' : ''), lb: dd, col: t.ex ? EX_COL : dd && !br ? '#5AD1E6' : '',
+          lbh: t.ex ? `<i class="ty" style="color:${EX_COL}">直</i>` + (dd ? `<i class="dd">${esc(dd)}</i>` : '') : '',
+          det: w => ttDet(esc(t.time), w, [['路線', lineBadge(R.op, t.line) + esc(lineName(t.line))], hasEx ? ['車種', t.ex ? `<b style="color:${EX_COL}">直達車</b>` : '普通車'] : null, ['往', esc(t.dest) + (t.via ? `（${esc(t.via)}）` : '')]], `<button class="more" data-act="tripOpen" data-i="${ri}">停靠站一覽</button>`) };
       });
       h += stttDone(D, list) + ttGrid(items, { now: D.now, sel: T.sel });
+      if (hasEx) h += `<div class="ttleg">車種：<b style="color:${EX_COL}">直</b> 直達車　（普通車不標）</div>`;
       if (others.size) h += `<div class="ttleg">小字＝終點：${[...others].map(d => `<b style="color:${Object.values(D.brEnds || {}).some(x => x.includes(d)) ? 'var(--text)' : '#5AD1E6'}">${esc(dAb(d))}</b> ${esc(d)}`).join('　')}　（${D.ends ? '往路線起迄站' : `往「${esc(common)}」`}不標）</div>`;
     }
   }
@@ -2872,7 +2876,7 @@ document.addEventListener('click', e => {
     case 'legStops': { const i = +el.dataset.v; S.plan.open[i] = !S.plan.open[i]; renderPage(); break; }
     case 'railTab': selectRailTab(el); break;
     case 'ttAll': S.ttAll[el.dataset.v] = !S.ttAll[el.dataset.v]; renderRail(); break;
-    case 'tripOpen': if (o && S.rail) openLine({ kind:'trip', ...o, ids:S.rail.ids, dests:[{ id:o.destId, name:o.dest }], label:'往 ' + o.dest }); break;
+    case 'tripOpen': if (o && S.rail) openLine({ kind:'trip', ...o, ids:S.rail.ids, dests:[{ id:o.destId, name:o.dest }], label:'往 ' + o.dest + (o.ex ? '（直達車）' : '') }); break;
     case 'lineOpen': if (o && S.rail) openLine(lineReqFromGroup(o)); break;
     case 'trainOpen': if (o && S.rail) openLine({ kind:o.kind, no:o.no, ids:S.rail.ids }); break;
     case 'stttOpen': if (S.rail) openSttt(); break;
