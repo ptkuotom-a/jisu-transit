@@ -217,6 +217,8 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .ttime{flex:none;width:62px;font-size:22px;font-weight:800;letter-spacing:-0.5px}
 .tmain{flex:1;min-width:0}
 .tmain .td{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 捷運列：站名太長時只截站名，「直達／末班／擁擠度」小字固定顯示（原本整列 ellipsis，「往 機場第二航廈站 直達」的直達會被截掉） */
+.tmain .td.tdf{display:flex;align-items:baseline;gap:4px}.tdf .tdn{min-width:0;overflow:hidden;text-overflow:ellipsis}.tdf small{flex:none}
 .tmain .tt{font-size:13px;color:var(--muted);margin-top:3px}
 .delay{flex:none;padding:6px 11px;border-radius:999px;background:var(--surface2);font-size:14px;font-weight:700}
 .delay.ok{color:var(--lime)} .delay.late{color:var(--warn)} .delay.na{color:var(--dim);font-weight:600}
@@ -770,8 +772,14 @@ function errBox() {
   if (S.error === 'NO_PROXY') return `<div class="empty" style="margin-top:6px"><div class="star">${I.bus}</div><h3>先設定資料來源</h3>
     <p>即時資料經由你自己的 Cloudflare Worker 向交通部 TDX 取得。請管理者到「設定 › 進階設定」填入 Worker 網址。</p>
     <div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="tab" data-v="settings">前往設定</button></div></div>`;
-  return S.error ? `<div class="note"><b>資料讀取失敗</b><br>${esc(S.error)}<br>確認定位權限與網路後，點右上角「重新整理」。</div>` : '';
+  const pe = !S.error && S.partErr[TAB_PART[S.tab]];
+  if (!S.error && !pe) return '';
+  return S.data ? staleNote() : failBox(S.error + '（確認定位權限與網路）', 'retry');
 }
+// 讀取失敗：有上次的資料就照舊顯示＋一行小字；沒有資料才顯示錯誤與「重試」（只在按下時重讀，不自動輪詢）
+const staleNote = () => `<div class="pupd err" style="margin:0 2px 8px"><i></i>即時資料暫時無法取得，顯示上次資料</div>`;
+const failBox = (msg, act, attr) => `<div class="note"><b>資料讀取失敗</b><br>${esc(msg || '')}
+  <div class="btns" style="grid-template-columns:1fr;margin-top:12px"><button class="btn pri" data-act="${act}" ${attr || ''}>重試</button></div></div>`;
 
 // v2.44.0：同名站牌的方向改放站名下一行小字：「↗ 往 淡水」，對面那一張加「對面・」；拿掉「同向」和「向東北」文字（改用箭頭）
 const BEAR_ARR = { N: '↑', NE: '↗', E: '→', SE: '↘', S: '↓', SW: '↙', W: '←', NW: '↖' };
@@ -803,6 +811,7 @@ function vHome() {
   if (S.q) return vSearch();
   const d = S.data;
   let h = errBox();
+  if (!h && d && ((d.busError && d.busStops.length) || (d.bikeError && d.bikes.length))) h += staleNote();
   // 路線規劃入口：地圖正上方（v2.15.1）
   h += `<button class="planbar" id="planBtn" data-act="planNew"><span class="pbi">${I.route}</span><span class="pbt">路線規劃<small>找出最快的走法</small></span><span class="pbc">${I.chev}</span></button>`;
   if (d && d.lat) h += `<div id="mapSlot" class="mapslot"></div>`;
@@ -965,10 +974,10 @@ function vSearch() {
 function filterQ(list, f) { const q = S.q.trim().toLowerCase(); return q ? list.filter(x => f(x).toLowerCase().includes(q)) : list; }
 function vBus() {
   if (S.error === 'NO_PROXY') return errBox();
-  const d = S.data; let h = errBox();
+  const d = S.data, eb = errBox(); let h = eb;
   h += `<div class="sec"><h2>附近站牌</h2><span class="side">${S.settings.busR}公尺內${d ? `，${d.busStops.length}站` : ''}</span></div>`;
   if (!d) return h + (S.error ? '' : skel(3));
-  if (d.busError) h += `<div class="note">公車資料暫時讀不到：${esc(d.busError)}</div>`;
+  if (d.busError) { if (d.busStops.length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('公車資料暫時讀不到：' + d.busError, 'retryPart', 'data-v="bus"'); }
   const stops = filterQ(d.busStops, s => s.name + ' ' + s.routes.map(r => r.route).join(' '));
   if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + natSearch(S.q);
   if (!stops.length) return h + `<div class="note">這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。</div>`;
@@ -1068,10 +1077,10 @@ function stopBlock(s, limit) {
 }
 function vBike() {
   if (S.error === 'NO_PROXY') return errBox();
-  const d = S.data; let h = errBox();
+  const d = S.data, eb = errBox(); let h = eb;
   h += `<div class="sec"><h2>附近站點</h2><span class="side">${S.settings.bikeR}公尺內${d ? `，${d.bikes.length}站` : ''}</span></div>`;
   if (!d) return h + (S.error ? '' : skel(3));
-  if (d.bikeError) h += `<div class="note">YouBike 資料暫時讀不到：${esc(d.bikeError)}</div>`;
+  if (d.bikeError) { if (d.bikes.length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('YouBike 資料暫時讀不到：' + d.bikeError, 'retryPart', 'data-v="bike"'); }
   const bikes = filterQ(d.bikes, b => b.name);
   if (!bikes.length) return d.bikeError ? h : d.bikePending ? h + `<div class="note">YouBike 讀取中…</div>` : h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
   return h + bikes.map(b => {
@@ -1128,7 +1137,9 @@ function vSettings() {
     <dt>台北市公車即時到站</dt><dd>臺北市政府交通局開放資料（預估到站約每20秒更新、車輛到離站），經自己的伺服器整理；用於路線代碼 TPE 開頭的台北市公車（含開進新北的站）。新北市公車、公路客運與其他縣市照舊用 TDX；尚未發車時只顯示「尚未發車」</dd>
     <dt>公路客運站牌</dt><dd>交通部公路局開放資料（政府資料開放平臺資料集 102885），每天檢查一次後存在雲端。App 下載這份雲端名單，不另外向 TDX 抓站牌清單。即時到站仍用 TDX</dd>
     <dt>公車站序（目的地篩選）</dt><dd>台北：臺北市政府交通局開放資料（站牌、路線、附屬路線站序）；新北：新北市政府交通局「公車站位資訊」；其他縣市與公路客運：TDX</dd>
-    <dt>北捷、環狀線即時到站</dt><dd>Bus+ 公開資料（非官方）；讀不到時改用 TDX 即時看板（只有進站中列車）＋時刻表</dd>
+    <dt>北捷、環狀線即時到站</dt><dd>北捷即時：北捷官網（擁擠度）→ Bus+ → TDX。先讀北捷官網「列車到站資訊」（含列車所在路段的擁擠度，經自己的伺服器整理）；讀不到時改用 Bus+ 公開資料（非官方），再不行改用 TDX 即時看板（只有進站中列車）＋時刻表。新北投、小碧潭支線官網未支援，照舊用 Bus+</dd>
+    <dt>桃園機捷即時到站</dt><dd>桃捷即時：桃捷官網（直達／普通、車廂擁擠度）→ TDX。先讀桃園捷運官網列車到站資訊（全線一份，經自己的伺服器整理、快取 30 秒；擁擠度取四節車廂裡最擠的一節）；讀不到時改用 TDX 即時看板＋時刻表</dd>
+    <dt>淡海、安坑輕軌即時到站</dt><dd>淡海／安坑輕軌即時：新北捷運官網 → TDX。先讀新北捷運官網列車動態（全線列車位置一份，經自己的伺服器依官網標準行駛時間換算成到站時間、快取 30 秒）；讀不到或這站沒有列車時改用 TDX 即時看板＋時刻表</dd>
     <dt>其他捷運、輕軌即時到站</dt><dd>TDX 即時看板（官方），與各站時刻表合併顯示</dd>
     <dt>台鐵</dt><dd>七天班表（取自一個平常週的 TDX 每日時刻表；國定假日、連假和其前一天改用當天時刻表）；誤點取自 TDX 本站即時看板＋全台列車動態</dd>
     <dt>高鐵</dt><dd>七天班表（同台鐵規則）與剩餘座位（每分鐘更新）</dd>
@@ -1409,11 +1420,11 @@ function railCard(r) {
 }
 function vRail() {
   if (S.error === 'NO_PROXY') return errBox();
-  const d = S.data; let h = errBox();
+  const d = S.data, eb = errBox(); let h = eb;
   const w = S.settings.railWalk || 1.5;
   h += `<div class="sec"><h2>附近車站</h2><span class="side">步行${w < 1 ? w * 1000 + 'm' : w + '公里'}內</span></div>`;
   if (!d) return h + (S.error ? '' : skel(3));
-  if (d.railError) h += `<div class="note">車站資料暫時讀不到：${esc(d.railError)}</div>`;
+  if (d.railError) { if ((d.rail || []).length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('車站資料暫時讀不到：' + d.railError, 'retryPart', 'data-v="rail"'); }
   const list = filterQ(d.rail || [], r => r.name + r.sys);
   const near = list.filter(r => !r.far && !r.fallback), fb = list.filter(r => r.fallback), far = list.filter(r => r.far);
   if (near.length) h += near.map(railCard).join('');
@@ -1434,7 +1445,23 @@ async function loadRail() {
   if (!S.rail || S.railLoading) return;
   S.railLoading = true;
   const want = S.rail;
-  try { const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name }); if (S.rail === want) { S.railData = r; S.railError = null; S.railAt = Date.now(); } (S.liveCache = S.liveCache || {})['rail:' + want.op + (want.ids || []).join(',')] = { data: r, at: Date.now() }; }
+  try {
+    const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name });
+    if (S.rail === want) { S.railData = r; S.railError = null; S.railAt = Date.now(); }
+    const ck = 'rail:' + want.op + (want.ids || []).join(',');
+    (S.liveCache = S.liveCache || {})[ck] = { data: r, at: Date.now() };
+    if (r && r.pending) {
+      r.pending.then(up => {
+        if (!up) return;
+        const c = (S.liveCache || {})[ck];
+        if (!c || c.data === r) (S.liveCache = S.liveCache || {})[ck] = { data: up, at: Date.now() };
+        if (S.rail === want && S.railData === r) {
+          S.railData = up; S.railError = null; S.railAt = Date.now();
+          if (S.page === 'rail') renderRail();
+        }
+      }).catch(() => {});
+    }
+  }
   catch (e) { if (S.rail === want) S.railError = e.message; }
   S.railLoading = false; renderRail();
 }
@@ -1462,6 +1489,10 @@ function delayPill(t) {
   return t.delay > 0 ? `<span class="delay late">晚${t.delay}分</span>` : `<span class="delay ok">準點</span>`;
 }
 const SEAT_TXT = { ok:'有位', few:'少量', full:'售完' };
+// v2.47.0 北捷官網路線擁擠度（列車所在路段）：小字「低／中／偏高／高」（北捷圖例四色），比照「直達」小字；沒有資料不標
+const CROWD_TAG = { low:['低', '#89B638'], mid:['中', '#F3D726'], busy:['偏高', '#F19818'], high:['高', '#D5131A'] };
+const crowdTag = c => { const x = CROWD_TAG[c]; return x ? ` <small title="擁擠度：${x[0]}" style="font-size:11px;font-weight:700;color:${x[1]}">${x[0]}</small>` : ''; };
+const crowdLeg = (ts, op) => ts.some(t => CROWD_TAG[t.crowd]) ? `<div class="ttleg">擁擠度（${op === 'TYMC' ? '桃捷官網・最擠車廂' : '北捷官網'}）：${Object.values(CROWD_TAG).map(([s, c]) => `<b style="color:${c}">${s}</b>`).join('　')}</div>` : '';
 function trainRow(kind, op, t) {
   if (kind === 'tra') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
     <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.type || '')} ${esc(t.no)}次</div></span>${trainCd(t)}</div>`;
@@ -1469,7 +1500,7 @@ function trainRow(kind, op, t) {
     <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.no)}次${t.seats ? `・標準 <b class="seat ${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b>・商務 <b class="seat ${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b>` : ''}</div></span>${trainCd(t)}</div>`;
   if (t.time) return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
     <span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div></span>${cdPill(t.eta, t.est ? '估算' : '表定')}</div>`;
-  return `<div class="trow"><span class="tmain"><div class="td">${lineBadge(op, t.line)}往 ${esc(t.dest)}</div></span>${cdPill(t.eta, '即時', { live: true, label: t.label })}</div>`;
+  return `<div class="trow"><span class="tmain"><div class="td tdf"><span class="tdn">${lineBadge(op, t.line)}往 ${esc(t.dest)}</span>${t.ex ? ` <small style="font-size:11px;font-weight:700;color:${EX_COL}">直達</small>` : ''}${crowdTag(t.crowd)}</div></span>${cdPill(t.eta, '即時', { live: true, label: t.label })}</div>`;
 }
 const LINE_NAME = {
   TRTC:{BL:'板南線',R:'淡水信義線',G:'松山新店線',O:'中和新蘆線',BR:'文湖線',Y:'環狀線',RA:'新北投支線',GA:'小碧潭支線'},
@@ -1478,7 +1509,7 @@ const LINE_NAME = {
 };
 // 捷運看板：先依路線分區，再列「往 X」
 function railByLine(R, D, G) {
-  const order = [...(R.lines || [])], sec = new Map();
+  const order = R.op === 'KRTC' ? [...(R.lines || [])].sort((a, b) => (a === 'R' ? 0 : a === 'O' ? 1 : 2) - (b === 'R' ? 0 : b === 'O' ? 1 : 2)) : [...(R.lines || [])], sec = new Map();
   for (const g of G) { const l = g.line || ''; if (!sec.has(l)) sec.set(l, []); sec.get(l).push(g); }
   const rank = l => { const i = order.indexOf(l); return i < 0 ? 100 + l.charCodeAt(0) : i; };
   return [...sec.entries()].sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1) || rank(a[0]) - rank(b[0])).map(([l, gs]) => {
@@ -1488,7 +1519,7 @@ function railByLine(R, D, G) {
     gs = gs.slice().sort((a, b) => sk(a) - sk(b));
     return `<div class="lsec">${l ? lineBadge(op, l) : ''}<span>${esc(name)}</span></div>` + gs.map(g =>
       { const li = reg({ op: l === 'Y' ? 'NTMC' : R.op, line: l, g }); return `<button class="tgrp dgrp lnk" data-act="lineOpen" data-i="${li}">${esc(g.label)}<span>${g.trains.length}班${I.chev}</span></button><button class="board lnk" data-act="lineOpen" data-i="${li}">${g.trains.map(t => trainRow(D.kind, R.op, { ...t, line:null, dest: t.dest + (t.via ? `（${t.via}）` : '') })).join('')}</button>`; }).join('');
-  }).join('');
+  }).join('') + crowdLeg(G.flatMap(g => g.trains), R.op);
 }
 /* 方向分頁：每條線兩個方向用分段切換，分頁內先即時、再整天時刻表 */
 const clk = x => { const [h, m] = String(x).split(':'); return String(+h % 24).padStart(2,'0') + ':' + m; };
@@ -1498,8 +1529,18 @@ function segTabs(id, tabs, sel) {
   return `<div class="seg" style="--n:${tabs.length};--i:${Math.max(0, tabs.findIndex(t => t.key === sel))}"><i></i>${tabs.map(t => `<button class="${t.key === sel ? 'on' : ''}" data-act="railTab" data-v="${esc(id + '|' + t.key)}">${esc(t.label)}</button>`).join('')}</div>`;
 }
 function moreBtn(id, n, shown) { return S.ttAll[id] && n > 5 ? `<button class="more" data-act="ttAll" data-v="${esc(id)}">收合</button>` : n > shown ? `<button class="more" data-act="ttAll" data-v="${esc(id)}">展開其餘${n - shown}班</button>` : ''; }
+// 桃捷站序：A14a 介於 A14 與 A15 之間（記 14.5），其他系統沒有可用的站序回 null
+const tymcSeq = id => { const m = /^A0*(\d{1,2})(a?)$/i.exec(id || ''); return m ? +m[1] + (m[2] ? 0.5 : 0) : null; };
+// 即時與表定終點不同、但其實是同一班：官網與時刻表對終點認定不同（官網 A21、時刻表 A22）
+// 兩個終點都在本站之後同一方向，且站序相差 ≤1 或一方最後停靠站就是另一方終點；相隔較遠的不同終點不算
+function destNear(R, x, y) {
+  if (R.op !== 'TYMC') return false;
+  const h = (R.ids || []).map(tymcSeq).find(v => v != null), a = tymcSeq(x.destId), b = tymcSeq(y.destId);
+  if (h == null || a == null || b == null || (a - h) * (b - h) <= 0) return false;
+  return Math.abs(a - b) <= 1 || (!!x.lastId && x.lastId === y.destId) || (!!y.lastId && y.lastId === x.destId);
+}
 function railTabsMetro(R, D, G) {
-  const order = [...(R.lines || [])], lines = new Map();
+  const order = R.op === 'KRTC' ? [...(R.lines || [])].sort((a, b) => (a === 'R' ? 0 : a === 'O' ? 1 : 2) - (b === 'R' ? 0 : b === 'O' ? 1 : 2)) : [...(R.lines || [])], lines = new Map();
   const put = (l, key, kind, t) => { if (!lines.has(l)) lines.set(l, new Map()); const m = lines.get(l); if (!m.has(key)) m.set(key, { key, live:[], tt:[], dests:[] }); const x = m.get(key); x[kind].push(t); if (t.dest && !x.dests.includes(t.dest)) x.dests.push(t.dest); };
   for (const t of (D.tt || [])) put(t.line || '', t.via || t.side || 'x' + t.dest, 'tt', t);
   if (D.live) for (const g of G) for (const t of g.trains) {   // 即時列車放進同終點（同順逆行）的時刻表分頁
@@ -1523,28 +1564,44 @@ function railTabsMetro(R, D, G) {
     const lest = est || T.tt.some(x => x.est);
     const liveMax = Math.max(-1, ...T.live.map(x => x.eta ?? -1));
     const rows = T.tt.filter(t => !(lest && t.est && liveMax >= 0 && t.eta <= liveMax + 1)).map(t => ({ ...t })), used = new Set();
+    // 時刻表這個終點有沒有標車種（時刻表可能完全沒有直達標記）
+    const ttEx = new Set(T.tt.filter(t => t.ex).map(t => t.dest));
     for (const lv of T.live.slice().sort((x, y) => (x.eta ?? 999) - (y.eta ?? 999))) {
       if (lv.eta == null) continue;
-      if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true }); continue; }
+      // 時刻表是發車時間：有發車倒數（桃捷官網 etaDep）就用它對，待避直達車的普通車到站和發車差 4 分多
+      const le = lv.etaDep ?? lv.eta;
+      // 新北捷官網對過班的車（ttEta：該班表定在本站的時間）用它配列，誤點較多也配到同一班，不會多出一列
+      const lm = lv.ttEta ?? le;
+      if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, liveDep: le, crowd: lv.crowd || null, ex: lv.ex, t: null, time: null, liveOnly: true }); continue; }
       let bi = -1;
-      const same = [];
-      rows.forEach((r, i) => { if (!used.has(i) && r.dest === lv.dest && r.eta != null) same.push(i); });
-      // 16:15 進站中是 16:16 那班，不是已過點的 16:13。先對差 2 分鐘以內、且還沒過表定的班。
+      const same = [], typed = lv.src === 'tymetro';   // 桃捷官網有車種
+      // 同終點：時刻表也有標車種時直達只配直達、普通只配普通（同時刻同終點的兩班不可合併）；時刻表沒標就不限制
+      // 終點不同但相鄰（destNear）：一定要車種相同，時刻表沒標車種就不配，避免把同時刻的普通與直達併成一列
+      const near = new Set();
+      rows.forEach((r, i) => {
+        if (used.has(i) || r.eta == null) return;
+        if (r.dest === lv.dest) { if (!typed || !ttEx.has(lv.dest) || !!r.ex === !!lv.ex) same.push(i); }
+        else if (typed && !!r.ex === !!lv.ex && destNear(R, r, lv)) { same.push(i); near.add(i); }
+      });
+      // 16:15 進站中是 16:16 那班，不是已過點的 16:13。先對差 2 分鐘以內、且還沒過表定的班；時間差一樣時優先同終點
       let bestD = 99;
       same.forEach(i => {
-        if (rows[i].eta < -1) return;
-        const d = Math.abs(rows[i].eta - lv.eta);
-        if (d <= 2 && d < bestD) { bestD = d; bi = i; }
+        if (rows[i].eta < -1 && lv.ttEta == null) return;   // 對過班的車可以配已過表定時間的那班（誤點中）
+        const d = Math.abs(rows[i].eta - lm) + (near.has(i) ? 0.5 : 0);
+        if (d <= 2.5 && d < bestD) { bestD = d; bi = i; }
       });
       if (bi < 0) same.forEach(i => {
-        const late = lv.eta - rows[i].eta;
+        const late = lm - rows[i].eta;
         if (late < 0 || late >= 4) return;
         if (bi < 0 || rows[i].eta > rows[bi].eta) bi = i;
       });
-      if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; }
-      else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, t: null, time: null, liveOnly: true });
+      // 配上表定班次後，車種以官網為準（原本沿用時刻表的 ex，時刻表沒標直達時「直達」就不見了）
+      if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; rows[bi].liveDep = le; rows[bi].crowd = lv.crowd || null; if (typed) rows[bi].ex = lv.ex; }
+      else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, liveDep: le, crowd: lv.crowd || null, ex: lv.ex, t: null, time: null, liveOnly: true });
     }
-    rows.sort((x, y) => (x.live ?? x.eta ?? 9999) - (y.live ?? y.eta ?? 9999));
+    // 桃捷依開車時間排（官網發車倒數、表定用時刻表時間），右側仍顯示到站倒數；其他系統照到站時間
+    const ord = R.op === 'TYMC' ? x => x.liveDep ?? x.live ?? x.eta ?? 9999 : x => x.live ?? x.eta ?? 9999;
+    rows.sort((x, y) => ord(x) - ord(y));
     const firstLive = rows.findIndex(r => r.live != null);
     const vis = rows.filter((r, i) => {
       if (r.live == null && r.eta != null && r.eta < 0) return false;
@@ -1558,12 +1615,12 @@ function railTabsMetro(R, D, G) {
         vis.slice(0, show).map(t => {
           const tm = t.time ? clk(t.time) : clk(`${Math.floor((nowM + t.live) / 60)}:${String((nowM + t.live) % 60).padStart(2,'0')}`);
           const tmr = D.ttTomorrow || (t.t != null && t.t >= 1620 && t.live == null);
-          const late = t.live != null && t.time && t.eta != null && !t.liveOnly ? t.live - t.eta : 0;
+          const late = t.live != null && t.time && t.eta != null && !t.liveOnly ? (t.liveDep ?? t.live) - t.eta : 0;
           const right = t.live != null ? cdPill(t.live, late >= 2 ? `即時・晚${late}` : '即時', { live: true, late: late >= 2 }) : cdPill(t.eta, lest && t.est ? '估算' : '表定', { tomorrow: tmr });
           const tt0 = t.t ?? (nowM + (t.live || 0));
-          const ri = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, destId:t.destId || null, dest:t.dest, via:t.via || null, t: (t.live != null && t.t == null) ? nowM + t.live : tt0, delay: (t.live != null && t.eta != null && t.t != null) ? Math.max(0, t.live - t.eta) : 0, time: tm, est: lest && (t.est || t.liveOnly || est), live: t.live != null, ex: !!t.ex });
-          return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}${t.ex ? ` <small style="font-size:11px;font-weight:700;color:${EX_COL}">直達</small>` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}</div></span>${right}</div></button>`;
-        }).join('') + `</div>` + moreBtn(id, n, show);
+          const ri = reg({ op: l === 'Y' ? 'NTMC' : R.op, line:l, destId:t.destId || null, dest:t.dest, via:t.via || null, t: (t.live != null && t.t == null) ? nowM + t.live : tt0, delay: (t.live != null && t.eta != null && t.t != null) ? Math.max(0, (t.liveDep ?? t.live) - t.eta) : 0, time: tm, est: lest && (t.est || t.liveOnly || est), live: t.live != null, ex: !!t.ex });
+          return `<button class="lnk trlnk" data-act="tripOpen" data-i="${ri}"><div class="trow"><span class="ttime">${tm}</span><span class="tmain"><div class="td tdf"><span class="tdn">往 ${esc(t.dest)}${t.via ? `（${esc(t.via)}）` : ''}</span>${t.ex ? ` <small style="font-size:11px;font-weight:700;color:${EX_COL}">直達</small>` : ''}${t.lastTrain ? ' <small class="lastt">末班</small>' : ''}${crowdTag(t.crowd)}</div></span>${right}</div></button>`;
+        }).join('') + `</div>` + moreBtn(id, n, show) + crowdLeg(vis.slice(0, show), R.op);
     } else h += `<div class="note">這個方向目前沒有班次資料。</div>`;
     return `<div class="lblk">${h}</div>`;
   }).join('');
@@ -1664,8 +1721,8 @@ function railHtml() {
   const R = S.rail; if (!R) return '';
   const D = S.railData;
   let h = `<div class="wrap">${stationHead(R, 'rail')}
-    ${S.railLoading && !D ? '<div class="rmeta" style="margin:0 4px 8px">讀取列車資訊中…</div>' : S.railError ? `<div class="rmeta" style="margin:0 4px 8px">讀取失敗：${esc(S.railError)}</div>` : ''}`;
-  if (!D) h += S.railError ? '' : skel(4);
+    ${S.railLoading && !D ? '<div class="rmeta" style="margin:0 4px 8px">讀取列車資訊中…</div>' : S.railError && D ? staleNote() : ''}`;
+  if (!D) h += S.railError && !S.railLoading ? failBox(S.railError, 'retryRail') : skel(4);
   else {
     if (D.note) h += `<div class="note" style="margin-bottom:10px;white-space:pre-line">${esc(D.note)}</div>`;
     const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
@@ -1741,12 +1798,12 @@ function stttHtml() {
   // 固定區（標題＋日期＋說明＋方向／到站／路線）不跟著捲；只有下面的清單捲動、左右翻頁。讀取中先沿用上一份的方向列，固定區高度不變
   const C = D && !D.none ? D : !D && T.ctlD && !T.ctlD.none && T.ctlD.kind === (S.rail.op === 'TRA' || S.rail.op === 'THSR' ? 'train' : 'metro') ? T.ctlD : null;
   const P = C ? (C.kind === 'train' ? stttTrain(R, T, C) : stttMetro(R, T, C)) : { ctl:'', body:'' };
-  const meta = D ? `${+T.date.slice(5, 7)}/${+T.date.slice(8)} ${esc(D.dayLabel)}・${D.kind === 'train' ? (D.src === 'day' ? '當天實際時刻表（含加班、停駛）' : D.none ? '' : '七天班表') : D.trains.length ? '官方站別時刻表' : '班距與首末班'}` : T.err ? '讀取失敗：' + esc(T.err) : '讀取時刻表中…';
+  const meta = D ? `${+T.date.slice(5, 7)}/${+T.date.slice(8)} ${esc(D.dayLabel)}・${D.kind === 'train' ? (D.src === 'day' ? '當天實際時刻表（含加班、停駛）' : D.none ? '' : '七天班表') : D.trains.length ? '官方站別時刻表' : '班距與首末班'}` : T.err ? '' : '讀取時刻表中…';
   const ctl = `<div class="sttd">${stSeg('date', days.map(([k, label]) => ({ k, label })), T.date)}
       <input id="stttDate" class="inp" type="date" value="${esc(T.date)}" min="${d0}" max="${svcIso(90)}"></div>
     <div class="rmeta">${meta}</div>${P.ctl}`;
   let body = new Date().getHours() < 3 && T.date === d0 ? '<div class="rmeta" style="margin:8px 4px 0">凌晨 3 點前算前一天的營運日（「今天」是昨天的班表）</div>' : '';
-  body += !D ? (T.err ? '' : `<div>${skel(5)}</div>`) : D.none ? `<div class="note" style="margin-top:12px">${D.kind === 'train' ? '這一天沒有可用的時刻表（雲端還沒有涵蓋這天的班表）。' : D.hwMissing ? '雲端還沒有這條線的班距資料，請到設定更新時刻表。' : '查無這一站這天的時刻表。'}</div>` : P.body;
+  body += !D ? (T.err ? failBox(T.err, 'retrySttt') : `<div>${skel(5)}</div>`) : D.none ? `<div class="note" style="margin-top:12px">${D.kind === 'train' ? '這一天沒有可用的時刻表（雲端還沒有涵蓋這天的班表）。' : D.hwMissing ? '雲端還沒有這條線的班距資料，請到設定更新時刻表。' : '查無這一站這天的時刻表。'}</div>` : P.body;
   return `<div class="wrap ttw"><div class="stpin">${stationHead(R, 'sttt')}<div class="stctl">${ctl}</div></div><div class="lblk sttlist">${body}</div></div>`;
 }
 const tClk = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -1946,7 +2003,7 @@ function renderLine() {
   const title = isLine ? ((LINE_NAME[q.op] || {})[q.line] || (LINE_NAME[R.op] || {})[q.line] || q.line + ' 線') : `${q.no}次`;
   const sub = q.kind === 'trip' ? `往 ${(D && D.dest) || q.dest || ''}` : q.kind === 'line' ? q.label : D ? `${D.type || ''}　${D.from || ''} → ${D.to || ''}` : '';
   const canSwap = q.kind === 'line' && q.alts && q.alts.length > 1;
-  let meta = !D ? (L.err ? '讀取失敗：' + esc(L.err) : '讀取停靠站中…') : q.kind === 'trip' && D.official
+  let meta = !D ? (L.err ? '' : '讀取停靠站中…') : q.kind === 'trip' && D.official
     ? `<b style="color:var(--lime)">官方時刻</b>：由各站時刻表串成這一班車${D.nEst ? `；標 ≈ 的${D.nEst}站為推估` : ''}${D.delay ? `；即時晚約${D.delay}分（右側 +${D.delay}）` : q.live ? '；本站為即時到站' : ''}`
     : q.kind === 'trip'
     ? `${D.stops.length}站；${q.est && !q.live ? '依班距估算發車時間，' : ''}各站時間${D.noS2S ? '以每站約2分鐘估算' : '依 TDX 站間行駛時間推算'}${D.delay ? `，已含即時晚約${D.delay}分` : q.live ? '，本站為即時到站' : ''}`
@@ -1956,8 +2013,8 @@ function renderLine() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1 class="${q.kind === 'trip' ? 'trip' : ''}" style="font-size:${q.kind === 'trip' ? (title.length > 4 ? 22 : 26) : title.length > 4 ? 30 : 38}px">${isLine ? lineBadge(q.op === 'NTMC' && R.op === 'TRTC' ? 'NTMC' : (LINE_COLOR[q.op] || {})[q.line] ? q.op : R.op, q.line) + ' ' : ''}${esc(title)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="lineSwap">${I.swap}<span>${esc(sub)}</span></button>` : sub ? `<span class="dirbtn ${q.kind === 'trip' ? 'trip' : ''}"><span>${esc(sub)}</span></span>` : ''}</div>
-    <div class="rmeta">${meta}</div></div>`;
-  if (!D) h += L.err ? '' : skel(5);
+    <div class="rmeta">${meta}</div>${D && L.err ? staleNote() : ''}</div>`;
+  if (!D) h += L.err ? failBox(L.err, 'retryLine') : skel(5);
   else h += `<div class="line">` + D.stops.map(s => {
     let right = '';
     if (q.kind === 'trip') right = s.before ? '' : `<span class="eta ${s.here ? 'soon' : ''}">${s.est && D.official ? '≈' : ''}${esc(s.time)}${D.official && D.delay > 0 ? `<small style="display:block;font-size:11px;color:var(--warn)">+${D.delay}</small>` : ''}</span>`;
@@ -2011,9 +2068,9 @@ function routeHtml() {
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1>${esc(R.route)}</h1>
     ${canSwap ? `<button class="dirbtn" data-act="swapDir">${I.swap}<span>${esc(dest ? '往 ' + dest : '切換方向')}</span></button>` : (dest ? `<span class="dirbtn"><span>往 ${esc(dest)}</span></span>` : '')}</div>
-    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : S.routeError ? '讀取失敗：' + esc(S.routeError) : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div>${D ? pupd(S.routeAt, S.routeError) : ''}
+    <div class="rmeta">${S.routeLoading && !D ? '讀取路線中…' : D ? `${D.stops.length}站，點站名設下車提醒、點星號收藏` : ''}</div>${D ? (S.routeError ? staleNote() : pupd(S.routeAt)) : ''}
     ${D && D.stops.length ? `<button class="chip schbtn" data-act="schOpen">時刻表</button>` : ''}</div>`;
-  if (!D) h += skel(5);
+  if (!D) h += S.routeError && !S.routeLoading ? failBox(S.routeError, 'retryRoute') : skel(5);
   else {
     h += `<div class="line">` + D.stops.map((s, i) => {
       const f = { routeUID:D.routeUID, route:R.route, dirNum:R.dirNum, stopUID:s.uid, stopName:s.name, dest };
@@ -2129,13 +2186,13 @@ function busttHtml() {
   const recs0 = all.filter(r => r.d === 2 || (r.d === 1 ? 1 : 0) === (T.dirNum ? 1 : 0)), recs = recs0.length ? recs0 : all;
   const wk = '日一二三四五六'[new Date(Date.parse(T.date + 'T12:00:00+08:00')).getUTCDay()];
   const c = all.length ? schCalc(recs, T.stop, T.date) : null;
-  const meta = T.err ? '讀取失敗：' + esc(T.err) : !T.data ? '讀取時刻表中…' : !all.length ? '' : `${+T.date.slice(5, 7)}/${+T.date.slice(8)} 週${wk}・${c.times.length ? c.times.length + ' 班' : c.freq.length ? '只有班距' : '沒有班次'}${c.atOrigin ? '・只有起站發車時間' : ''}`;
+  const meta = T.err && !T.data ? '' : !T.data ? '讀取時刻表中…' : !all.length ? '' : `${+T.date.slice(5, 7)}/${+T.date.slice(8)} 週${wk}・${c.times.length ? c.times.length + ' 班' : c.freq.length ? '只有班距' : '沒有班次'}${c.atOrigin ? '・只有起站發車時間' : ''}`;
   const ctl = `<div class="sttd">${stSeg('date', days.map(([k, label]) => ({ k, label })), T.date)}
       <input id="busttDate" class="inp" type="date" value="${esc(T.date)}" min="${d0}" max="${svcIso(90)}"></div>
     <div class="sttf"><select id="busttStop" class="inp">${T.stops.map(s => `<option value="${esc(s.uid)}"${s.uid === T.stop ? ' selected' : ''}>上車站：${esc(s.name)}</option>`).join('')}</select></div>
     <div class="rmeta">${meta}</div>`;
   let body = '';
-  if (!T.data) body = T.err ? '' : `<div>${skel(5)}</div>`;
+  if (!T.data) body = T.err ? failBox(T.err, 'retryBustt') : `<div>${skel(5)}</div>`;
   else if (!all.length) body = `<div class="note" style="margin-top:12px">這條路線沒有表定時刻表（TDX 沒有提供），請看路線頁的即時到站。</div>`;
   else {
     const isToday = T.date === d0, nowM = isToday ? (new Date().getHours() < 3 ? nowMinUI() + 1440 : nowMinUI()) : -1;
@@ -2821,14 +2878,20 @@ async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只�
   if (S.loading) return;
   if (!S.data) part = null;
   S.loading = true; renderStatus();
+  // 公車／YouBike／軌道其中一部分這次讀取失敗：沿用上一次的那一部分與更新時間（畫面加一行小字提示）
+  const keepOld = d => { const P = S.data, at = { busAt:S.busAt, bikeAt:S.bikeAt, railNearAt:S.railNearAt }, k = [];
+    if (P) { if (d.busError && !d.busStops.length && P.busStops?.length) { d.busStops = P.busStops; k.push('busAt'); }
+      if (d.bikeError && !d.bikes.length && P.bikes?.length) { d.bikes = P.bikes; k.push('bikeAt'); }
+      if (d.railError && !(d.rail || []).length && P.rail?.length) { d.rail = P.rail; k.push('railNearAt'); } }
+    return () => k.forEach(x => { S[x] = at[x]; }); };
   try {
     // v2.36.3：YouBike 比較慢時先顯示公車、軌道（onEarly），YouBike 好了再補上；沿用上一次的 YouBike 直到新的回來
     const onEarly = part ? null : e => { const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
-      S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now();
+      const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
     const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, onEarly });
     const now = Date.now();
-    if (!part) { S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; }
+    if (!part) { const back = keepOld(d); S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; back(); }
     else {
       const D = S.data; D.lat = d.lat; D.lon = d.lon; D.accuracy = d.accuracy; S.partErr[part] = null;
       if (part === 'bus') { D.busStops = d.busStops; D.busError = null; D.favs = { ...D.favs, bus:d.favs.bus }; S.busAt = now; }
@@ -2906,9 +2969,17 @@ document.addEventListener('click', e => {
     case 'stop': if (o) stopSheet(o); break;
     case 'bikeSheet': if (o) bikeSheet(o); break;
     case 'stopAt': if (o) { const s0 = { ...o, dist:null, routes:[] }; stopSheet(s0); $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
-      api('stopAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(s => { if (S.sheet?.s === s0) stopSheet(s); }).catch(e => { const n = $('#atLoad'); if (n) n.textContent = '讀取失敗：' + (e.message || e); }); } break;
+      api('stopAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(s => { if (S.sheet?.s === s0) stopSheet(s); }).catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg(o)}"`); }); } break;
+    // 讀取失敗後的「重試」：只在按下時重讀一次
+    case 'retry': S.error = null; render(); refresh(); break;
+    case 'retryPart': el.disabled = true; el.textContent = '重新讀取中…'; refresh(el.dataset.v); break;
+    case 'retryRail': S.railError = null; renderRail(); loadRail(); break;
+    case 'retryRoute': S.routeError = null; loadRoute(); break;
+    case 'retryLine': if (S.line) { S.line.err = null; renderLine(); loadLine(); } break;
+    case 'retrySttt': if (S.sttt) { S.sttt.err = null; renderSttt(); loadSttt(); } break;
+    case 'retryBustt': if (S.bustt) { S.bustt.err = null; renderBustt(); loadBustt(); } break;
     case 'bikeAt': if (o) { const b0 = { ...o, type:null }; bikeSheet(b0);
-      api('bikeAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(b => { if (S.sheet?.b === b0) bikeSheet(b); }).catch(() => {}); } break;
+      api('bikeAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(b => { if (S.sheet?.b === b0) bikeSheet(b); }).catch(e => { if (S.sheet?.b === b0) $('#sheet').insertAdjacentHTML('beforeend', failBox('YouBike 即時車位：' + (e.message || e), 'bikeAt', `data-i="${reg(o)}"`)); }); } break;
     case 'closeSheet': closeSheet(); break;
     case 'nav': api('open', { url:`http://maps.apple.com/?daddr=${el.dataset.lat},${el.dataset.lon}&dirflg=w` }); break;
     case 'favBus': {
