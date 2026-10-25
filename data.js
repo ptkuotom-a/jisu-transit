@@ -213,7 +213,7 @@ async function odRouteEta(routeUID, near) {
 }
 async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站的格式
   const j = await odRouteEta(b.routeUID, false); if (j) return j.list;
-  return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}/${enc(b.route)}?%24top=600&%24format=JSON`);
+  return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}?%24filter=${enc(`RouteUID eq '${b.routeUID}'`)}&%24top=600&%24format=JSON`);   // v2.46.3：用 RouteUID 過濾（高雄等路線名稱當路徑會回空）
 }
 
 // ---------- 工具 ----------
@@ -1024,8 +1024,8 @@ const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction,
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
-  const name = enc(route);
-  const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}/${name}?%24top=600&%24format=JSON`;
+  // v2.46.3：預估與公車位置用 RouteUID 過濾；高雄等路線名稱當路徑參數 TDX 會回 []
+  const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}?%24filter=${enc(`RouteUID eq '${routeUID}'`)}&%24top=600&%24format=JSON`;
   // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
   // 雲端 KV 的全 23 地區站序是手機端唯一來源；同名的其他路線保留在同一份快取裡。
