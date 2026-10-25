@@ -34,32 +34,38 @@ const r_ok = c => c >= 200 && c < 300;
 const RATE_MSG = "查詢太頻繁，請稍後再試";
 const isRate = e => !!(e && (e.rate || String(e.message || e).includes(RATE_MSG)));
 // v2.37.2：請求逾時（網路卡住時不會一直停在「定位中」；逾時就顯示錯誤，可下拉重試）
+// 計時涵蓋到讀完內容（r.json() 卡住也會中斷）；讀完後才觸發的 abort 不影響結果
 function fetchT(u, ms, opt) {
   const ac = new AbortController(), tm = setTimeout(() => ac.abort(), ms);
-  return fetch(u, { ...(opt || {}), signal: ac.signal }).then(r => { clearTimeout(tm); return r; }, e => { clearTimeout(tm); throw e; });
+  return fetch(u, { ...(opt || {}), signal: ac.signal }).catch(e => { clearTimeout(tm); throw e; });
 }
+const TDX_MS = 12000, NET_MSG = "連不到伺服器，請確認網路後重試", TIMEOUT_MSG = "連線逾時，請確認網路後重試";
 async function tdx(profile, url) {
   const proxy = getProxy();
   if (!proxy) throw new Error("NO_PROXY");
   const target = proxy + url.slice(TDX_ORIGIN.length) + "&__k=" + (profile === "rail" ? 3 : profile === "route" ? 2 : 1);
   const session = getSession(), opt = session && session.role === "admin" ? { headers: { "x-session": session.token } } : undefined;
-  let last = "";
+  let last = "", why = "";
   for (let i = 0; i < 3; i++) {
-    let code = 0, res;
+    let code = 0, res; why = "";
     try {
-      const r = await fetchT(target, 20000, opt);
+      const r = await fetchT(target, TDX_MS, opt);
       code = r.status; res = await r.json();
-    } catch (e) { res = { message: String(e) }; }
+    } catch (e) { why = e && e.name === "AbortError" ? "timeout" : code ? "" : "net"; res = { message: String(e) }; }
     if (Array.isArray(res)) return res;
     if (res && typeof res === "object" && r_ok(code) && !res.message && !res.Message) {
       const arr = Object.values(res).find(Array.isArray);   // v3 API 回傳 {Stations:[...]}這類容器
       if (arr) return arr;
     }
     last = `(${code}) ` + JSON.stringify(res).slice(0, 120);
-    if (code === 429 || code === 0 || code >= 500) { await sleep(1000 + i * 800); continue; }
+    if (why === "timeout") break;   // 逾時不再重試：最多等 12 秒就結束轉圈
+    if (code === 429 || code === 0 || code >= 500) { if (i < 2) await sleep(1000 + i * 800); continue; }
     break;
   }
   if (last.startsWith("(429)")) { const e = new Error(RATE_MSG); e.rate = true; throw e; }
+  if (why === "timeout") throw new Error(TIMEOUT_MSG);
+  if (why === "net") throw new Error(NET_MSG);
+  if (last.startsWith("(5")) throw new Error("TDX 暫時無法回應，請稍後重試 " + last.slice(0, 5));
   throw new Error("資料讀取失敗 " + last);
 }
 
@@ -93,7 +99,7 @@ function youbikeFeed(fresh) {
   if (ybFeedInFlight) return ybFeedInFlight;
   if (!fresh && ybFeedP && Date.now() - ybFeedAt < 90000) return ybFeedP;
   ybFeedAt = Date.now();
-  const p = fetch(YB_FEED_URL, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error("feed"); return r.json(); }).then(list => {
+  const p = fetchT(YB_FEED_URL, 15000, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error("feed"); return r.json(); }).then(list => {
     if (!Array.isArray(list)) throw new Error("feed");
     const map = {};
     for (const s of list) {
@@ -1219,10 +1225,49 @@ const TRA_ALL_LIVE = `${RAIL_BASE}/v3/Rail/TRA/TrainLiveBoard?%24format=JSON`;
 const traAllLive = () => memoTdx("rail", TRA_ALL_LIVE, 60000);
 // v2.24.0：車站頁不再抓全台列車動態（只有點進某一班車才抓）；60 秒內抓過就順便拿來補誤點
 const traAllPeek = () => { const h = memoMap.get(TRA_ALL_LIVE); return h && Date.now() - h.t < 60000 ? h.v : null; };
-async function traBoard(get, st) {
-  const id = st.ids[0];
+// 台鐵官網即時誤點（經 Worker /tra，每站快取 30 秒）；逾時或失敗回傳 null（改走 TDX）
+async function traOfficial(st) {
+  const proxy = getProxy(); if (!proxy) return null;
+  const id = st.ids && st.ids[0], name = st.name;
+  if (!id || !name) return null;
+  let json;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 27000);
+  try {
+    const response = await fetch(`${proxy}/tra?st=${encodeURIComponent(id)}&n=${encodeURIComponent(name)}`, { signal: ctl.signal });
+    json = response.ok ? await response.json() : null;
+  } catch (error) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!json || !Array.isArray(json.trains) || !json.trains.length) return null;
+  return json;
+}
+
+function traProcessRows(rows, delay, now = nowMin()) {
+  const seen = new Set();
+  return rows.filter(r => r.time && !seen.has(r.no) && seen.add(r.no))
+    .map(r => ({ ...r, delay: delay ? (delay[r.no] ?? null) : null, t: toMin(r.time) }))
+    .filter(r => r.t + (r.delay || 0) >= now - 1)
+    .sort((a, b) => (a.t + (a.delay || 0)) - (b.t + (b.delay || 0)) || a.t - b.t);
+}
+
+function traOfficialBoard(official, storedRows) {
+  const delay = {};
+  for (const t of official.trains) if (t.no != null && typeof t.delay === "number") delay[String(t.no)] = t.delay;
+  let rows = (storedRows && storedRows.length) ? storedRows : official.trains.map(t => ({
+    no: String(t.no),
+    type: shortType(t.type),
+    dest: t.to,
+    dir: t.dir,
+    time: t.dep,
+  }));
+  rows = traProcessRows(rows, delay);
+  return { kind: "tra", live: true, trains: rows, groups: groupTrains("tra", rows), note: null };
+}
+
+async function traTdxLive(get, id, storedRows) {
   const filter = encodeURIComponent(`StationID eq '${id}'`);
-  const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
   // 本站 StationLiveBoard ＋ 全台列車動態（Worker 共用快取60秒），讓已發車的每一班都有誤點
   const [tt, slive, tlive] = await Promise.allSettled([
     Promise.resolve([]),
@@ -1253,12 +1298,34 @@ async function traBoard(get, st) {
   } else {
     throw (isRate(tt.reason) ? tt.reason : tt.reason || new Error("台鐵時刻表讀取失敗"));
   }
-  const now = nowMin(), seen = new Set();
-  rows = rows.filter(r => r.time && !seen.has(r.no) && seen.add(r.no))
-    .map(r => ({ ...r, delay: delay[r.no] ?? null, t: toMin(r.time) }))
-    .filter(r => r.t + (r.delay || 0) >= now - 1)
-    .sort((a, b) => a.t - b.t);
+  rows = traProcessRows(rows, delay);
   return { kind: "tra", live, trains: rows, groups: groupTrains("tra", rows), note: live ? null : "誤點資訊暫時讀不到，只顯示表定時間" };
+}
+
+async function traBoard(get, st) {
+  const id = st.ids[0];
+  const officialPromise = traOfficial(st);
+  const storedRows = await ttTrainRows("TRA", id, await dayInfo(svcDate(0))).catch(() => null);
+
+  const fetchLive = async () => {
+    let official = null;
+    try { official = await officialPromise; } catch (e) {}
+    if (official) return traOfficialBoard(official, storedRows);
+    return traTdxLive(get, id, storedRows);
+  };
+
+  if (storedRows && storedRows.length) {
+    const rows = traProcessRows(storedRows, null);
+    return {
+      kind: "tra",
+      live: false,
+      trains: rows,
+      groups: groupTrains("tra", rows),
+      note: "正在讀取官網誤點…",
+      pending: fetchLive(),
+    };
+  }
+  return fetchLive();
 }
 
 async function thsrBoard(get, st) {
@@ -1322,6 +1389,193 @@ async function trtcLive(st) {
   }
   const trains = Object.values(best).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
   return trains.some(t => t.eta !== null) ? trains : null;
+}
+// v2.47.0 北捷官網即時到站（經 Worker /trtc，含路線擁擠度 low/mid/busy/high）；全部失敗或沒有任何到站時間回傳 null
+// 官網以「線＋站」查詢：轉乘站每條線各查一次（含環狀線轉乘站碼，最多 4 次）；支線站（R22A、G03A）官網不支援，跳過
+const TRTC_OFF_LINES = ["BR", "R", "G", "O", "BL", "Y"];
+const trtcOffKey = s => normZh(s).replace(/站$/, "").replace(/[\/／・\s]/g, "");   // 官網「廣慈奉天宮」＝車站清單「廣慈/奉天宮」
+async function trtcOfficial(st) {
+  const proxy = getProxy(); if (!proxy) return null;
+  const all = [...new Set(st.ids.flatMap(i => TRTC_XFER[i] ? [i, TRTC_XFER[i]] : [i]))];
+  const ids = all.filter(i => /^[A-Z]{1,2}\d{2}$/.test(i) && TRTC_OFF_LINES.includes(stnPre(i))).slice(0, 4);
+  if (!ids.length) return null;
+  const one = async id => {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
+    try { const r = await fetch(`${proxy}/trtc?line=${stnPre(id)}&st=${id}`, { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
+    catch (e) { return null; }
+    finally { clearTimeout(tm); }
+  };
+  const res = await Promise.all(ids.map(one));
+  if (!res.some(Boolean)) return null;
+  let list = []; try { list = await loadRailStations(); } catch (e) {}
+  const byName = {};
+  for (const s of list) if (s.op === "TRTC" || s.op === "NTMC") (byName[trtcOffKey(s.name)] = byName[trtcOffKey(s.name)] || []).push(s);
+  const here = new Set(all), now = nowMin(), covered = new Set(), trains = [];
+  res.forEach((j, k) => {
+    if (!j) return;
+    const base = stnPre(ids[k]); covered.add(base);
+    for (const x of j.trains) {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(x.time || ""); if (!m) continue;
+      let d = +m[1] * 60 + +m[2] - now;
+      if (d < -720) d += 1440; else if (d > 720) d -= 1440;                     // 跨午夜（23:58 查 00:03 的車＝5 分）
+      if (d < -2) continue;                                                    // 已過站的舊資料（star 只是「下一班」標記，同樣過濾）
+      // 終點站名換成車站清單的站名與站碼（同名轉乘站優先取本線的站碼）
+      const cand = byName[trtcOffKey(x.dest)] || [], s = cand.find(c => stnPre(c.id) === base) || cand[0] || null;
+      const destId = s ? s.id : null, dest = s ? s.name : (x.dest || "?");
+      if (destId && here.has(destId)) continue;                                // 終點就是本站的列車不顯示
+      trains.push({ line: brLine("TRTC", base, ids[k], destId, dest), dest, destId, eta: Math.max(0, d), label: null,   // * ＝官網「下一班」標記，不是已到站，eta 一律用時間計算
+        crowd: x.crowd || null, star: !!x.star, car: x.car || null, src: "official" });
+    }
+  });
+  // 有線查不到，或本站有支線列車（北投、七張的新北投／小碧潭支線）：只就官網沒涵蓋的路線補上 Bus+ 的資料
+  if (res.some(j => !j) || all.some(i => BR_HUB.TRTC[i] || BR_STN.TRTC[i])) {
+    const bp = await trtcLive(st);
+    if (bp) trains.push(...bp.filter(t => !covered.has(t.line)));
+  }
+  trains.sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+  return trains.some(t => t.eta !== null) ? trains : null;
+}
+// 桃園機捷官網即時到站（經 Worker /tymc，Worker 端整份全線資料快取 30 秒）：直達／普通、車廂擁擠度；失敗或沒有任何到站時間回傳 null
+// 官網站碼 A08／A14A 與車站清單的 A8／A14a 都正規化成同一種寫法再比對
+const tymcNorm = id => { const m = /^A0*(\d{1,2})(a?)$/i.exec(String(id || "").trim()); return m && +m[1] > 0 ? "A" + +m[1] + (m[2] ? "a" : "") : null; };
+// 官網車廂擁擠度：1→低、2→中、3→偏高、4 以上→高（等級上限未確認，樣本只見 1～3）；取四節車廂裡最擠的一節
+const tymcCrowd = lv => { const n = Array.isArray(lv) ? Math.max(...lv.map(Number).filter(Number.isFinite)) : NaN; return n >= 4 ? "high" : ({ 1: "low", 2: "mid", 3: "busy" })[n] || null; };
+async function tymcOfficial(st) {
+  const proxy = getProxy(); if (!proxy) return null;
+  const ids = [...new Set(st.ids.map(tymcNorm).filter(Boolean))].slice(0, 2);
+  if (!ids.length) return null;
+  const one = async id => {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
+    try { const r = await fetch(`${proxy}/tymc?st=${encodeURIComponent(id)}`, { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
+    catch (e) { return null; }
+    finally { clearTimeout(tm); }
+  };
+  const res = (await Promise.all(ids.map(one))).filter(Boolean);
+  if (!res.length) return null;
+  let list = []; try { list = await loadRailStations(); } catch (e) {}
+  const byCode = {};
+  for (const s of list) if (s.op === "TYMC" && tymcNorm(s.id)) byCode[tymcNorm(s.id)] = s;
+  const here = new Set(ids), d0 = new Date(), now = d0.getHours() * 3600 + d0.getMinutes() * 60 + d0.getSeconds(), trains = [];
+  // "16:51:26" → 距現在幾分鐘（跨午夜：23:58 查 00:03 的車＝5 分）
+  const mins = s => { const m = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(s || ""); if (!m) return null; let d = +m[1] * 3600 + +m[2] * 60 + +m[3] - now; if (d < -43200) d += 86400; else if (d > 43200) d -= 86400; return d / 60; };
+  for (const j of res) for (const x of j.trains) {
+    let e = mins(x.arr); if (e === null) continue;
+    const dp = mins(x.dep);
+    // 已過到站時間但還沒開（起點站、待避直達車的普通車停比較久）：改用發車時間，這班還趕得上
+    if (e < -1) { if (dp === null || dp < -1) continue; e = dp; }   // 過站略過
+    // 終點照官網 EndStation（普通車 A22 老街溪，和雲端時刻表一致）；車站清單找不到才退回最後停靠站 last
+    let code = tymcNorm(x.dest); if (code && !byCode[code] && byCode[tymcNorm(x.last)]) code = tymcNorm(x.last);
+    if (!code || here.has(code)) continue;                                              // 終點就是本站的列車不顯示
+    const s = byCode[code] || null, lc = tymcNorm(x.last);
+    // 直達與普通同時刻同終點也各自一筆，不合併
+    // lastId：最後停靠站（官網終點 A22 但只停到 A21 時有值），畫面對表定班次時用來判斷終點不同的是不是同一班
+    // etaDep：發車倒數。時刻表記的是發車時間，普通車在長庚等站待避直達車會停 4 分多（17:04 到、17:08 開），對表定班次要用它
+    trains.push({ line: "A", dest: s ? s.name : code, destId: s ? s.id : code, eta: Math.max(0, Math.floor(e)), etaDep: dp === null ? undefined : Math.max(0, Math.floor(dp)), label: null,
+      ex: x.type === "express" ? true : undefined, crowd: tymcCrowd(x.crowd), src: "tymetro", ...(lc ? { lastId: byCode[lc] ? byCode[lc].id : lc } : {}) });
+  }
+  trains.sort((a, b) => a.eta - b.eta);
+  return trains.length ? trains : null;
+}
+// 高捷官網（經 Worker /krtc）：美麗島一次回傳紅橘兩線，不重複查詢同一個轉乘站。
+const krtcNorm = value => { const match = /^([ROC](?:K|T)?)0*(\d{1,2})(A?)$/i.exec(String(value || "")); const code = match && +match[2] > 0 ? match[1].toUpperCase() + +match[2] + match[3].toUpperCase() : null; return ({ R25: "RK1", O15: "OT1" })[code] || code; };
+async function krtcOfficial(st) {
+  const proxy = getProxy(); if (!proxy) return null;
+  const ids = st.ids.map(krtcNorm).filter(Boolean), id = ids.find(code => st.op === "KLRT" ? code[0] === "C" : /^[RO]/.test(code));
+  if (!id) return null;
+  let json;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
+  try { const response = await fetch(`${proxy}/krtc?st=${encodeURIComponent(id)}`, { signal: ctl.signal }); json = response.ok ? await response.json() : null; }
+  catch (error) { return null; }
+  finally { clearTimeout(timer); }
+  if (!json || !json.ok || !Array.isArray(json.lines)) return null;
+  let list = []; try { list = await loadRailStations(); } catch (error) {}
+  const byCode = {};
+  for (const station of list) if (station.op === st.op && krtcNorm(station.id)) byCode[krtcNorm(station.id)] = station;
+  const trains = [];
+  for (const item of json.lines) {
+    if (!(st.op === "KLRT" ? item.line === "C" : item.line === "R" || item.line === "O")) continue;
+    const code = krtcNorm(item.dir), station = byCode[code];
+    if (!code || ids.includes(code) || !Array.isArray(item.next)) continue;
+    for (const next of item.next) {
+      if (typeof next.min !== "number" || !Number.isFinite(next.min) || next.min < 0 || next.min > 20) continue;
+      trains.push({ line: item.line, dest: item.line === "C" ? item.dest || "環狀輕軌" : station ? station.name : item.dest || code, destId: item.line === "C" ? null : station ? station.id : code, eta: next.min, arriving: !!next.arriving, label: null, src: "krtc",
+        ...(item.line === "C" ? { dir: item.direction, via: item.via } : {}) });
+    }
+  }
+  trains.sort((first, second) => first.eta - second.eta);
+  return trains.length ? trains : null;
+}
+// v2.47.0 新北捷官網淡海／安坑輕軌即時（經 Worker /ntm，整條線一份快取 30 秒）：官網只有列車位置，Worker 依官網標準行駛時間換算成到站秒數
+// 同方向會列出上游的每一台車；失敗、這站沒有車或沒有任何到站時間回傳 null（改走 TDX）
+const NTM_LINE = { NTDLRT: "V", NTALRT: "K" };
+async function ntmOfficial(st) {
+  const proxy = getProxy(), line = NTM_LINE[st.op]; if (!proxy || !line) return null;
+  const id = st.ids.map(i => String(i || "").toUpperCase()).find(i => stnPre(i) === line);
+  if (!id) return null;
+  let j = null;
+  const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
+  try { const r = await fetch(`${proxy}/ntm?line=${line}&st=${encodeURIComponent(id)}`, { signal: ctl.signal }); j = r.ok ? await r.json() : null; }
+  catch (e) { j = null; }
+  finally { clearTimeout(tm); }
+  if (!j || !j.ok || !Array.isArray(j.trains)) return null;
+  // 淡海上行共用段的車（alt）官網路線不可靠，Worker 兩個終點各列一筆：用時刻表在分岔站 V09 對班，只留對得上的那筆
+  const pick = j.trains.some(x => x.alt) ? await ntmAltPick(st.op, j.trains) : {};
+  let list = []; try { list = await loadRailStations(); } catch (e) {}
+  const byCode = {};
+  for (const s of list) if (s.op === st.op) byCode[String(s.id).toUpperCase()] = s;
+  const here = new Set(st.ids.map(i => String(i || "").toUpperCase())), trains = [], seen = new Set();
+  for (const x of j.trains.slice().sort((a, b) => a.eta - b.eta)) {
+    const code = String(x.destId || "").toUpperCase();
+    if (!code || here.has(code) || typeof x.eta !== "number" || !(x.eta >= 0)) continue;   // 終點就是本站的列車不顯示
+    const p = x.alt ? pick[x.car] : null;
+    if (x.alt && (!p || p.destId !== code)) continue;                                      // 對不上班次或不是這個終點：不列（該班維持表定）
+    const k = x.car ? x.dir + "|" + code + "|" + x.car : null;                               // 去重：同方向同終點同車號只留最早一筆
+    if (k) { if (seen.has(k)) continue; seen.add(k); }
+    const s = byCode[code] || null;   // 終點名用車站清單換（紅樹林、崁頂、淡水漁人碼頭…）
+    // ttEta：對到的表定班次在本站的時間（分），畫面用它配時刻表的列，誤點超過 4 分也配得上同一班
+    trains.push({ line, dest: s ? s.name : code, destId: s ? s.id : code, eta: Math.floor(x.eta / 60), label: null, src: "ntmetro", ...(p ? { ttEta: x.eta / 60 - p.late } : {}) });
+  }
+  trains.sort((a, b) => a.eta - b.eta);
+  return trains.length ? trains : null;
+}
+// 對班：每台 alt 車兩個假設（往 V11／往 V26）各自到 V09 的時間，和時刻表 V09 該終點的上行班次比；早 2 分～晚 8 分內算對上。
+// 停在 V01 等開車的車（Worker 附 o＝開車秒數，來自官網 drivingTime＝時刻表）改和 V01 時刻表比，差 1 分內算對上（官網 18:23 的 108 車：
+// V01 18:26 是崁頂班；用 V09 比反而會對到漁人碼頭班，因為雲端時刻表這班沒有 V09）。
+// 兩個終點都對得上（誤點約半個班距）：照官網地圖顏色（rid＝routeId，3 崁頂／4 漁人碼頭）；沒有 rid 或都對不上：不採用這台車（不猜）。
+// 只有一個終點對得上就照時刻表，不看官網顏色（共用段 routeId 常沿用上一趟，見 worker/ntm.js）；兩台車搶同一班：留時間差小的
+// 回傳 { 車號: { destId, late(分) } }
+const NTM_JCT = { NTDLRT: "V09" }, NTM_ORG = { NTDLRT: "V01" }, NTM_RID = { NTDLRT: { 3: "V11", 4: "V26" } };
+async function ntmAltPick(op, rows) {
+  const jct = NTM_JCT[op]; if (!jct) return {};
+  const load = async id => { try { return await metroTimetable(null, { op, ids: [id] }, null, true) || []; } catch (e) { if (isRate(e)) throw e; return []; } };
+  const needOrg = rows.some(x => x.alt && typeof x.o === "number");
+  const [tt, tt0] = await Promise.all([load(jct), needOrg ? load(NTM_ORG[op]) : []]);
+  if (!tt.length && !tt0.length) return {};
+  const d0 = new Date(); let nowS = d0.getHours() * 3600 + d0.getMinutes() * 60 + d0.getSeconds(); if (nowS < 10800) nowS += 86400;
+  const cand = {};
+  for (const x of rows) {
+    if (!x.alt || !x.car || typeof x.j !== "number") continue;
+    const dest = String(x.destId || "").toUpperCase();
+    if ((cand[x.car] || []).some(c => c.destId === dest)) continue;
+    const org = typeof x.o === "number", sec = org ? x.o : x.j;
+    for (const t of org ? tt0 : tt) {
+      if (String(t.destId || "").toUpperCase() !== dest || t.dir === 1) continue;
+      const late = (nowS + sec - t.t * 60) / 60;
+      if (org ? Math.abs(late) <= 1 : late >= -2 && late <= 8) (cand[x.car] = cand[x.car] || []).push({ destId: dest, late, t: t.t, at: org ? "o" : "j", rid: x.rid });
+    }
+  }
+  const one = [];
+  for (const [car, c] of Object.entries(cand)) {
+    const ds = new Set(c.map(o => o.destId)), rd = (NTM_RID[op] || {})[c[0].rid];
+    if (c.length === 1) one.push({ car, ...c[0] });
+    else if (ds.size > 1 && rd && c.filter(o => o.destId === rd).length === 1) one.push({ car, ...c.find(o => o.destId === rd) });   // 兩個終點都對得上：照官網顏色
+  }
+  const out = {};
+  for (const c of one.sort((a, b) => Math.abs(a.late) - Math.abs(b.late))) {
+    if (Object.values(out).some(o => o.destId === c.destId && o.t === c.t && o.at === c.at)) continue;
+    out[c.car] = c;
+  }
+  return out;
 }
 
 // 時刻表只有終點站名：用車站清單把站名換成同一條線的站碼，才能和即時資料用同樣方式判斷方向
@@ -1390,7 +1644,9 @@ async function metroBoard(get, st) {
   // 即時說 30 分以上才到、但時刻表上同線同方向早 20 分以上就有車：這筆即時不採用；全部都不可信就只用時刻表
   if (b.live && b.tt.length) {
     const sideOf = t => metroSide(fix(t), st.ids);
-    const bogus = t => t.eta != null && t.eta > 30 && b.tt.some(x => x.line === t.line && x.eta >= 0 && x.eta < t.eta - 20 && (x.dest === t.dest || (x.side && x.side === sideOf(t))));
+    // 北捷官網一次列出 40 分鐘內的每一班（v2.47.0），遠的班次本來就晚於時刻表上的下一班，不套用這條規則
+    // 桃捷官網（src "tymetro"）同樣一次列出一小時內的每一班，也不套用；新北捷官網（src "ntmetro"）列出上游每一台車，也不套用
+    const bogus = t => t.src !== "official" && t.src !== "tymetro" && t.src !== "ntmetro" && t.eta != null && t.eta > 30 && b.tt.some(x => x.line === t.line && x.eta >= 0 && x.eta < t.eta - 20 && (x.dest === t.dest || (x.side && x.side === sideOf(t))));
     if (b.trains.some(bogus)) {
       b.trains = b.trains.filter(t => !bogus(t));
       if (!b.trains.some(t => t.eta != null)) { b.live = false; b.trains = b.tt; }
@@ -1403,8 +1659,24 @@ async function metroBoard(get, st) {
 }
 async function metroBoard0(get, st) {
   if (busPlusOK(st)) {
-    const trains = await trtcLive(st);
+    // v2.47.0：①北捷官網 → ②Bus+ → ③下面的 TDX 即時看板＋時刻表
+    const trains = await trtcOfficial(st) || await trtcLive(st);
     if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };   // 資料來源統一寫在設定頁
+  }
+  if (st.op === "TYMC") {
+    // 桃捷：①桃捷官網（直達／普通、車廂擁擠度）→ ②下面的 TDX 即時看板＋時刻表（官網失敗才走，不多打 TDX）
+    const trains = await tymcOfficial(st);
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };
+  }
+  if (NTM_LINE[st.op]) {
+    // 淡海／安坑輕軌：①新北捷官網 → ②下面的 TDX 即時看板＋時刻表（官網失敗才走，不多打 TDX）
+    const trains = await ntmOfficial(st);
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };
+  }
+  if (st.op === "KRTC" || st.op === "KLRT") {
+    // 原有來源就是 TDX：官網失敗才接回既有的即時看板、時刻表備援，不另增外部來源。
+    const trains = await krtcOfficial(st);
+    if (trains) return { kind: "metro", live: true, trains, groups: groupTrains("metro", st.ids, trains), note: null };
   }
   const filter = encodeURIComponent(st.ids.map(i => `StationID eq '${i}'`).join(" or "));
   let live = [];
@@ -1450,7 +1722,7 @@ let ttMetaP = null; const ttMem = {};
 // updated 一樣就直接用本機那份，雲端有新版才重新下載；連不到 Worker 時暫用本機那份（v2.19）
 async function ttMeta(force) {
   const proxy = getProxy(); if (!proxy) return { systems: {}, offline: true };
-  if (force || !ttMetaP) ttMetaP = fetch(`${proxy}/tt/meta${force ? "?t=" + Date.now() : ""}`).then(r => r.ok ? r.json() : { systems: {}, offline: true }).catch(() => (ttMetaP = null, { systems: {}, offline: true }));
+  if (force || !ttMetaP) ttMetaP = fetchT(`${proxy}/tt/meta${force ? "?t=" + Date.now() : ""}`, 12000).then(r => r.ok ? r.json() : { systems: {}, offline: true }).catch(() => (ttMetaP = null, { systems: {}, offline: true }));
   return ttMetaP;
 }
 // v2.27.4：軌道靜態資料（站序、站間時間、班距、首末班）手機端永久保存，直到伺服器那邊這個系統「換代」（/tt/meta 的 rgen：時刻表有新版時換）
@@ -1468,7 +1740,7 @@ async function ttLoad(op) {
     const c = await IDB.get("tt|" + op).catch(() => null);
     if (c && c.u === m.updated && c.d) return c.d;
     try {
-      const r = await fetch(`${getProxy()}/tt/data/${op}?v=${encodeURIComponent(m.updated)}`);
+      const r = await fetchT(`${getProxy()}/tt/data/${op}?v=${encodeURIComponent(m.updated)}`, 30000);
       if (!r.ok) throw new Error(r.status);
       const d = await r.json();
       IDB.set("tt|" + op, { u: m.updated, d }).catch(() => {});
@@ -2129,7 +2401,7 @@ async function metroTimetable(get, st, filter, all) {
 // 回傳 [{ label, trains }]，組內依時間排序；沒有班次的組放最後（介面不顯示）；每組最多8班
 function groupTrains(kind, a, b) {
   const ids = b === undefined ? [] : a, trains = b === undefined ? a : b;
-  const per = kind === "metro" ? 8 : 999, key = t => t.t ?? t.eta ?? 9999;
+  const per = kind === "metro" ? 8 : 999, key = t => (t.t != null ? t.t + (t.delay || 0) : t.eta ?? 9999);
   let groups;
   if (kind === "tra" || kind === "thsr") {
     groups = kind === "tra" ? [{ label: "順行", dir: 0, trains: [] }, { label: "逆行", dir: 1, trains: [] }] : [{ label: "南下", dir: 0, trains: [] }, { label: "北上", dir: 1, trains: [] }];
@@ -2149,7 +2421,7 @@ function groupTrains(kind, a, b) {
     }
     groups = [...m.values()].map(g => ({ label: "往 " + (g.dests.join("／") || "?") + (g.via ? `（${g.via}）` : ""), line: g.line, side: g.side, trains: g.trains }));
   }
-  for (const g of groups) g.trains = g.trains.slice().sort((a, b) => key(a) - key(b)).slice(0, per);
+  for (const g of groups) g.trains = g.trains.slice().sort((a, b) => key(a) - key(b) || (a.t ?? 0) - (b.t ?? 0)).slice(0, per);
   const first = g => g.trains.length ? key(g.trains[0]) : Infinity;
   return kind === "metro" ? groups.sort((a, b) => first(a) - first(b)) : groups.sort((a, b) => (a.trains.length ? 0 : 1) - (b.trains.length ? 0 : 1));
 }
@@ -2171,6 +2443,9 @@ function metroSide(t, ids) {
   const cur = (ids || []).map(i => String(i).toUpperCase()).flatMap(i => [i, ...Object.values(STN_ALIAS[i] || {})]).find(i => stnPre(i) === pre);
   const a = stnNum(cur), b = stnNum(d);
   if (a == null || b == null || a === b) return byDir;
+  // 淡海輕軌藍海線支線 V26～V28：行車順序 V09→V28→V27→V26，站號往淡水漁人碼頭遞減。
+  // 在支線站上，往 V26 那頭（終點是站號較小的支線站）＝up（和幹線站往淡水漁人碼頭同一邊），往 V09／V01（紅樹林）＝dn
+  if (pre === "V" && a >= 26 && a <= 28) return b >= 26 && b < a ? "up" : "dn";
   return b > a ? "up" : "dn";
 }
 
@@ -2779,8 +3054,8 @@ async function authedGet(path) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   const s = getSession();
   let r, j = null;
-  try { r = await fetch(proxy + path, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }
-  catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  try { r = await fetchT(proxy + path, 30000, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }   // 30 秒：含路線規劃、大型清單下載
+  catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
   if (!r.ok) { const m = j && (j.message || j.Message); throw new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); }
   return j;
 }
