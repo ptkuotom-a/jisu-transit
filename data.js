@@ -1546,6 +1546,10 @@ function pickDay(recs, info) {
   const x = recs.filter(r => r.ServiceDay && r.ServiceDay[info.key] === true);
   return x.length ? x : recs;
 }
+// v2.46.4 捷運車種：TDX Timetables[i].TrainType（1普通、2直達…），沒有就看 StoppingPatternID（SP2／含 express＝直達）
+// 存成 rows 第8欄代碼："X"＝直達（TrainType 2）、其他數字照原值；普通車＝空字串（不加第8欄）
+const ttTyCode = t => { const ty = +t.TrainType; if (ty > 1) return ty === 2 ? "X" : String(ty); if (ty === 1) return ""; return /^SP2$|express/i.test(String(t.StoppingPatternID || "")) ? "X" : ""; };
+const ttCodeTy = c => !c ? 1 : c === "X" ? 2 : +c > 1 ? +c : 1;
 const svcDate = (offsetDays = 0) => { const d = new Date(); if (d.getHours() < 3) d.setDate(d.getDate() - 1); d.setDate(d.getDate() + offsetDays); return d; };
 
 // 手動更新：瀏覽器向 TDX（經 Worker、金鑰3）抓整個系統，壓縮後存回 Worker KV。回傳用了幾次 TDX 呼叫
@@ -1586,8 +1590,11 @@ async function ttRefresh(op, pass, onStep, opt = {}) {
     const sds = [], rows = [];
     for (const r of all) {
       const m = sdMask(r.ServiceDay); let i = sds.findIndex(x => x.m === m); if (i < 0) { sds.push({ m, tag: r.ServiceDay && r.ServiceDay.ServiceTag || "" }); i = sds.length - 1; }
-      const times = (r.Timetables || []).map(t => hm(t.DepartureTime || t.ArrivalTime)).filter(Boolean).map(x => x.replace(":", ""));
-      rows.push([r.StationID, r.LineID || r.LineNO || "", r.Direction ?? "", r.DestinationStaionID || r.DestinationStationID || "", zh(r.DestinationStaionName) || zh(r.DestinationStationName) || "", i, times.join(" ")]);
+      // v2.46.4：同一筆裡有不同車種（桃園捷運直達車）就拆成多列，第8欄＝車種代碼（ttTyCode）；普通車照舊只有7欄
+      const byTy = new Map([["", []]]);
+      for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (!x) continue; const c = ttTyCode(t); if (!byTy.has(c)) byTy.set(c, []); byTy.get(c).push(x.replace(":", "")); }
+      const base = [r.StationID, r.LineID || r.LineNO || "", r.Direction ?? "", r.DestinationStaionID || r.DestinationStationID || "", zh(r.DestinationStaionName) || zh(r.DestinationStationName) || "", i];
+      for (const [c, times] of byTy) { if (!times.length && (c || byTy.size > 1)) continue; rows.push(c ? [...base, times.join(" "), c] : [...base, times.join(" ")]); }
       if (r.VersionID != null) version = vmax(version, r.VersionID);   // v2.27：版本取數字最大（以前是字串比較）
     }
     if (!version) for (const r of all) if (r.UpdateTime) version = vmax(version, r.UpdateTime.slice(0, 10));
@@ -2046,10 +2053,12 @@ function buildTrips(tt) {
   return { v: 1, op: tt.op, kind: "trips", sd: tt.sd, groups, trips, stats };
 }
 // 把儲存的捷運列轉回 TDX StationTimeTable 的樣子，沿用原本的處理邏輯
+// v2.46.4：第8欄車種代碼（沒有＝普通車，舊資料就是這樣）帶回每個 Timetables 項目的 TrainType
 function ttMetroRecs(tt, ids) {
   const want = new Set(ids);
-  return tt.rows.filter(r => want.has(r[0])).map(r => ({ StationID: r[0], LineID: r[1] || null, Direction: r[2] === "" ? null : +r[2], DestinationStationID: r[3] || null,
-    DestinationStationName: { Zh_tw: r[4] }, ServiceDay: { ...sdObj(tt.sd[r[5]].m), ServiceTag: tt.sd[r[5]].tag }, Timetables: r[6] ? r[6].split(" ").map(x => ({ DepartureTime: x.slice(0, 2) + ":" + x.slice(2) })) : [] }));
+  return tt.rows.filter(r => want.has(r[0])).map(r => { const ty = ttCodeTy(r[7]);
+    return { StationID: r[0], LineID: r[1] || null, Direction: r[2] === "" ? null : +r[2], DestinationStationID: r[3] || null,
+    DestinationStationName: { Zh_tw: r[4] }, ServiceDay: { ...sdObj(tt.sd[r[5]].m), ServiceTag: tt.sd[r[5]].tag }, Timetables: r[6] ? r[6].split(" ").map(x => ty > 1 ? { DepartureTime: x.slice(0, 2) + ":" + x.slice(2), TrainType: ty } : { DepartureTime: x.slice(0, 2) + ":" + x.slice(2) }) : [] }; });
 }
 const hhmm4 = x => x ? x.slice(0, 2) + ":" + x.slice(2) : null;
 // 台鐵／高鐵：某站今天（依營運日）停靠的班次。都從雲端拿（railDayTt）：先用當天的實際時刻表（/tt/day，KV 快取），
@@ -2092,8 +2101,8 @@ async function metroTimetable(get, st, filter, all) {
     const line = brLine(st.op, r.LineID || r.LineNO || lineOf(st.op, r.StationID), r.StationID, r.DestinationStationID, dest);
     const dir = r.Direction ?? null;
     const k = dest + "|" + line + "|" + dir;
-    const set = byKey[k] = byKey[k] || { dest, destId: r.DestinationStationID || null, line, dir, times: new Set() };
-    for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (x) set.times.add(x); }
+    const set = byKey[k] = byKey[k] || { dest, destId: r.DestinationStationID || null, line, dir, times: new Set(), ex: new Set() };
+    for (const t of (r.Timetables || [])) { const x = hm(t.DepartureTime || t.ArrivalTime); if (x) { set.times.add(x); if (t.TrainType > 1) set.ex.add(x); } }   // ex：直達車的時刻
   }
   return byKey; };
   const byKey = build(todays), byKeyT = build(tomorrows);
@@ -2104,13 +2113,13 @@ async function metroTimetable(get, st, filter, all) {
   for (const g of Object.values(byKey)) {
     if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
-    let up = ts.filter(o => o.t >= now - ((st.op === "TRTC" || st.op === "NTMC") ? 4 : 25));
+    let up = ts.filter(o => o.t >= now - ((st.op === "TRTC" || st.op === "NTMC") ? 4 : 25)), ex = g.ex;
     if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
-      const gT = byKeyT[g.dest + "|" + g.line + "|" + g.dir] || g;
+      const gT = byKeyT[g.dest + "|" + g.line + "|" + g.dir] || g; ex = gT.ex;
       up = [...gT.times].map(x => ({ x, t: (toMin(x) < 180 ? toMin(x) + 1440 : toMin(x)) + 1440 })).sort((a, b) => a.t - b.t);
     }
     up.slice(0, all ? 999 : 3)
-      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, destId: g.destId, dir: g.dir, line: g.line, via: g.via || null, eta: o.t - now }));
+      .forEach(o => trains.push({ time: o.x, t: o.t, dest: g.dest, destId: g.destId, dir: g.dir, line: g.line, via: g.via || null, eta: o.t - now, ...(ex.has(o.x) ? { ex: true } : {}) }));
   }
   trains.sort((a, b) => a.t - b.t);
   return trains;
@@ -3702,9 +3711,9 @@ async function stationTTMetro(p, day, di, base) {
       (dirsOf[dest + "|" + line] = dirsOf[dest + "|" + line] || new Set()).add(dir);
       for (const x0 of (r.Timetables || [])) {
         const x = hm(x0.DepartureTime || x0.ArrivalTime); if (!x) continue;
-        const k = [line, dest, dir, x].join("|"); if (seen.has(k)) continue; seen.add(k);
+        const ex = x0.TrainType > 1, k = [line, dest, dir, x, ex ? "X" : ""].join("|"); if (seen.has(k)) continue; seen.add(k);   // v2.46.4：直達車（ex）和同時刻的普通車分開算
         const v = toMin(x);
-        list.push(fix({ time: x, t: v < 180 ? v + 1440 : v, dest, destId: r.DestinationStationID || null, line, dir, via: null }));
+        list.push(fix({ time: x, t: v < 180 ? v + 1440 : v, dest, destId: r.DestinationStationID || null, line, dir, via: null, ...(ex ? { ex: true } : {}) }));
       }
     }
     const trains = list.filter(t => !(t.destId && ids.includes(t.destId)));
