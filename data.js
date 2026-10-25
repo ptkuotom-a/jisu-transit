@@ -784,7 +784,33 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       };
       rawMap.set(key, { name, uid, pos, r });
     }
-    const raw = [...rawMap.values()];
+    let raw = [...rawMap.values()];
+    // /od/stops 未覆蓋的站牌，以雲端站序座標補距離；只查缺座標的路線一次。
+    const missing = [...new Set(raw.filter(row => !row.pos && row.r.routeUID).map(row => row.r.routeUID))].slice(0, 60);
+    const sor = {};
+    const wantSor = [];
+    for (const uid of missing) {
+      const cached = sorMem.get("uid|" + uid);
+      if (cached) sor[uid] = cached;
+      else wantSor.push(uid);
+    }
+    if (wantSor.length) {
+      const got = await cloudSor(wantSor).catch(() => ({}));
+      for (const [uid, rows] of Object.entries(got)) { sor[uid] = rows; sorMem.set("uid|" + uid, rows); }
+    }
+    for (const row of raw) if (!row.pos && row.r.routeUID && row.uid) {
+      const seq = (sor[row.r.routeUID] || []).filter(x => (x.Direction === 1 ? 1 : 0) === row.r.dirNum);
+      let hit = null;
+      for (const route of seq) for (const stop of route.Stops || []) {
+        if (stop.StopUID !== row.uid || !Array.isArray(stop.P)) continue;
+        const [lat, lon] = stop.P;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const d = haversine(loc.latitude, loc.longitude, lat, lon);
+        if (!hit || d < hit.d) hit = { d, lat, lon, sid: null, bear: null };
+      }
+      if (hit) row.pos = hit;
+    }
+    raw = raw.filter(row => !row.pos || row.pos.d <= busR);
     // v2.41.0：同名公車站分卡。分馬路兩側靠方向，不靠距離（實測同側可差 30 公尺、對側可只差 10 公尺）。
     // 1. 同一根站牌：同 StationID，沒有 StationID 時同座標（雙北座標只到小數 4 位，同一根站牌座標完全相同）。
     // 2. 方向：站牌的 Bearing（其他縣市 TDX 原生；雙北由雲端用站序算好）。沒有才用往下一站方位補。
