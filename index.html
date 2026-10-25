@@ -282,6 +282,10 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .ttidx>div{display:flex;flex-direction:column;align-items:center;gap:1px;padding-top:4px}
 .ttidx button{font-size:12px;font-weight:700;color:var(--blue,#6FB3FF);padding:1px 0;font-variant-numeric:tabular-nums;line-height:1.35}
 .ttidx button.past{color:var(--dim)}
+/* v2.46.3：按住索引列上下拖曳＝即時跳到手指那個整點；拖曳中那個數字亮綠，其他變暗 */
+.ttidx{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.ttidx.drag button{opacity:.4}
+.ttidx.drag button.on{opacity:1;color:var(--lime);font-weight:900}
 .ttg{margin-right:32px;margin-top:6px}
 .tth{display:flex;align-items:baseline;gap:8px;background:var(--surface);border-radius:12px;padding:7px 14px;font-size:19px;font-weight:800;margin-top:6px}
 .tth span{margin-left:auto;font-size:12.5px;color:var(--muted);font-weight:600}.tth small{font-size:11px;color:var(--muted)}
@@ -296,7 +300,6 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .ttm .ttn .tto{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block;font-style:normal}
 .ttm.past{opacity:.38}
 .ttm.next{background:rgba(198,241,53,.16)}
-.ttm.next::after{content:"下一班";position:absolute;top:-1px;right:1px;font-size:9.5px;color:var(--lime);font-weight:800}
 .ttm.sel{background:var(--lime);opacity:1}.ttm.sel,.ttm.sel .ttlb,.ttm.sel .ttlb .lf{color:var(--ink)!important}
 .ttdet{grid-column:1/-1;margin:6px 0 4px;border:2px solid var(--lime);border-radius:16px;background:var(--bg);overflow:hidden}
 .ttdet .h{display:flex;align-items:center;gap:12px;padding:10px 14px;font-size:21px;font-weight:700;border-bottom:1px solid var(--line)}
@@ -1769,6 +1772,41 @@ function ttGrid(items, o) {
 }
 const ttDet = (time, wait, rows, btn) => `<div class="ttdet"><div class="h"><button data-act="ttClose" aria-label="收起">✕</button>${time}${wait != null ? `<span class="eta">${wait < 1 ? '即將發車' : wait + ' 分後'}</span>` : ''}</div>${rows.filter(Boolean).map(([k, v]) => `<div class="kv2"><span>${k}</span><span>${v}</span></div>`).join('')}${btn || ''}</div>`;
 const curTT = () => S.page === 'bustt' ? S.bustt : S.sttt;
+// 跳到某個整點：只捲清單本身（.sttlist），不用 scrollIntoView，免得 iOS 連整頁一起捲
+const ttJump = (hh, smooth) => { const L = document.querySelector('#routePage .sttlist'), h = L && L.querySelector('#tth' + hh); if (h) L.scrollTo({ top: Math.max(0, h.offsetTop - 4), behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' }); };
+// v2.46.3：展開的車次方框被清單下緣（或蓋在上面的底部功能列／提醒列）擋住時，捲清單讓方框底部留 8px；已完整可見就不捲
+function ttShowDet() {
+  const L = document.querySelector('#routePage .sttlist'), d = L && L.querySelector('.ttdet'); if (!d) return;
+  const lr = L.getBoundingClientRect(); let lim = lr.bottom;
+  for (const b of [$('#tabbar'), $('#rbar')]) {   // 功能列在路線頁底下（z-index 較低）時不算；真的蓋在上面才以它的上緣為界
+    if (!b || b.hidden) continue; const r = b.getBoundingClientRect(); if (!r.height || r.top >= lim) continue;
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (hit && b.contains(hit)) lim = r.top;
+  }
+  const dr = d.getBoundingClientRect(), over = dr.bottom - (lim - 8); if (over <= 0) return;
+  const s = L.querySelector('.ttm.sel'), room = (s ? s.getBoundingClientRect().top : dr.top) - lr.top - 4;   // 方框太高時，至少讓點的那班留在清單上緣
+  const dy = Math.min(over, Math.max(0, room)); if (dy > 0) L.scrollTo({ top: L.scrollTop + dy, behavior: reduceMotion() ? 'auto' : 'smooth' });
+}
+// v2.46.3 整點索引列：按住上下拖曳即時跳到手指所在的整點（像 Yahoo!乗換案内）；點一下照舊走 ttHr。綁在 #routePage 上（render 會重建清單）
+(() => {
+  const pg = $('#routePage'); let idx = null, cur = null, moved = false;
+  const pick = y => { let b = null, bd = Infinity; for (const x of idx.querySelectorAll('button')) { const r = x.getBoundingClientRect(), d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0; if (d < bd) { bd = d; b = x; } } return b; };
+  const mark = b => { if (cur && cur !== b) cur.classList.remove('on'); cur = b; if (b) b.classList.add('on'); };
+  const end = e => { if (!idx) return; if (moved && e.type === 'touchend') e.preventDefault();   // 拖過就不要再觸發 click（會跳回按下的那個整點）
+    idx.classList.remove('drag'); mark(null); idx = null; };
+  pg.addEventListener('touchstart', e => {
+    const x = e.touches.length === 1 && e.target.closest('.ttidx'); if (!x) return;
+    idx = x; moved = false; idx.classList.add('drag'); mark(pick(e.touches[0].clientY));
+  }, { passive: true });
+  pg.addEventListener('touchmove', e => {
+    if (!idx) return;
+    e.preventDefault();   // 不讓清單／整頁跟著原生捲動
+    if (!idx.isConnected) { idx = pg.querySelector('.ttidx'); if (!idx) return; idx.classList.add('drag'); cur = null; }   // 拖曳中重畫了
+    const b = pick(e.touches[0].clientY); if (!b) return;
+    if (b !== cur || !moved) { mark(b); ttJump(b.dataset.v, false); }
+    moved = true;
+  }, { passive: false });
+  pg.addEventListener('touchend', end); pg.addEventListener('touchcancel', end);
+})();
 // 台鐵車種：小字縮寫與顏色（區間車最常見，不標）
 // 用完整車種名稱判斷（TDX：「自強(3000)(EMU3000 型電車)」「自強(普悠瑪)」「自強(太魯閣)」）
 const TR_AB = [['3000', '新自', '#FF8A4C', 'EMU3000 新自強'], ['普悠瑪', '普悠', '#FF8FB1', '普悠瑪'], ['太魯閣', '太', '#E86AD8', '太魯閣'], ['區間快', '快', '#5AD1E6', '區間快'], ['自強', '自', '#FF6B6B', '自強'], ['莒光', '莒', '#FFB03A', '莒光'], ['復興', '復', '#FFB03A', '復興'], ['普快', '普快', '#B9A7FF', '普快'], ['區間', '', '', '區間']];
@@ -2808,9 +2846,9 @@ document.addEventListener('click', e => {
     case 'tab': window.tabPager ? tabPager(el.dataset.v) : setTab(el.dataset.v); break;
     case 'route': closeSheetQuiet(); if (o) openRoute(o); break;
     case 'schOpen': schOpen(); break;
-    case 'ttSel': { const T = curTT(); if (T) { T.sel = T.sel === el.dataset.v ? null : el.dataset.v; S.page === 'bustt' ? renderBustt() : renderSttt(); } break; }
+    case 'ttSel': { const T = curTT(); if (T) { T.sel = T.sel === el.dataset.v ? null : el.dataset.v; S.page === 'bustt' ? renderBustt() : renderSttt(); if (T.sel) ttShowDet(); } break; }
     case 'ttClose': { const T = curTT(); if (T) { T.sel = null; S.page === 'bustt' ? renderBustt() : renderSttt(); } break; }
-    case 'ttHr': { const L = document.querySelector('#routePage .sttlist'), h = L && L.querySelector('#tth' + el.dataset.v); if (h) L.scrollTo({ top: Math.max(0, h.offsetTop - 4), behavior: reduceMotion() ? 'auto' : 'smooth' }); break; }
+    case 'ttHr': ttJump(el.dataset.v, true); break;
     case 'busTrip': busTripSheet(el.dataset.v); break;
     case 'sbOne': sbRun([el.dataset.v]); break;
     case 'sbMissing': { const st = SB.st || {}; sbRun(SCH_CITIES.filter(([c]) => !st[c]).map(x => x[0])); break; }
