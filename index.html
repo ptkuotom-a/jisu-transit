@@ -420,6 +420,7 @@ html.locked,html.locked body{overflow:hidden}
 .planbar .pbi{flex:none;width:36px;height:36px;border-radius:12px;background:var(--lime);color:var(--ink);display:grid;place-items:center}.planbar .pbi svg{width:20px;height:20px}
 .planbar .pbt{flex:1;min-width:0;font-size:16px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.planbar .pbt small{margin-left:8px;font-size:13px;font-weight:500;color:var(--muted)}
 .planbar .pbc{flex:none;color:var(--lime);display:grid;place-items:center}.planbar .pbc svg{width:20px;height:20px}
+.subtag{display:inline-block;margin-left:5px;padding:0 5px;border-radius:6px;font-size:11px;font-weight:700;line-height:16px;background:#16A86B;color:#fff;vertical-align:1px}
 .pbox{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:4px 10px 4px 18px;margin-top:4px}
 .pfield{display:flex;align-items:center;gap:14px;width:100%;text-align:left;padding:12px 0;min-height:62px}.pfield + .pfield{border-top:1px solid var(--line)}
 .pdot{flex:none;width:14px;height:14px;border-radius:50%;border:3px solid var(--lime)}.pdot.d{background:var(--lime);border-radius:4px}
@@ -1541,7 +1542,7 @@ function destNear(R, x, y) {
 }
 function railTabsMetro(R, D, G) {
   const order = R.op === 'KRTC' ? [...(R.lines || [])].sort((a, b) => (a === 'R' ? 0 : a === 'O' ? 1 : 2) - (b === 'R' ? 0 : b === 'O' ? 1 : 2)) : [...(R.lines || [])], lines = new Map();
-  const put = (l, key, kind, t) => { if (!lines.has(l)) lines.set(l, new Map()); const m = lines.get(l); if (!m.has(key)) m.set(key, { key, live:[], tt:[], dests:[] }); const x = m.get(key); x[kind].push(t); if (t.dest && !x.dests.includes(t.dest)) x.dests.push(t.dest); };
+  const put = (l, key, kind, t) => { if (!lines.has(l)) lines.set(l, new Map()); const m = lines.get(l); if (!m.has(key)) m.set(key, { key, live:[], tt:[], dests:[] }); const x = m.get(key); x[kind].push(t); if (t.dest && !x.dests.includes(t.dest) && !(kind === 'live' && R.op === 'KLRT' && t.dest === '環狀輕軌' && x.tt.length)) x.dests.push(t.dest); };
   for (const t of (D.tt || [])) put(t.line || '', t.via || t.side || 'x' + t.dest, 'tt', t);
   if (D.live) for (const g of G) for (const t of g.trains) {   // 即時列車放進同終點（同順逆行）的時刻表分頁
     const l = g.line || '', m = lines.get(l);
@@ -1575,12 +1576,13 @@ function railTabsMetro(R, D, G) {
       if (lest) { rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, liveDep: le, crowd: lv.crowd || null, ex: lv.ex, t: null, time: null, liveOnly: true }); continue; }
       let bi = -1;
       const same = [], typed = lv.src === 'tymetro';   // 桃捷官網有車種
+      const klrtGeneric = R.op === 'KLRT' && (lv.dest === '環狀輕軌' || (lv.src === 'krtc' && lv.line === 'C'));
       // 同終點：時刻表也有標車種時直達只配直達、普通只配普通（同時刻同終點的兩班不可合併）；時刻表沒標就不限制
       // 終點不同但相鄰（destNear）：一定要車種相同，時刻表沒標車種就不配，避免把同時刻的普通與直達併成一列
       const near = new Set();
       rows.forEach((r, i) => {
         if (used.has(i) || r.eta == null) return;
-        if (r.dest === lv.dest) { if (!typed || !ttEx.has(lv.dest) || !!r.ex === !!lv.ex) same.push(i); }
+        if (r.dest === lv.dest || (klrtGeneric && !r.liveOnly && (r.via || null) === (lv.via || null))) { if (!typed || !ttEx.has(lv.dest) || !!r.ex === !!lv.ex) same.push(i); }
         else if (typed && !!r.ex === !!lv.ex && destNear(R, r, lv)) { same.push(i); near.add(i); }
       });
       // 16:15 進站中是 16:16 那班，不是已過點的 16:13。先對差 2 分鐘以內、且還沒過表定的班；時間差一樣時優先同終點
@@ -1597,7 +1599,10 @@ function railTabsMetro(R, D, G) {
       });
       // 配上表定班次後，車種以官網為準（原本沿用時刻表的 ex，時刻表沒標直達時「直達」就不見了）
       if (bi >= 0) { used.add(bi); rows[bi].live = lv.eta; rows[bi].liveDep = le; rows[bi].crowd = lv.crowd || null; if (typed) rows[bi].ex = lv.ex; }
-      else rows.push({ dest: lv.dest, destId: lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, liveDep: le, crowd: lv.crowd || null, ex: lv.ex, t: null, time: null, liveOnly: true });
+      else {
+        const nearest = klrtGeneric ? T.tt.filter(r => (r.via || null) === (lv.via || null) && r.eta != null).reduce((best, r) => !best || Math.abs(r.eta - lm) < Math.abs(best.eta - lm) ? r : best, null) : null;
+        rows.push({ dest: nearest?.dest || lv.dest, destId: nearest?.destId || lv.destId, line: lv.line, via: lv.via, eta: lv.eta, live: lv.eta, liveDep: le, crowd: lv.crowd || null, ex: lv.ex, t: null, time: null, liveOnly: true });
+      }
     }
     // 桃捷依開車時間排（官網發車倒數、表定用時刻表時間），右側仍顯示到站倒數；其他系統照到站時間
     const ord = R.op === 'TYMC' ? x => x.liveDep ?? x.live ?? x.eta ?? 9999 : x => x.live ?? x.eta ?? 9999;
@@ -2055,6 +2060,7 @@ async function loadRoute(scroll) {
   let data = null, err = null;
   try { data = await api('route', { ...R }); } catch (e) { err = e.message; }
   if (tok !== S.routeTok || S.route !== R) return;
+  if (data && (data.dirNum === 0 || data.dirNum === 1) && data.dirNum !== R.dirNum) R.dirNum = data.dirNum;   // 單向路線：改成實際有資料的方向
   if (data) { S.routeData = data; S.routeError = null; S.routeAt = Date.now(); (S.liveCache = S.liveCache || {})['route:' + R.routeUID + '|' + R.dirNum + '|' + (R.stopUID || '')] = { data, at: Date.now() }; } else S.routeError = err || '沒有資料';
   S.routeLoading = false; renderRoute();
   if (scroll) { const el = document.querySelector('.st.here'); if (el) el.scrollIntoView({ block:'center' }); }
@@ -2076,7 +2082,7 @@ function routeHtml() {
       const f = { routeUID:D.routeUID, route:R.route, dirNum:R.dirNum, stopUID:s.uid, stopName:s.name, dest };
       const on = isFavBus(f);
       return `<div class="st ${s.here?'here':''} ${s.bus?'bus':''}"><span class="dot">${s.bus ? I.busFill : ''}</span>
-        <button class="sn" data-act="remindAt" data-i="${reg({ i })}">${esc(s.name)}${s.bus && s.plate ? `<small>${esc(s.plate)}</small>` : ''}</button>${etaPill(s)}
+        <button class="sn" data-act="remindAt" data-i="${reg({ i })}">${esc(s.name)}${s.bus && s.plate ? `<small>${esc(s.plate)}${s.sub ? `<b class="subtag">${esc(s.sub)}</b>` : ''}</small>` : ''}</button>${etaPill(s)}
         <button class="fav ${on?'on':''}" data-act="favBus" data-i="${reg(f)}" aria-label="${on?'取消收藏':'收藏'}">${on ? I.star : I.starO}</button></div>`;
     }).join('') + `</div>`;
   }
@@ -2224,11 +2230,16 @@ function busTripSheet(key) {   // 停靠站一覽：這一班在各站的表定�
 /* ---------- sheets ---------- */
 function openSheet(html) { const w = $('#sheetWrap'); $('#sheet').innerHTML = '<div class="grab"></div>' + html; w.hidden = false; requestAnimationFrame(() => w.classList.add('open')); }
 function closeSheet() { const w = $('#sheetWrap'); w.classList.remove('open'); setTimeout(() => { w.hidden = true; S.sheet = null; if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
-function stopSheet(s) {
+function stopSheet(s, nwtDone) {
   S.sheet = { type:'stop', s };
   openSheet(`<h2>${esc(s.name)}${sideTag(s)}</h2><div class="addr">距離${distTxt(s.dist)}，${s.routes.length}條路線</div>` +
     stopBlock(s, 0).replace('<div class="stop">','<div class="stop" style="background:none;border:0;padding:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '') +
     (s.lat ? `<div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="nav" data-lat="${s.lat}" data-lon="${s.lon}">${I.nav}步行前往</button></div>` : ''));
+  if (!nwtDone && s.routes && s.routes.some(r => r.routeUID && /^(NWT|TAO|THB|KEE|ILA|HSQ|MIA|CHA|NAN|YUN|CYI|CYQ|PIF|HUA|TTT|PEN|HSZ|TXG|TNN|KHH|LIE|KIN)/.test(r.routeUID))) {   // 官網即時來源只補一次，不輪詢
+    api('refreshNwtRoutes', { routes: s.routes }).then(() => {
+      if (S.sheet?.s === s) stopSheet(s, true);
+    }).catch(() => {});
+  }
 }
 function bikeSheet(b) {
   S.sheet = { type:'bike', b };
@@ -2969,7 +2980,7 @@ document.addEventListener('click', e => {
     case 'stop': if (o) stopSheet(o); break;
     case 'bikeSheet': if (o) bikeSheet(o); break;
     case 'stopAt': if (o) { const s0 = { ...o, dist:null, routes:[] }; stopSheet(s0); $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
-      api('stopAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(s => { if (S.sheet?.s === s0) stopSheet(s); }).catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg(o)}"`); }); } break;
+      api('stopAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(s => { if (S.sheet?.s === s0) stopSheet(s, true); }).catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg(o)}"`); }); } break;
     // 讀取失敗後的「重試」：只在按下時重讀一次
     case 'retry': S.error = null; render(); refresh(); break;
     case 'retryPart': el.disabled = true; el.textContent = '重新讀取中…'; refresh(el.dataset.v); break;
