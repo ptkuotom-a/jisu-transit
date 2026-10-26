@@ -1594,7 +1594,7 @@ function railTabsMetro(R, D, G) {
       });
       if (bi < 0) same.forEach(i => {
         const late = lm - rows[i].eta;
-        if (late < 0 || late >= 4) return;
+        if (late < 0 || late >= (R.op === 'KLRT' ? 7 : 4)) return;
         if (bi < 0 || rows[i].eta > rows[bi].eta) bi = i;
       });
       // 配上表定班次後，車種以官網為準（原本沿用時刻表的 ex，時刻表沒標直達時「直達」就不見了）
