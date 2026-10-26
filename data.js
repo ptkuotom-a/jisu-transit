@@ -70,17 +70,17 @@ async function tdx(profile, url) {
 }
 
 // ---------- v2.36 開放資料（臺北市、新北市政府交通局）：經 Worker /od/*，不耗 TDX ----------
-async function odGet(path) {
+async function odGet(path, timeoutMs = 15000) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   let r, j = null;
-  try { r = await fetchT(proxy + path, 15000); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  try { r = await fetchT(proxy + path, timeoutMs); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
   if (!r.ok || !j) throw new Error((j && j.message) || ("開放資料讀取失敗 " + r.status));
   return j;
 }
 const odMemo = new Map();
-async function odMemoGet(path, ms) {   // 同一網址 ms 毫秒內重用（YouBike 與原本的 90 秒相同；下拉更新傳 0）
+async function odMemoGet(path, ms, timeoutMs = 15000) {   // 同一網址 ms 毫秒內重用（YouBike 與原本的 90 秒相同；下拉更新傳 0）
   const h = odMemo.get(path); if (h && Date.now() - h.t < ms) return h.v;
-  const v = await odGet(path); if (!v.err) odMemo.set(path, { t: Date.now(), v });   // 部分來源失敗的結果不重用 if (odMemo.size > 40) odMemo.delete(odMemo.keys().next().value);
+  const v = await odGet(path, timeoutMs); if (!v.err) odMemo.set(path, { t: Date.now(), v });   // 部分來源失敗的結果不重用 if (odMemo.size > 40) odMemo.delete(odMemo.keys().next().value);
   return v;
 }
 function odWarm(src) {   // 不等回應、失敗不管；只在附近資料更新時發一次（不是定時）
@@ -238,7 +238,7 @@ async function odRouteEta(routeUID, near, routeName) {
   if (isNwtR(routeUID)) {
     if (routeName) {
       try {
-        const j = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(routeName)}`, 15000);
+        const j = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(routeName)}`, 15000, 17000);
         if (j && Array.isArray(j.list) && j.list.length) return j;
       } catch (e) {}
     }
@@ -899,7 +899,7 @@ async function refreshNwtRoutes(routes) {
   await Promise.all([...byRoute.entries()].map(async ([routeUID, { name, items }]) => {
     let res = null;
     if (isNwtR(routeUID)) {
-      try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, 15000); } catch (e) {}
+      try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, 15000, 17000); } catch (e) {}
     } else if (isTaoR(routeUID)) {
       res = await taoRouteEta(routeUID);
     } else {
@@ -1994,7 +1994,8 @@ function traProcessRows(rows, delay, now = nowMin()) {
 }
 
 function traOfficialBoard(official, storedRows) {
-  const delay = {};
+  const delay = {}, peek = traAllPeek(); // 官網未列誤點時，若有 60 秒內已抓的 TDX 全台動態就補上
+  if (Array.isArray(peek)) for (const t of peek) if (t.TrainNo != null && typeof t.DelayTime === "number") delay[String(t.TrainNo)] = t.DelayTime;
   for (const t of official.trains) if (t.no != null && typeof t.delay === "number") delay[String(t.no)] = t.delay;
   let rows = (storedRows && storedRows.length) ? storedRows : official.trains.map(t => ({
     no: String(t.no),
@@ -3120,11 +3121,11 @@ async function metroTimetable(get, st, filter, all) {
   return byKey; };
   const byKey = build(todays), byKeyT = build(tomorrows);
   const trains = [];
-  // 同一終點有兩個方向（環狀線）時補上方向；高雄輕軌 Direction 0 = 逆行、1 = 順行（已對照即時看板）
+  // 同一終點有兩個方向（環狀線）時補上方向；高雄輕軌 TDX 時刻表 Direction 1＝逆行、0＝順行
   const dirsOf = {};
   for (const g of Object.values(byKey)) (dirsOf[g.dest + "|" + g.line] = dirsOf[g.dest + "|" + g.line] || new Set()).add(g.dir);
   for (const g of Object.values(byKey)) {
-    if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "順行" : "逆行") : `方向${g.dir}`;
+    if (dirsOf[g.dest + "|" + g.line].size > 1) g.via = st.op === "KLRT" ? (g.dir === 1 ? "逆行" : "順行") : `方向${g.dir}`;
     const ts = [...g.times].map(x => ({ x, t: toMin(x) < 180 ? toMin(x) + 1440 : toMin(x) })).sort((a, b) => a.t - b.t);
     let up = ts.filter(o => o.t >= now - ((st.op === "TRTC" || st.op === "NTMC") ? 4 : 25)), ex = g.ex;
     if (!up.length && all) {                                                   // 今日已收班：列出明日（依明日營運日）班次
@@ -4735,7 +4736,7 @@ async function stationTTMetro(p, day, di, base) {
     }
     const trains = list.filter(t => !(t.destId && ids.includes(t.destId)) || TRIP_LOOP[op + "|" + t.line]);
     for (const t of trains) {
-      if (dirsOf[t.dest + "|" + t.line].size > 1) t.via = op === "KLRT" ? (t.dir === 1 ? "順行" : "逆行") : `方向${t.dir}`;
+      if (dirsOf[t.dest + "|" + t.line].size > 1) t.via = op === "KLRT" ? (t.dir === 1 ? "逆行" : "順行") : `方向${t.dir}`;
       t.side = metroSide(t, ids);
     }
     trains.sort((a, b) => a.t - b.t);
@@ -4881,7 +4882,7 @@ async function railFix(leg, { p0, a0, ready, readyX, limit, stOf, first, avoid, 
   }
   return { c, sys, note: why };
 }
-const KLRT_DIR = d => d === 1 ? "順行" : "逆行";   // 高雄輕軌 Direction 1＝順行、0＝逆行（已對照即時看板）
+const KLRT_DIR = d => d === 1 ? "逆行" : "順行";   // 高雄輕軌 TDX 時刻表 Direction 1＝逆行、0＝順行
 const NTD_LINE = { V11: "紅樹林－崁頂", V26: "紅樹林－淡水漁人碼頭" };
 async function planTtFix(routes, opt = {}) {
   const stMemo = new Map();
