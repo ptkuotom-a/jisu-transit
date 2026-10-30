@@ -1556,12 +1556,8 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       ps.get(k).rows.push(row);
     }
     const need = [];
-    for (const ps of Object.values(polesOf)) {
-      if (ps.size < 2) continue;
-      for (const p of ps.values()) for (const row of p.rows) {
-        if (row.pos && B8[row.pos.bear] != null) continue;
-        if (row.r.routeUID && row.uid) need.push({ routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null });
-      }
+    for (const row of raw) {
+      if (row.r.routeUID && row.uid) need.push({ routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null });
     }
     let heads = {}, destMap = {};
     const [hR, dR] = await Promise.all([
@@ -1607,6 +1603,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
         const g = { name, dist: near ? near.pos.d : null, lat: near ? near.pos.lat : null, lon: near ? near.pos.lon : null, bear, dirs: ms.flatMap(p => p.dirs), routes: {} };
         for (const p of ms) for (const row of p.rows) {
           row.r.dest = destOf(row.r.routeUID, row.r.dirNum, destMap);
+          row.r.head = heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`] ?? (row.pos && B8[row.pos.bear] != null ? B8[row.pos.bear] : null);
           const rk = `${row.r.routeUID}|${row.r.dirNum}`;
           const old = g.routes[rk];
           if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) g.routes[rk] = row.r;
@@ -1635,6 +1632,36 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
+      const lineOf = rs => { const values = [...new Set(rs.map(r => r.dest))], show = values.slice(0, 2); return `往 ${show.join("／")}${values.length > show.length ? " 等" : ""}`; };
+      const destLines = [];
+      // 有目的地／缺目的地去程／缺目的地返程三組各自成行，彼此不合併
+      const buckets = [
+        [routes.filter(r => r.dest), lineOf],
+        [routes.filter(r => !r.dest && r.dirNum !== 1), () => "去程"],
+        [routes.filter(r => !r.dest && r.dirNum === 1), () => "返程"],
+      ];
+      for (const [rs, txt] of buckets) {
+        const noHead = rs.filter(r => r.head == null);
+        if (noHead.length) destLines.push({ destLine: txt(noHead), head: null });
+        let pool = rs.filter(r => r.head != null);
+        // 極端值：45 度內沒有其他路線的 head，先拿出來，最後各自一行
+        const lone = pool.filter(r => !pool.some(o => o !== r && angDiff(o.head, r.head) <= 45));
+        pool = pool.filter(r => !lone.includes(r));
+        while (pool.length) {
+          // 組內任兩條差 ≤45 度＝全落在一段 45 度弧內：每條當弧起點順時針取 45 度內者，取最多的一組
+          let best = [];
+          for (const seed of pool) {
+            const hit = pool.filter(r => (r.head - seed.head + 360) % 360 <= 45);
+            if (hit.length > best.length) best = hit;
+          }
+          destLines.push({ destLine: txt(best), head: circMean(best.map(r => r.head)) });
+          pool = pool.filter(r => !best.includes(r));
+        }
+        for (const r of lone) destLines.push({ destLine: txt([r]), head: r.head });
+      }
+      g.destLines = destLines;
+      g.destLine = destLines.map(x => x.destLine).join("\n");
+      g.head = destLines.length === 1 ? destLines[0].head : null;
       const { dirs, ...rest } = g;
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9) || String(a.dirTxt || "").localeCompare(String(b.dirTxt || ""), "zh-Hant"));
