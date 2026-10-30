@@ -85,9 +85,17 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 /* stop block (bus tab) */
 .stop{background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:14px}
 .stop-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
+.side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub .dest-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
 h2 .side-sub{font-size:14px;margin-top:4px}
 .stop-h .name{flex:1;font-size:21px;font-weight:800}
+.stop-h .bus-name{min-width:0}
+.compass-arrow{display:var(--compass-arrows,none);width:18px;height:18px;vertical-align:-3px;margin-right:6px;color:var(--lime);transform:rotate(calc(var(--target-bearing) - var(--compass-heading,0deg)));transform-origin:center}
+.side-sub .compass-arrow{width:17px;height:17px;vertical-align:-3px}
+.pill .compass-arrow{width:17px;height:17px;vertical-align:-3px;margin-right:7px}
+.compass-note{display:var(--compass-arrows,none);width:100%;margin:2px 0 8px;padding:0 4px;font-size:13px;color:var(--muted)}.compass-note b{color:var(--lime);font-weight:700}
+.compass-opp{display:var(--compass-opposite,inline)}
+.compass-enable{display:var(--compass-enable,inline-flex);align-items:center;justify-content:center;padding:9px 14px;border-radius:999px;background:var(--surface2);color:var(--lime);font-size:14px;font-weight:700}
+.bus-compass-enable{margin:0 0 12px}
 .rrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 0;border-top:1px solid var(--line)}
 .rrow:first-of-type{border-top:0}
 .rno{min-width:64px;font-size:21px;font-weight:800;letter-spacing:-0.3px}
@@ -233,10 +241,14 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .mapload{position:absolute;inset:0;display:grid;place-items:center;color:var(--dim);font-size:14px}
 .maprc{position:absolute;right:12px;top:12px;z-index:500;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:rgba(30,32,34,.85);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--lime);border:1px solid rgba(255,255,255,.1)}
 .maprc svg{width:20px;height:20px}
+.mapnorth,.map-compass-enable{position:absolute;right:64px;top:12px;z-index:500;height:42px;border-radius:999px;background:rgba(30,32,34,.85);border:1px solid rgba(255,255,255,.1)}
+.mapnorth{display:var(--compass-north-button,none);place-items:center;width:42px;color:var(--text);font-size:18px;font-weight:800}
+.mapnorth svg{position:absolute;inset:0;width:40px;height:40px;transform:rotate(var(--compass-north,0deg));transform-origin:center}
 .mpin{width:30px;height:30px;padding:0;border-radius:50%;display:grid;place-items:center;border:2px solid #111;box-shadow:0 2px 6px rgba(0,0,0,.5);cursor:pointer}
 .mpin svg{width:16px;height:16px}
 .mpin.bs{background:#3d8bff;color:#fff}.mpin.bk{background:#ffb400;color:#111;width:26px;height:26px}.mpin.rl{z-index:2}.mpin.rl{background:var(--lime);color:#111}
 .mdot{width:20px;height:20px;border-radius:50%;background:#4ea1ff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)}
+.mdot .mfan{display:var(--compass-arrows,none);position:absolute;left:50%;top:50%;width:180px;height:180px;margin:-90px;z-index:-1;pointer-events:none;transform:rotate(var(--compass-fan,0deg));transform-origin:center}
 .mapcard .maplibregl-ctrl-attrib{background:rgba(0,0,0,.55)!important;color:#aaa;font-size:10px}.mapcard .maplibregl-ctrl-attrib a{color:#ccc}.mapcard .maplibregl-ctrl-attrib-button{filter:invert(1)}
 .lnk{display:block;width:100%;text-align:left;color:inherit;font:inherit;padding:0;background:none;border:0}
 button.board.lnk{background:var(--surface);border:1px solid var(--line);border-radius:28px;padding:6px 16px;margin-top:6px}
@@ -721,6 +733,7 @@ function render() {
   const v = viewOf(S.tab);
   $('#main').innerHTML = v();
   mountMap();
+  COMPASS.sync();
   if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
 }
 /* ---------- 首頁地圖（MapLibre GL 自帶於 vendor/，OpenFreeMap 深色向量底圖，免金鑰） ---------- */
@@ -737,9 +750,9 @@ function mountMap() {
   if (!slot || !d || !d.lat) return;
   if (!mapEl) {
     mapEl = document.createElement('div'); mapEl.className = 'mapcard'; mapEl.setAttribute('data-noswipe', '');
-    mapEl.innerHTML = `<div class="mapbox"></div><button class="maprc" aria-label="回到目前位置">${I.nav}</button><div class="mapload">地圖載入中…</div>`;
+    mapEl.innerHTML = `<div class="mapbox"></div><button class="maprc" aria-label="回到目前位置">${I.nav}</button><button class="mapnorth" aria-label="切換跟著手機轉／北方朝上" aria-pressed="false">N<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 2 15 10h10Z" fill="#ff6256"/></svg></button><button class="compass-enable map-compass-enable">開啟方向</button><div class="mapload">地圖載入中…</div>`;
     mapEl.querySelector('.maprc').addEventListener('click', e => { e.stopPropagation(); mapUserMoved = false;
-      if (MAP && S.data) MAP.easeTo({ center:[S.data.lon, S.data.lat], zoom:15.5, duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 500 }); });
+      if (MAP && S.data) MAP.easeTo({ center:[S.data.lon, S.data.lat], zoom:15.5, bearing:COMPASS.mapBearing(), duration: COMPASS.available || matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 500 }); });
   }
   slot.appendChild(mapEl);
   loadMapLib().then(() => {
@@ -753,6 +766,7 @@ function mountMap() {
       MAP.on('error', () => {});
     }
     MAP.resize();
+    COMPASS.syncMap();
     const D = S.data;
     if (D === mapKey) return; mapKey = D;
     mapMarks.forEach(m => m.remove()); mapMarks = [];
@@ -763,11 +777,155 @@ function mountMap() {
     D.bikes.slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
     D.busStops.slice(0, 40).forEach(s => add(s, 'bs', I.busFill, stopSheet));
     (D.rail || []).filter(r => r.lat != null).slice(0, 10).forEach(r => add(r, 'rl', sysIcon(r.op), openRail));
-    if (!meMark) { const el = document.createElement('div'); el.className = 'mdot'; meMark = new maplibregl.Marker({ element: el }); }
+    if (!meMark) { const el = document.createElement('div'); el.className = 'mdot';
+      el.innerHTML = '<svg class="mfan" viewBox="-100 -100 200 200" aria-hidden="true"><defs><radialGradient id="meHeadingFan" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100"><stop offset="0" stop-color="#4b8cff" stop-opacity=".65"/><stop offset="1" stop-color="#4b8cff" stop-opacity="0"/></radialGradient></defs><path d="M0 0 L-50 -86.603 A100 100 0 0 1 50 -86.603 Z" fill="url(#meHeadingFan)"/></svg>';
+      meMark = new maplibregl.Marker({ element: el }); }
     meMark.setLngLat([D.lon, D.lat]).addTo(MAP);
-    if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat] });
+    if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat], bearing:COMPASS.mapBearing() });
   }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
+/* ---------- 手機方向：感測事件只更新 CSS 與首頁地圖 bearing ---------- */
+const COMPASS = (() => {
+  const KEY = 'jisu.compassOk', LEGACY_KEY = 'jisu_compass_enabled', root = document.documentElement;
+  const orientation = window.DeviceOrientationEvent;
+  const needsPermission = typeof orientation?.requestPermission === 'function';
+  const supported = !!orientation && (needsPermission || 'ondeviceorientationabsolute' in window);
+  const eventName = needsPermission ? 'deviceorientation' : 'deviceorientationabsolute';
+  let granted = false, pending = false, listening = false, usable = false, follow = true;
+  let heading = null, sample = null, latest = null, frame = 0, lastPaint = -Infinity;
+  const norm = a => (a % 360 + 360) % 360;
+  const active = () => !document.hidden && !S.page && (S.tab === 'home' || S.tab === 'bus');
+  const screenAngle = () => Number.isFinite(screen.orientation?.angle) ? screen.orientation.angle : 0;
+  // 與 data.js IIFE 內的 bearingDeg 同等公式；不更動 dataApi。
+  function bearingDeg(lat1, lon1, lat2, lon2) {
+    const p = Math.PI / 180;
+    const y = Math.sin((lon2 - lon1) * p) * Math.cos(lat2 * p);
+    const x = Math.cos(lat1 * p) * Math.sin(lat2 * p) - Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos((lon2 - lon1) * p);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+  const mapBearing = () => usable && follow && active() ? heading : 0;
+  function syncMap() {
+    if (!MAP || S.tab !== 'home' || S.page) return;
+    const target = mapBearing();
+    if (Math.abs(norm(MAP.getBearing() - target + 180) - 180) > .01) MAP.setBearing(target);
+  }
+  function paint() {
+    root.style.setProperty('--compass-arrows', usable ? 'inline-block' : 'none');
+    root.style.setProperty('--compass-opposite', usable ? 'none' : 'inline');
+    root.style.setProperty('--compass-enable', usable ? 'none' : 'inline-flex');
+    root.style.setProperty('--compass-north-button', usable ? 'grid' : 'none');
+    root.style.setProperty('--compass-heading', `${heading ?? 0}deg`);
+    root.style.setProperty('--compass-fan', `${usable && !follow ? heading : 0}deg`);
+    root.style.setProperty('--compass-north', `${-mapBearing()}deg`);
+    syncMap();
+  }
+  function schedule() {
+    if (!frame) frame = requestAnimationFrame(tick);
+  }
+  function tick(at) {
+    frame = 0;
+    if (at - lastPaint < 1000 / 30) { schedule(); return; }
+    lastPaint = at;
+    usable = listening && active() && latest !== null;
+    if (usable) heading = heading === null ? latest : norm(heading + .2 * (norm(latest - heading + 180) - 180));
+    else heading = null;
+    paint();
+  }
+  function onOrientation(e) {
+    if (!listening || !active()) { sync(); return; }
+    if (needsPermission) {
+      const accuracy = e.webkitCompassAccuracy;
+      sample = Number.isFinite(e.webkitCompassHeading) && Number.isFinite(accuracy) && accuracy >= 0 && accuracy <= 35 ? e.webkitCompassHeading : null;
+    } else sample = Number.isFinite(e.alpha) && e.absolute !== false ? 360 - e.alpha : null;
+    latest = sample === null ? null : norm(sample + screenAngle());
+    schedule();
+  }
+  function onScreenChange() {
+    latest = sample === null ? null : norm(sample + screenAngle());
+    schedule();
+  }
+  function stop() {
+    if (listening) {
+      window.removeEventListener(eventName, onOrientation);
+      screen.orientation?.removeEventListener?.('change', onScreenChange);
+      window.removeEventListener('orientationchange', onScreenChange);
+    }
+    listening = false;
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0; usable = false; heading = sample = latest = null;
+    paint();
+  }
+  function sync() {
+    if (!active() || !granted || !supported) { stop(); return; }
+    if (!listening) {
+      listening = true;
+      try {
+        window.addEventListener(eventName, onOrientation);
+        screen.orientation?.addEventListener?.('change', onScreenChange);
+        window.addEventListener('orientationchange', onScreenChange);
+      } catch (e) { stop(); }
+    }
+    paint();
+  }
+  async function request() {
+    if (pending || !supported) return;
+    pending = true;
+    try {
+      // 此函式只由 click handler 直接呼叫；await 前立即要求 iOS 權限。
+      const result = needsPermission ? await orientation.requestPermission() : 'granted';
+      granted = result === 'granted';
+      try {
+        if (granted) {
+          localStorage.setItem(KEY, '1');
+          try { localStorage.setItem(LEGACY_KEY, '1'); } catch (e) {}
+        } else {
+          localStorage.removeItem(KEY);
+          try { localStorage.removeItem(LEGACY_KEY); } catch (e) {}
+        }
+      } catch (e) {}
+      sync();
+    } catch (e) {
+      granted = false;
+      try {
+        localStorage.removeItem(KEY);
+        try { localStorage.removeItem(LEGACY_KEY); } catch (err) {}
+      } catch (err) {}
+      stop();
+    } finally { pending = false; }
+  }
+  document.addEventListener('click', e => {
+    if (e.target.closest('.compass-enable')) request();
+    const button = e.target.closest('.mapnorth');
+    if (button && usable && active()) {
+      follow = !follow;
+      button.setAttribute('aria-pressed', String(!follow));
+      paint();
+    }
+  });
+  try {
+    if (localStorage.getItem(KEY) === '1' || localStorage.getItem(LEGACY_KEY) === '1') {
+      document.addEventListener('click', e => {
+        if (!e.target.closest('.compass-enable')) request();
+      }, { once: true, capture: true });
+    }
+  } catch (e) {}
+  document.addEventListener('visibilitychange', sync);
+  // 詳情頁以 overlay 開關；偵測其開關即可停聽，不改動各頁的 render。
+  new MutationObserver(sync).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
+  return {
+    sync, syncMap, mapBearing,
+    get available() { return usable && active(); },
+    stopArrow(s) {
+      const d = S.data;
+      if (!d || ![d.lat, d.lon, s.lat, s.lon].every(Number.isFinite)) return '';
+      return `<svg class="compass-arrow" style="--target-bearing:${bearingDeg(d.lat, d.lon, s.lat, s.lon)}deg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 21 12.5h-5.5V21h-7v-8.5H3Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+    },
+    busArrow(head) {
+      if (!Number.isFinite(head)) return '';
+      return `<svg class="compass-arrow" style="--target-bearing:${head}deg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20.5V4.5M5.5 11 12 4.5 18.5 11"/></svg>`;
+    },
+  };
+})();
 const skel = n => Array.from({length:n}, () => '<div class="sk"></div>').join('');
 function errBox() {
   if (S.error === 'NO_PROXY') return `<div class="empty" style="margin-top:6px"><div class="star">${I.bus}</div><h3>先設定資料來源</h3>
@@ -972,19 +1130,22 @@ function vSearch() {
   return h;
 }
 
+// 公車頁站牌清單底部說明；只在有方向感應時顯示（跟箭頭同一個開關）
+const COMPASS_NOTE = '<span class="compass-note">方位以手機朝向為準：<b>↑</b> 前方、<b>→</b> 右方、<b>↓</b> 後方。</span>';
 function filterQ(list, f) { const q = S.q.trim().toLowerCase(); return q ? list.filter(x => f(x).toLowerCase().includes(q)) : list; }
 function vBus() {
   if (S.error === 'NO_PROXY') return errBox();
   const d = S.data, eb = errBox(); let h = eb;
   h += `<div class="sec"><h2>附近站牌</h2><span class="side">${S.settings.busR}公尺內${d ? `，${d.busStops.length}站` : ''}</span></div>`;
+  h += '<button class="compass-enable bus-compass-enable">開啟方向</button>';
   if (!d) return h + (S.error ? '' : skel(3));
   if (d.busError) { if (d.busStops.length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('公車資料暫時讀不到：' + d.busError, 'retryPart', 'data-v="bus"'); }
   const stops = filterQ(d.busStops, s => s.name + ' ' + s.routes.map(r => r.route).join(' '));
-  if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + natSearch(S.q);
+  if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + (stops.length ? COMPASS_NOTE : '') + natSearch(S.q);
   if (!stops.length) return h + `<div class="note">這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。</div>`;
   h += bfBox();
   if (S.bf?.sel) return h + bfResult(d);
-  return h + stops.map(s => stopBlock(s, 6)).join('');
+  return h + stops.map(s => stopBlock(s, 6)).join('') + COMPASS_NOTE;
 }
 /* ---------- v2.35.0 公車目的地篩選：輸入目的地站名或選地點，只留附近站牌有到的路線（同方向）＋坐幾站。
    比對在 Worker（站序只存雲端）；不打 TDX；篩選只在這次使用期間記住，最近3個目的地存在手機 ---------- */
@@ -1062,17 +1223,25 @@ function bfResult(d) {
       const via = `坐${m.n}站到${m.to}${m.m != null ? `，離目的地約${Math.max(10, Math.round(m.m / 10) * 10)}公尺` : ''}${m.loop ? '（環狀線，繞過起點站）' : ''}${m.part ? '・部分班次（區間車）不到' : ''}`;
       rows.push(`<button class="rrow bfrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}<span class="via">${esc(via)}</span></span>${etaPill(r)}</button>`);
     }
-    if (rows.length) h += `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}${sideTag(s)}</span><span class="pill">${distTxt(s.dist)}</span></div>${rows.join('')}</div>`;
+    if (rows.length) h += `<div class="stop"><div class="stop-h">${busStopHeading(s)}</div>${rows.join('')}</div>`;
   }
   const nm = B.sel.type === 'place' ? `「${B.sel.name}」附近` : B.sel.name;
   if (!hit.size) return `<div class="note">附近站牌沒有路線會到${esc(nm)}（不含轉乘）。可以改用路線規劃找轉乘的走法。${bfUpd(B)}</div>`;
   const miss = (B.res.miss ? `；${B.res.miss}條路線的站序對不上，沒有列出` : '') + bfUpd(B);
-  return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>`;
+  return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>` + COMPASS_NOTE;
+}
+// 公車頁專用：目的地永遠顯示；無感測時僅恢復 sideTag 的「對面・」規則。
+function busStopHeading(s) {
+  const lines = Array.isArray(s.destLines) ? s.destLines : (s.destLine ? [{ destLine: s.destLine, head: s.head }] : []);
+  const opposite = s.side === "對向";
+  const opp = opposite ? `<span class="compass-opp">對面・</span>` : "";
+  const sub = lines.length || opposite ? `<span class="side-sub">${lines.length ? "" : opp}${lines.map((line, i) => `<span class="dest-line">${i ? "" : opp}${COMPASS.busArrow(line.head)}${esc(line.destLine)}</span>`).join("")}</span>` : "";
+  return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill">${COMPASS.stopArrow(s)}${distTxt(s.dist)}</span>`;
 }
 function stopBlock(s, limit) {
   const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
   const shown = limit ? rs.slice(0, limit) : rs;
-  return `<div class="stop"><div class="stop-h"><span class="name">${esc(s.name)}${sideTag(s)}</span><span class="pill">${distTxt(s.dist)}</span></div>
+  return `<div class="stop"><div class="stop-h">${busStopHeading(s)}</div>
     ${shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')}
     ${limit && rs.length > limit ? `<button class="more" data-act="stop" data-i="${reg(s)}">顯示全部${rs.length}條路線</button>` : ''}</div>`;
 }
