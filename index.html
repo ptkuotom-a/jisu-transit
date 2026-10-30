@@ -606,7 +606,7 @@ const I = {
 /* ---------- state ---------- */
 const S = {
   tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0, busAt:0, bikeAt:0, railNearAt:0, partErr:{},
-  settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:30},   // railFarTra／railFarThsr 在讀設定時補上
+  settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:10},   // v2.49.0 auto＝定時更新秒數（固定 10）   // railFarTra／railFarThsr 在讀設定時補上
   railTab:{}, ttAll:{}, rail:null, railData:null, railLoading:false, railError:null, page:null,
   favs:{bus:[], bike:[]},
   route:null, routeData:null, routeLoading:false, routeError:null,
@@ -1611,12 +1611,13 @@ function openRail(r) {
   const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0)); p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderRail(); if (!hit) loadRail();
 }
-async function loadRail() {
-  if (!S.rail || S.railLoading) return;
-  S.railLoading = true;
-  const want = S.rail;
+async function loadRail(auto) {
+  if (!S.rail || (S.railLoading && !(auto !== true && S.railAuto))) return;   // v2.49.1：手動更新優先，定時更新結果作廢
+  S.railLoading = true; S.railAuto = auto === true;
+  const want = S.rail, tok = S.railTok = (S.railTok || 0) + 1;
   try {
-    const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name });
+    const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name, auto:auto === true });
+    if (tok !== S.railTok) return;
     if (S.rail === want) { S.railData = r; S.railError = null; S.railAt = Date.now(); }
     const ck = 'rail:' + want.op + (want.ids || []).join(',');
     (S.liveCache = S.liveCache || {})[ck] = { data: r, at: Date.now() };
@@ -1625,15 +1626,15 @@ async function loadRail() {
         if (!up) return;
         const c = (S.liveCache || {})[ck];
         if (!c || c.data === r) (S.liveCache = S.liveCache || {})[ck] = { data: up, at: Date.now() };
-        if (S.rail === want && S.railData === r) {
+        if (tok === S.railTok && S.rail === want && S.railData === r) {
           S.railData = up; S.railError = null; S.railAt = Date.now();
           if (S.page === 'rail') renderRail();
         }
       }).catch(() => {});
     }
   }
-  catch (e) { if (S.rail === want) S.railError = e.message; }
-  S.railLoading = false; renderRail();
+  catch (e) { if (tok !== S.railTok) return; if (S.rail === want) S.railError = e.message; }
+  S.railLoading = false; S.railAuto = false; renderRail();
 }
 // 右側倒數膠囊：即時／表定／估算都同一種樣式，只換下方小字
 const cdTxt = m => m >= 60 ? `${Math.floor(m / 60)}時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
@@ -2222,12 +2223,12 @@ function closeRoute(quiet) {
   S.back = [];
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
   S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
-async function loadRoute(scroll) {
+async function loadRoute(scroll, auto) {
   if (!S.route) return;
   const R = S.route, tok = S.routeTok = (S.routeTok || 0) + 1;   // 只採用最新一次請求的結果，避免切換路線時卡在骨架畫面
   S.routeLoading = true; renderRoute();
   let data = null, err = null;
-  try { data = await api('route', { ...R }); } catch (e) { err = e.message; }
+  try { data = await api('route', { ...R, auto:!!auto }); } catch (e) { err = e.message; }
   if (tok !== S.routeTok || S.route !== R) return;
   if (data && (data.dirNum === 0 || data.dirNum === 1) && data.dirNum !== R.dirNum) R.dirNum = data.dirNum;   // 單向路線：改成實際有資料的方向
   if (data) { S.routeData = data; S.routeError = null; S.routeAt = Date.now(); (S.liveCache = S.liveCache || {})['route:' + R.routeUID + '|' + R.dirNum + '|' + (R.stopUID || '')] = { data, at: Date.now() }; } else S.routeError = err || '沒有資料';
@@ -2808,11 +2809,11 @@ function openPlanDetail(i) {
   stackPush(() => { S.page = 'planDetail'; planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); });
   planLoadLive();
 }
-async function planLoadLive() {
+async function planLoadLive(auto) {
   const P = S.plan, r = P.res && P.res[P.sel]; if (!r) return;
   const tok = P.liveTok = (P.liveTok || 0) + 1;
   P.liveLoading = true;
-  try { const L = await api('planLive', { legs:r.legs }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); P.liveErr = null; } } catch (e) { if (tok === P.liveTok) P.liveErr = e.message || 'err'; }
+  try { const L = await api('planLive', { legs:r.legs, auto:auto === true }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); P.liveErr = null; } } catch (e) { if (tok === P.liveTok) P.liveErr = e.message || 'err'; }
   P.liveLoading = false;
   if (tok === P.liveTok && S.page === 'planDetail') renderPage();
   // v2.25.0：不再每 40 秒更新；同一個行程每次 session 只自動更新一次，之後下拉更新
@@ -3054,9 +3055,10 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => { if (e.target.id === 'pickQ' && e.key === 'Enter') e.target.blur(); });
 
 /* ---------- data ---------- */
-async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只更新那一份（該分頁的下拉更新）；不給＝全部（打開 app、首頁）
-  if (S.loading) return;
+async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail' 只更新那一份（該分頁的下拉更新）；不給＝全部（打開 app、首頁）
+  if (S.loading && !(manual && S.loadingAuto)) return;   // v2.49.1：手動更新（下拉、重新整理按鈕）優先，正在跑的定時更新結果作廢
   if (!S.data) part = null;
+  const tok = S.refTok = (S.refTok || 0) + 1; S.loadingAuto = !!auto;
   S.loading = true; renderStatus();
   // 公車／YouBike／軌道其中一部分這次讀取失敗：沿用上一次的那一部分與更新時間（畫面加一行小字提示）
   const keepOld = d => { const P = S.data, at = { busAt:S.busAt, bikeAt:S.bikeAt, railNearAt:S.railNearAt }, k = [];
@@ -3066,10 +3068,11 @@ async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只�
     return () => k.forEach(x => { S[x] = at[x]; }); };
   try {
     // v2.36.3：YouBike 比較慢時先顯示公車、軌道（onEarly），YouBike 好了再補上；沿用上一次的 YouBike 直到新的回來
-    const onEarly = part ? null : e => { const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
+    const onEarly = part ? null : e => { if (tok !== S.refTok) return; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
       const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
-    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, onEarly });
+    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, auto:!!auto, onEarly });
+    if (tok !== S.refTok) return;   // 被手動更新取代
     const now = Date.now();
     if (!part) { const back = keepOld(d); S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; back(); }
     else {
@@ -3078,8 +3081,8 @@ async function refresh(part, manual) {   // part＝'bus'／'bike'／'rail' 只�
       if (part === 'bike') { D.bikes = d.bikes; D.bikeError = null; D.favs = { ...D.favs, bike:d.favs.bike }; S.bikeAt = now; }
       if (part === 'rail') { D.rail = d.rail; D.railError = null; S.railNearAt = now; }
     }
-  } catch (e) { if (part) S.partErr[part] = e.message; else S.error = e.message; }
-  S.loading = false;
+  } catch (e) { if (tok !== S.refTok) return; if (part) S.partErr[part] = e.message; else S.error = e.message; }
+  S.loading = false; S.loadingAuto = false;
   if (S.tab === 'settings') { renderStatus(); return; }
   if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = viewOf(S.tab)(); renderStatus(); }
 }
@@ -3539,6 +3542,24 @@ function armDwell() {   // 剛進到某一頁時呼叫
     seenPages.add(k); M.run();
   }, DWELL_MS);
 }
+// v2.49.0 JT-20261030-02：畫面可見時，即時資料頁（首頁各分頁、車站頁、公車路線頁、行程詳情頁）每 10 秒定時更新一次。
+// 定時更新帶 auto：只抓官網／開放資料等非 TDX 來源，TDX 部分沿用畫面資料，Worker 帶 notdx=1 不准改打 TDX（見 data.js AUTO）。
+// document.hidden 時停；上一輪還在載入就跳過；第一次載入與下拉更新照舊（可用 TDX 備援）。
+var autoLast = { k: null, t: 0 };
+function autoRun() {
+  if (!S.page) return refresh(S.data && !S.error ? TAB_PART[S.tab] || null : null, false, true);
+  if (S.page === 'rail') return loadRail(true);
+  if (S.page === 'route') return loadRoute(false, true);
+  if (S.page === 'planDetail') return planLoadLive(true);
+}
+setInterval(() => {
+  if (!appStarted || !S.auth || document.hidden || DEMO) return;
+  const k = liveKey(); if (!k) return;
+  const L = liveState(); if (!L || L.busy || !L.has) return;   // 上一輪還在載入：跳過；沒有資料：交給第一次載入
+  const ms = (S.settings.auto || 10) * 1000, now = Date.now();
+  if (now - (L.at || 0) < ms || (autoLast.k === k && now - autoLast.t < ms)) return;   // 上次失敗（更新時間沒變）也一樣等 10 秒
+  autoLast = { k, t: now }; autoRun();
+}, 1000);
 // 換頁偵測：每 250 毫秒比一次目前的頁面（只比對狀態，不連網）
 var navTab = null, partTried = new Set();
 setInterval(() => {
@@ -3719,7 +3740,7 @@ async function stationLink(ref) {
 async function boot() {
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
   render();
-  try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); for (const k of ['railFarTra','railFarThsr']) if (S.settings[k] == null) S.settings[k] = S.settings.railFar === 0 ? 0 : 1;   // v2.29.0：舊的單一開關拆成台鐵、高鐵兩個
+  try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); for (const k of ['railFarTra','railFarThsr']) if (S.settings[k] == null) S.settings[k] = S.settings.railFar === 0 ? 0 : 1; S.settings.auto = 10;   // v2.29.0：舊的單一開關拆成台鐵、高鐵兩個
   if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
   if (!DEMO) {
