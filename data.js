@@ -39,11 +39,21 @@ function fetchT(u, ms, opt) {
   const ac = new AbortController(), tm = setTimeout(() => ac.abort(), ms);
   return fetch(u, { ...(opt || {}), signal: ac.signal }).catch(e => { clearTimeout(tm); throw e; });
 }
+// v2.49.0 JT-20261030-02：每 10 秒定時更新（auto）期間 AUTO>0（新站補抓 railHeal/exitHeal/busHeal/placeHeal 也略過）：
+// ① tdx() 一律不連網：有上一次同網址的結果就沿用（畫面資料不變），沒有就丟出 notdx 錯誤（各頁原本的「讀取失敗沿用舊資料」接手）
+// ② 所有送到 Worker 的請求加 notdx=1，Worker 端任何會轉打 TDX 的路徑都直接回 409，不准改打 TDX
+// 手動下拉、第一次載入不受影響（原本的官網→TDX 備援照舊）
+let AUTO = 0;
+const tdxMemo = new Map();
+const nt = u => AUTO ? u + (u.includes("?") ? "&" : "?") + "notdx=1" : u;
+const NOTDX_MSG = "定時更新略過 TDX";
 const TDX_MS = 12000, NET_MSG = "連不到伺服器，請確認網路後重試", TIMEOUT_MSG = "連線逾時，請確認網路後重試";
+function tdxKeep(k, v) { tdxMemo.delete(k); tdxMemo.set(k, { v }); if (tdxMemo.size > 80) tdxMemo.delete(tdxMemo.keys().next().value); return v; }
 async function tdx(profile, url) {
   const proxy = getProxy();
   if (!proxy) throw new Error("NO_PROXY");
   const target = proxy + url.slice(TDX_ORIGIN.length) + "&__k=" + (profile === "rail" ? 3 : profile === "route" ? 2 : 1);
+  if (AUTO) { const m = tdxMemo.get(target); if (m) return m.v; const e = new Error(NOTDX_MSG); e.notdx = true; throw e; }
   const session = getSession(), opt = session && session.role === "admin" ? { headers: { "x-session": session.token } } : undefined;
   let last = "", why = "";
   for (let i = 0; i < 3; i++) {
@@ -52,10 +62,10 @@ async function tdx(profile, url) {
       const r = await fetchT(target, TDX_MS, opt);
       code = r.status; res = await r.json();
     } catch (e) { why = e && e.name === "AbortError" ? "timeout" : code ? "" : "net"; res = { message: String(e) }; }
-    if (Array.isArray(res)) return res;
+    if (Array.isArray(res)) return tdxKeep(target, res);
     if (res && typeof res === "object" && r_ok(code) && !res.message && !res.Message) {
       const arr = Object.values(res).find(Array.isArray);   // v3 API 回傳 {Stations:[...]}這類容器
-      if (arr) return arr;
+      if (arr) return tdxKeep(target, arr);
     }
     last = `(${code}) ` + JSON.stringify(res).slice(0, 120);
     if (why === "timeout") break;   // 逾時不再重試：最多等 12 秒就結束轉圈
@@ -73,7 +83,7 @@ async function tdx(profile, url) {
 async function odGet(path, timeoutMs = 15000) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   let r, j = null;
-  try { r = await fetchT(proxy + path, timeoutMs); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  try { r = await fetchT(nt(proxy + path), timeoutMs); j = await r.json().catch(() => null); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
   if (!r.ok || !j) throw new Error((j && j.message) || ("開放資料讀取失敗 " + r.status));
   return j;
 }
@@ -84,7 +94,7 @@ async function odMemoGet(path, ms, timeoutMs = 15000) {   // 同一網址 ms 毫
   return v;
 }
 function odWarm(src) {   // 不等回應、失敗不管；只在附近資料更新時發一次（不是定時）
-  try { const proxy = getProxy(); if (proxy && (!lastLoc || inNorth(lastLoc.latitude, lastLoc.longitude))) fetch(proxy + "/od/warm" + (src ? "?s=" + src : "")).catch(() => {}); } catch (e) {}
+  try { const proxy = getProxy(); if (proxy && (!lastLoc || inNorth(lastLoc.latitude, lastLoc.longitude))) fetch(nt(proxy + "/od/warm" + (src ? "?s=" + src : ""))).catch(() => {}); } catch (e) {}
 }
 const YB_CLOUD = new Set(["TPE", "NWT", "TAO", "TXG", "HSZ", "HSQ", "MIA", "CYI", "CYQ", "KHH", "TNN", "PIF", "TTT"]);
 const YB_CLOUD_CITY = new Set(["Taipei", "NewTaipei", "Taoyuan", "Taichung", "Hsinchu", "HsinchuCounty", "MiaoliCounty", "Chiayi", "ChiayiCounty", "Kaohsiung", "Tainan", "PingtungCounty", "TaitungCounty"]);
@@ -148,7 +158,7 @@ function ybMaybePush(cloud, live, lat, lon, r) {
       if (!pre || !no || !isFinite(lat) || !isFinite(lng)) return [];
       return [[pre + no, String(s.name_tw || "").trim(), s.address_tw || "", lat, lng, s.parking_spaces ?? null]];
     }) };
-    return fetchT(proxy + "/od/ybstn", 30000, { method: "POST", headers: { "content-type": "application/json", "x-session": session.token }, body: JSON.stringify(body) });
+    return fetchT(nt(proxy + "/od/ybstn"), 30000, { method: "POST", headers: { "content-type": "application/json", "x-session": session.token }, body: JSON.stringify(body) });
   })
     .catch(() => {}).finally(() => { ybUploadBusy = false; });
 }
@@ -2001,7 +2011,7 @@ async function traOfficial(st) {
   let json;
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 27000);
   try {
-    const response = await fetch(`${proxy}/tra?st=${encodeURIComponent(id)}&n=${encodeURIComponent(name)}`, { signal: ctl.signal });
+    const response = await fetch(nt(`${proxy}/tra?st=${encodeURIComponent(id)}&n=${encodeURIComponent(name)}`), { signal: ctl.signal });
     json = response.ok ? await response.json() : null;
   } catch (error) {
     return null;
@@ -2129,7 +2139,7 @@ async function trtcLive(st) {
   let j;
   try {
     const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 8000);
-    j = await fetch(`${proxy}/trtc-eta?ids=${encodeURIComponent(ids.join(","))}`, { signal: ctl.signal }).then(r => r.ok ? r.json() : null);
+    j = await fetch(nt(`${proxy}/trtc-eta?ids=${encodeURIComponent(ids.join(","))}`), { signal: ctl.signal }).then(r => r.ok ? r.json() : null);
     clearTimeout(tm);
   } catch (e) { return null; }
   if (!j || !Array.isArray(j.stations)) return null;
@@ -2170,7 +2180,7 @@ async function trtcOfficial(st) {
   if (!ids.length) return null;
   const one = async id => {
     const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
-    try { const r = await fetch(`${proxy}/trtc?line=${stnPre(id)}&st=${id}`, { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
+    try { const r = await fetch(nt(`${proxy}/trtc?line=${stnPre(id)}&st=${id}`), { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
     catch (e) { return null; }
     finally { clearTimeout(tm); }
   };
@@ -2215,7 +2225,7 @@ async function tymcOfficial(st) {
   if (!ids.length) return null;
   const one = async id => {
     const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
-    try { const r = await fetch(`${proxy}/tymc?st=${encodeURIComponent(id)}`, { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
+    try { const r = await fetch(nt(`${proxy}/tymc?st=${encodeURIComponent(id)}`), { signal: ctl.signal }); const j = r.ok ? await r.json() : null; return j && j.ok && Array.isArray(j.trains) ? j : null; }
     catch (e) { return null; }
     finally { clearTimeout(tm); }
   };
@@ -2253,7 +2263,7 @@ async function krtcOfficial(st) {
   if (!id) return null;
   let json;
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
-  try { const response = await fetch(`${proxy}/krtc?st=${encodeURIComponent(id)}`, { signal: ctl.signal }); json = response.ok ? await response.json() : null; }
+  try { const response = await fetch(nt(`${proxy}/krtc?st=${encodeURIComponent(id)}`), { signal: ctl.signal }); json = response.ok ? await response.json() : null; }
   catch (error) { return null; }
   finally { clearTimeout(timer); }
   if (!json || !json.ok || !Array.isArray(json.lines)) return null;
@@ -2283,7 +2293,7 @@ async function ntmOfficial(st) {
   if (!id) return null;
   let j = null;
   const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 6000);
-  try { const r = await fetch(`${proxy}/ntm?line=${line}&st=${encodeURIComponent(id)}`, { signal: ctl.signal }); j = r.ok ? await r.json() : null; }
+  try { const r = await fetch(nt(`${proxy}/ntm?line=${line}&st=${encodeURIComponent(id)}`), { signal: ctl.signal }); j = r.ok ? await r.json() : null; }
   catch (e) { j = null; }
   finally { clearTimeout(tm); }
   if (!j || !j.ok || !Array.isArray(j.trains)) return null;
@@ -3541,7 +3551,7 @@ async function loadRailExits() {
 // 重抓後還是找不到的代碼（號誌站、資料不一致）記在 ign，之後不再觸發；同縣市每天最多重抓一次。
 const healBusy = {};
 const newMiss = (ids, have, ign) => [...new Set(ids.filter(Boolean).map(String))].filter(i => !have.has(i) && !ign.has(i));
-function railHeal(op, ids) { railHealA(op, ids || []).catch(() => {}); }
+function railHeal(op, ids) { if (AUTO) return; railHealA(op, ids || []).catch(() => {}); }
 async function railHealA(op, ids, force) {
   const sys = RAIL_SYSTEMS.find(s => s.key === op), k = "rail|" + op;
   if (!sys || healBusy[k]) return false;
@@ -3570,7 +3580,7 @@ async function railHealAll() {
   return any;
 }
 // 附近捷運站沒有出口資料：從雲端重新下載該系統的出口清單
-function exitHeal(near) { exitHealA(near).catch(() => {}); }
+function exitHeal(near) { if (AUTO) return; exitHealA(near).catch(() => {}); }
 async function exitHealA(near) {
   const cache = loadExitCache(), want = [...new Set((near || []).map(s => s.op).filter(op => !NO_EXIT.has(op)))];
   if (!want.some(op => { const c = cache.systems[op]; return c && Date.now() - c.time >= DAY_MS; })) return false;
@@ -3604,7 +3614,7 @@ async function busIndex() {
       let saved = false;
       for (let i = 0; i < todo.length; i += 3) {
         await Promise.all(todo.slice(i, i + 3).map(async city => {
-          try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); saved = true; } } } catch (e) {}
+          try { const r = await fetch(nt(`${proxy}/bus/routes?c=${city}`)); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); saved = true; } } } catch (e) {}
         }));
         await sleep(300);
       }
@@ -3615,7 +3625,7 @@ async function busIndex() {
   return { cities: c.cities, missing: all.filter(x => !c.cities[x]) };
 }
 // uids：即時資料或點進去的 RouteUID；cities：搜尋完全找不到時要重抓的縣市。只檢查已下載的縣市
-function busHeal(uids, cities) { return busHealA(uids || [], cities || []).catch(() => false); }
+function busHeal(uids, cities) { if (AUTO) return Promise.resolve(false); return busHealA(uids || [], cities || []).catch(() => false); }
 async function busHealA(uids, cities) {
   const c = idxMem || await IDB.get("busidx"); if (!c || !c.cities) return false;
   c.ct = c.ct || {}; c.ign = c.ign || {}; idxMem = c;
@@ -3633,7 +3643,7 @@ async function busHealA(uids, cities) {
     healBusy[k] = true;
     let refreshed = false;
     try {
-      const r = await fetch(`${proxy}/bus/routes?c=${city}`);
+      const r = await fetch(nt(`${proxy}/bus/routes?c=${city}`));
       if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; changed = true; refreshed = true; } }
     } catch (e) {}
     if (refreshed) {
@@ -3706,7 +3716,7 @@ async function placeIndex({ city }) {
   })().finally(() => { delete placeJobs[city]; });
 }
 // 自動補救：stops＝[{ uid, name }]（即時預估裡的站牌）、bikes＝[StationUID]；只檢查已存名單的縣市
-function placeHeal(stops, bikes) { placeHealA(stops, bikes).catch(() => {}); }
+function placeHeal(stops, bikes) { if (AUTO) return; placeHealA(stops, bikes).catch(() => {}); }
 async function placeHealA(stops = [], bikes = []) {
   const want = {};
   for (const x of stops) { const city = UID_CITY[(x.uid || "").slice(0, 3)]; if (city && x.name) (want[city] = want[city] || { s: new Set(), b: new Set() }).s.add(x.name); }
@@ -3800,7 +3810,7 @@ async function busDest(p) {
   const s = getSession();
   const post = async () => {
     let r, j = null;
-    try { r = await fetch(proxy + "/bus/dest", { method: "POST", headers: { "content-type": "application/json", ...(s ? { "x-session": s.token } : {}) }, body: mk }); j = await r.json().catch(() => null); }
+    try { r = await fetch(nt(proxy + "/bus/dest"), { method: "POST", headers: { "content-type": "application/json", ...(s ? { "x-session": s.token } : {}) }, body: mk }); j = await r.json().catch(() => null); }
     catch (e) { throw new Error("連不到伺服器，請確認網路"); }
     if (!r.ok) throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
     return j;
@@ -3824,7 +3834,7 @@ async function authedGet(path) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   const s = getSession();
   let r, j = null;
-  try { r = await fetchT(proxy + path, 30000, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }   // 30 秒：含路線規劃、大型清單下載
+  try { r = await fetchT(nt(proxy + path), 30000, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }   // 30 秒：含路線規劃、大型清單下載
   catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
   if (!r.ok) { const m = j && (j.message || j.Message); throw new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); }
   return j;
@@ -5210,7 +5220,7 @@ async function busCity(city) {   // 只下載需要的縣市路線清單（存�
   c.ct = c.ct || {}; c.ign = c.ign || {}; idxMem = c;
   if (c.cities[city]) return c.cities[city];
   const proxy = getProxy(); if (!proxy) return [];
-  try { const r = await fetch(`${proxy}/bus/routes?c=${city}`); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
+  try { const r = await fetch(nt(`${proxy}/bus/routes?c=${city}`)); if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) { c.cities[city] = j; c.ct[city] = Date.now(); IDB.set("busidx", c).catch(() => {}); return j; } } } catch (e) {}
   return [];
 }
 async function sorOf(k, route, uid) {
@@ -5270,6 +5280,7 @@ async function planLive({ legs }) {
       const o = { open: { type: "rail", r: g }, to: g2 ? { op: g2.op, ids: g2.ids, name: g2.name } : null };
       if (wantLive) {
         const B = await railBoard(tdx, g);
+        if (AUTO && B && B.pending) await B.pending.catch(() => null);   // v2.49.0：定時更新時等延後的部分結束，避免 AUTO 放開後才補打 TDX
         if (B.kind === "tra" || B.kind === "thsr") {
           const hm0 = (leg.from.time || "").slice(11, 16);
           const row = (B.trains || []).find(t => (leg.number && String(t.no) === String(leg.number)) || t.time === hm0);
@@ -5321,7 +5332,24 @@ async function authLogout() {
   if (s && proxy) { try { await fetch(proxy + "/auth/logout", { method: "POST", headers: { "x-session": s.token } }); } catch (e) {} }
 }
 
+// v2.49.0：定時更新（p.auto）期間 AUTO>0；有延後補上的結果（railBoard 的 pending）就等它結束才放開
+const AUTO_OK = new Set(["nearby", "route", "railBoard", "planLive"]);
+let autoGen = 0;
 window.dataApi = async (action, p = {}) => {
+  if (!(p && p.auto && AUTO_OK.has(action))) {
+    if (AUTO && AUTO_OK.has(action)) { AUTO = 0; autoGen++; }   // 手動更新／第一次載入優先：放開還沒結束的定時更新旗標，讓原本的 TDX 備援照舊
+    return dataApi0(action, p);
+  }
+  AUTO++;
+  const gen = autoGen; let held = false;
+  const dec = () => { if (gen === autoGen && AUTO > 0) AUTO--; };
+  try {
+    const r = await dataApi0(action, p);
+    if (r && r.pending && typeof r.pending.then === "function") { held = true; let done = false; const rel = () => { if (!done) { done = true; dec(); } }; r.pending.then(rel, rel); setTimeout(rel, 30000); }   // 最多 30 秒就放開，避免卡住
+    return r;
+  } finally { if (!held) dec(); }
+};
+const dataApi0 = async (action, p = {}) => {
   switch (action) {
     case "nearby": return nearby(p);
     case "route": return routeView(p);
