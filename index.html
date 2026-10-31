@@ -1508,11 +1508,11 @@ function vTimetable() {
     const valid = s7 ? (m7.eff ? `・有效期間 ${md(m7.eff)}${m7.exp ? '–' + md(m7.exp, true) : ' 起（至下次更新）'}` : '・有效至下次更新') : m && m.exp ? `・有效期間 ${m.eff ? md(m.eff) : ''}–${md(m.exp, true)}` : '';
     const src7 = s7 ? `<div class="tm">七天班表取自 ${s7.every((d, i) => !i || Date.parse(d) - Date.parse(s7[i - 1]) === 86400000) ? md(s7[0]) + '–' + md(s7[6]) : s7.map(d => md(d)).join('、')}（平常週，不含國定假日／連假）</div>` : '';
     const meta = m ? `${new Date(m.updated).toLocaleDateString('zh-TW', { year:'numeric', month:'numeric', day:'numeric' })}更新${m.version && !m.exp ? '・版本 ' + esc(String(m.version).slice(0, 10)) : ''}${valid}・${m.count}${op === 'HOLIDAY' ? '天' : op === 'TRA' || op === 'THSR' ? '班' : '筆'}・${fmtKB(m.bytes)}${op === 'HOLIDAY' ? '' : m.guest ? `・訪客自動更新（${m.calls}次）` : `・上次用${m.calls}次 TDX`}` : '尚未存放，車站頁會即時向 TDX 查';
-    h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
+    h += `<button class="ttrow ${on ? 'on' : ''}" data-act="ttsSel" data-v="${op}" ${TT.busy ? 'disabled' : ''}><span class="ck">${on ? '✓' : ''}</span>
       <span class="tb"><div class="tn">${esc(name)}</div><div class="tm">${meta}</div>${src7}${st ? `<div class="ts ${st.c}">${esc(st.t)}</div>` : ''}</span></button>`;
   }
   const n = TT.sel.size;
-  h += `<div class="btns" style="grid-template-columns:1fr 2fr"><button class="btn" data-act="ttAll" ${TT.busy ? 'disabled' : ''}>${TT.sys && n === TT.sys.length ? '全不選' : '全選'}</button>
+  h += `<div class="btns" style="grid-template-columns:1fr 2fr"><button class="btn" data-act="ttsAll" ${TT.busy ? 'disabled' : ''}>${TT.sys && n === TT.sys.length ? '全不選' : '全選'}</button>
     <button class="btn pri" data-act="ttRun" ${TT.busy || !n || !pass ? 'disabled' : ''}>${TT.busy ? '更新中…' : n ? `更新${n}個系統` : '先勾選系統'}</button></div>
     <div class="kmsg" id="ttMsg">${esc(TT.msg || '')}</div></div>`;
   return h;
@@ -3142,8 +3142,8 @@ document.addEventListener('click', e => {
     case 'scSub': scSubThis(el); break;
     case 'scTry': scTryNow(el); break;
     case 'scRevoke': scRevoke(); break;
-    case 'ttSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
-    case 'ttAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
+    case 'ttsSel': { const v = el.dataset.v; TT.sel.has(v) ? TT.sel.delete(v) : TT.sel.add(v); render(); break; }
+    case 'ttsAll': { if (TT.sys) { if (TT.sel.size === TT.sys.length) TT.sel.clear(); else TT.sys.forEach(x => TT.sel.add(x[0])); } render(); break; }
     case 'ttRun': ttRun(); break;
     case 'gsyncNow': if (confirm('用這支手機的 TDX 訪客額度現在檢查一次時刻表？（不吃金鑰額度）')) gsyncRun(true); break;
     case 'logout': doLogout(); break;
