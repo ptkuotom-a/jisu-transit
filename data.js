@@ -192,19 +192,24 @@ const isKhhR = uid => /^(KHH|LIE)/.test(uid || "");   // 高雄、連江都走 t
 const isKinR = uid => /^KIN/.test(uid || "");
 const CITYBUS = new Set(["KEE", "ILA", "HSQ", "MIA", "CHA", "NAN", "YUN", "CYI", "CYQ", "PIF", "HUA", "TTT", "PEN"]);
 const isCitybusR = uid => CITYBUS.has((uid || "").slice(0, 3));
+// v2.49.3：附近站牌一律先用雲端開放資料（台北、新北）＋台灣公車官網（公路客運），下拉更新也一樣；
+// 只有附近有這三種以外的站牌（基隆、桃園等）、或雲端／官網讀不到時，才問 TDX（只取讀不到的那部分）
+const NEAR_OK = new Set(["TPE", "NWT", "THB"]);
 async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
-  if (!fresh) { const v = await busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey); if (v) return v; }
-  // v2.36.3：手機存過這一格的站牌清單、看得出附近有非 TPE 站牌 → TDX 和開放資料同時發（不用等開放資料回來才問 TDX；次數不變）
-  let known = null;
-  if (geoKey) { const c = await IDB.get("geo|" + geoKey).catch(() => null);
-    if (c) known = c.d.some(a => a[0] && !isTpeR(a[0]) && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30); }
-  const odP = odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}${fresh ? "&fresh=1" : ""}`).catch(() => null);
-  const tdxP = known === true ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
-  const od = await odP;
-  if (!od || od.tpNear == null || od.tpNear > 2000) return tdxP || tdx(profile, tdxUrl);   // 不在台北市公車範圍或讀不到：照舊
-  if (!(od.oth > 0 || known === true)) return od.list;
+  let c = null;
+  if (geoKey) { c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c || oldCloud(c)) c = (await cloudStops(geoKey).catch(() => null)) || c; }
+  const nearSt = c ? c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30) : null;
+  const otherKnown = nearSt ? nearSt.some(a => !NEAR_OK.has(a[0].slice(0, 3))) : null;
+  const tdxP = otherKnown === true ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
+  const od = await Promise.race([odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))]).catch(() => null);
+  if (!od || !Array.isArray(od.list)) return tdxP || tdx(profile, tdxUrl);   // 雲端讀不到：照舊
+  const inArea = nearSt ? true : (od.tpNear != null && od.tpNear <= 2000) || od.list.length > 0 || od.thbN > 0;
+  if (!inArea) return tdxP || tdx(profile, tdxUrl);                       // 不在雙北：照舊
+  const okNwt = !!od.nwtOk, okThb = !!od.thbOk || !(od.thbN > 0);
+  if (okNwt && okThb && !(od.othx > 0) && otherKnown !== true) return od.list;   // 0 次 TDX
+  const covered = u => isTpeR(u) || (okNwt && isNwtR(u)) || (okThb && isThbR(u));
   const t = await (tdxP || tdx(profile, tdxUrl));
-  return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID))];
+  return [...od.list.filter(e => covered(e.RouteUID)), ...t.filter(e => !covered(e.RouteUID))];
 }
 // v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
 // 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
@@ -225,19 +230,6 @@ function cloudStops(geoKey) {
   })();
   cloudJobs.set(geoKey, job); job.then(v => { if (!v) cloudJobs.delete(geoKey); }, () => cloudJobs.delete(geoKey));
   return job;
-}
-async function busNearEtaAuto(lat, lon, r, profile, tdxUrl, geoKey) {
-  if (!geoKey) return null;
-  let c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c || oldCloud(c)) c = (await cloudStops(geoKey)) || c; if (!c) return null;
-  const near = c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30);
-  if (!near.some(a => isNwtR(a[0]))) return null;                       // 附近沒有新北站牌：照舊
-  const other = near.some(a => !isTpeR(a[0]) && !isNwtR(a[0]));
-  const tdxP = other ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
-  const od = await Promise.race([odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))]).catch(() => null);   // 新北開放資料：Worker 冷啟動最多等 10 秒，前端 11 秒等不到才照舊問 TDX
-  if (!od || !od.nwtOk) { if (tdxP) return null; return null; }        // 新北開放資料讀不到：照舊（會問 TDX）
-  if (!(other || od.thb > 0)) return od.list;                          // 0 次 TDX
-  const t = await (tdxP || tdx(profile, tdxUrl));
-  return [...od.list, ...t.filter(e => !isTpeR(e.RouteUID) && !isNwtR(e.RouteUID))];
 }
 // 單一路線的預估到站（＋公車位置）：TPE 用開放資料；NWT 先用 ebus 再用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
 async function odRouteEta(routeUID, near, routeName) {
@@ -1789,6 +1781,8 @@ function odBikeLive(a, src = null) {
 }
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
 const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence, ...(x.StopPosition && x.StopPosition.PositionLat ? { P: [+x.StopPosition.PositionLat.toFixed(5), +x.StopPosition.PositionLon.toFixed(5)] } : {}) })) }));
+// v2.49.3：官網讀不到時的 TDX 備援，雙北路線同一個網址 60 秒內只問一次（含下拉）；其他縣市照舊
+const rvTdx = (routeUID, url) => isNwtR(routeUID) || isTpeR(routeUID) ? memoTdx("route", url, 60000) : tdx("route", url);
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
@@ -1807,8 +1801,8 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   let sor = sc ? sc.d : await sorCloud().then(d => d || []);
   const odR = isTaoR(routeUID) ? await taoRouteEta(routeUID) : isThbR(routeUID) ? await thbRouteEta(routeUID, dirNum, sor) : isCitybusR(routeUID) ? await citybusRouteEta(routeUID, route, sor) : isHszR(routeUID) ? await hszRouteEta(routeUID, route, sor) : isTxgR(routeUID) ? await tcgoRouteEta(routeUID, route, sor) : isTnnR(routeUID) ? await tnbusRouteEta(routeUID, route, sor) : isKhhR(routeUID) ? await twhRouteEta(routeUID, route, sor) : isKinR(routeUID) ? await kinbusRouteEta(routeUID, route, sor) : await odRouteEta(routeUID, true, route);
   const [etas, near] = await Promise.all([
-    odR ? odR.list : tdx("route", u("EstimatedTimeOfArrival")),
-    odR ? (Array.isArray(odR.near) ? odR.near : []) : tdx("route", u("RealTimeNearStop")).catch(() => []),
+    odR ? odR.list : rvTdx(routeUID, u("EstimatedTimeOfArrival")),
+    odR ? (Array.isArray(odR.near) ? odR.near : []) : rvTdx(routeUID, u("RealTimeNearStop")).catch(() => []),
   ]);
   try { reportSor(routeUID, sor, etas); } catch (e) {}
   if (sc) {
@@ -3673,8 +3667,16 @@ function placeSave(c) {
   placeMem[c.city] = c; delete placeSets[c.city];
   IDB.set("place|" + c.city, c).catch(() => {});
 }
-async function placeStops(city, heal) {
-  const l = await tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON` + (heal ? FRESH : ""));
+// v2.49.3：先用雲端已有的全縣市站牌（/od/citystops，不打 TDX）；雲端沒有這個縣市才問 TDX。
+// 補救（heal）時：雲端名單也找不到要的站名，才帶 FRESH 問 TDX
+async function cloudCityStops(city) {
+  const j = await odGet(`/od/citystops?city=${city}`).catch(() => null);
+  return j && Array.isArray(j.d) && j.d.length ? j.d.map(x => ({ StopUID: x[0], StopName: { Zh_tw: x[1] }, StopPosition: { PositionLat: x[2], PositionLon: x[3] } })) : null;
+}
+async function placeStops(city, heal, want) {
+  let l = await cloudCityStops(city);
+  if (l && heal && want && want.size) { const have = new Set(l.map(x => x.StopName.Zh_tw)); if ([...want].some(n => !have.has(n))) l = null; }
+  if (!l) l = await tdx("main", `${BASE}/basic/v2/Bus/Stop/City/${city}?%24select=${enc("StopUID,StopName,StopPosition,Bearing,StationID")}&%24top=30000&%24format=JSON` + (heal ? FRESH : ""));
   const byName = {}, stops = [];
   for (const x of l) {
     const n = x.StopName && x.StopName.Zh_tw, p = x.StopPosition; if (!n || !p || !p.PositionLat) continue;
@@ -3733,7 +3735,7 @@ async function placeHealA(stops = [], bikes = []) {
     for (const [need, kind] of [[needS, "s"], [needB, "b"]]) {
       if (!need || healing[city + kind]) continue;
       healing[city + kind] = true;
-      (kind === "s" ? placeStops(city, true) : placeBikes(city, true)).then(l => {
+      (kind === "s" ? placeStops(city, true, new Set([...w.s].filter(n => !S.s.has(n)))) : placeBikes(city, true)).then(l => {
         const cur = placeMem[city] || c;
         if (!Array.isArray(l) || !l.length) return;   // 雲端沒資料：不覆蓋舊名單
         if (kind === "s") { cur.stops = l; cur.ts = Date.now(); } else { cur.bikes = l; cur.tb = Date.now(); }
