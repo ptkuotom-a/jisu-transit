@@ -74,7 +74,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .card .body{flex:1;min-width:0}
 .card .title{font-size:20px;font-weight:800;line-height:1.25;letter-spacing:-0.2px}
 .card .desc{color:var(--muted);font-size:16px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pill{flex:none;background:var(--surface2);color:var(--lime);font-weight:700;font-size:15px;padding:8px 13px;border-radius:999px;white-space:nowrap}
+.pill{position:relative;flex:none;background:var(--surface2);color:var(--lime);font-weight:700;font-size:15px;padding:8px 13px;border-radius:999px;white-space:nowrap}
 .chev{flex:none;color:var(--dim);width:20px;height:20px}
 
 .chips{display:flex;flex-wrap:wrap;gap:10px}
@@ -83,7 +83,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 .chip.chip-on{background:var(--lime);color:var(--ink);border-color:var(--lime)}
 
 /* stop block (bus tab) */
-.stop{background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:14px}
+.stop{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:22px}
 .stop-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
 .side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub .dest-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
 h2 .side-sub{font-size:14px;margin-top:4px}
@@ -92,7 +92,7 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .compass-arrow{display:var(--compass-arrows,none);width:18px;height:18px;vertical-align:-3px;margin-right:6px;color:var(--lime);transform:rotate(calc(var(--target-bearing) - var(--compass-heading,0deg)));transform-origin:center}
 .side-sub .compass-arrow{width:17px;height:17px;vertical-align:-3px}
 .pill .compass-arrow{width:17px;height:17px;vertical-align:-3px;margin-right:7px}
-.compass-note{display:var(--compass-arrows,none);width:100%;margin:2px 0 8px;padding:0 4px;font-size:13px;color:var(--muted)}.compass-note b{color:var(--lime);font-weight:700}
+.stopglow, .pillglow{display:var(--compass-arrows,none);position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible}.stopglow{top:-1px;left:-1px;width:calc(100% + 2px);height:calc(100% + 2px)}
 .compass-opp{display:var(--compass-opposite,inline)}
 .compass-enable{display:var(--compass-enable,inline-flex);align-items:center;justify-content:center;padding:9px 14px;border-radius:999px;background:var(--surface2);color:var(--lime);font-size:14px;font-weight:700}
 .bus-compass-enable{margin:0 0 12px}
@@ -735,6 +735,7 @@ function render() {
   mountMap();
   COMPASS.sync();
   if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
+  stopGlowMount?.();
 }
 /* ---------- 首頁地圖（MapLibre GL 自帶於 vendor/，OpenFreeMap 深色向量底圖，免金鑰） ---------- */
 let MAP = null, mapEl = null, mapMarks = [], meMark = null, mlP = null, mapKey = null, mapUserMoved = false;
@@ -818,6 +819,7 @@ const COMPASS = (() => {
     root.style.setProperty('--compass-fan', `${usable && !follow ? heading : 0}deg`);
     root.style.setProperty('--compass-north', `${-mapBearing()}deg`);
     syncMap();
+    window.stopGlowPaint?.();
   }
   function schedule() {
     if (!frame) frame = requestAnimationFrame(tick);
@@ -914,6 +916,7 @@ const COMPASS = (() => {
   new MutationObserver(sync).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
   return {
     sync, syncMap, mapBearing,
+    get heading() { return heading; },
     get available() { return usable && active(); },
     stopArrow(s) {
       const d = S.data;
@@ -926,6 +929,232 @@ const COMPASS = (() => {
     },
   };
 })();
+/* ---------- 公車卡片方向光暈與膠囊光點 (JT-20261101-02) ---------- */
+function rrect(W, H, R, N = 900) {
+  if (W <= 0 || H <= 0) return [];
+  R = Math.max(0, Math.min(R, Math.min(W, H) / 2));
+  const pts = [], hx = W / 2 - R, hy = H / 2 - R, L = 4 * hx + 4 * hy + 2 * Math.PI * R;
+  const seg = [hx, Math.PI * R / 2, 2 * hy, Math.PI * R / 2, 2 * hx, Math.PI * R / 2, 2 * hy, Math.PI * R / 2, hx];
+  for (let i = 0; i < N; i++) {
+    let s = i / N * L, x, y;
+    const arc = (cx, cy, a0) => { const a = a0 + s / R; return [cx + R * Math.cos(a), cy + R * Math.sin(a)]; };
+    if (s < seg[0]) { x = W / 2 + s; y = 0; }
+    else if ((s -= seg[0]) < seg[1]) [x, y] = arc(W - R, R, -Math.PI / 2);
+    else if ((s -= seg[1]) < seg[2]) { x = W; y = R + s; }
+    else if ((s -= seg[2]) < seg[3]) [x, y] = arc(W - R, H - R, 0);
+    else if ((s -= seg[3]) < seg[4]) { x = W - R - s; y = H; }
+    else if ((s -= seg[4]) < seg[5]) [x, y] = arc(R, H - R, Math.PI / 2);
+    else if ((s -= seg[5]) < seg[6]) { x = 0; y = H - R - s; }
+    else if ((s -= seg[6]) < seg[7]) [x, y] = arc(R, R, Math.PI);
+    else { s -= seg[7]; x = R + s; y = 0; }
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+function hit(P, W, H, deg) {
+  const t = deg * Math.PI / 180, tx = W / 2 + (W / 2) * Math.sin(t), ty = H / 2 - (H / 2) * Math.cos(t);
+  let b = 0, bd = 1e9;
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    const d = (p[0] - tx) ** 2 + (p[1] - ty) ** 2;
+    if (d < bd) { bd = d; b = i; }
+  }
+  return b;
+}
+
+const pth = (P, ox = 0, oy = 0) => P.map((p, i) => (i ? 'L' : 'M') + (p[0] + ox).toFixed(1) + ' ' + (p[1] + oy).toFixed(1)).join('') + 'Z';
+
+function closestPointOnBorder(W, H, R, deg) {
+  if (W <= 0 || H <= 0) return [0, 0];
+  R = Math.max(0, Math.min(R, Math.min(W, H) / 2));
+  const t = (deg % 360 + 360) % 360 * Math.PI / 180;
+  const tx = W / 2 + (W / 2) * Math.sin(t);
+  const ty = H / 2 - (H / 2) * Math.cos(t);
+  const cx = Math.max(R, Math.min(W - R, tx));
+  const cy = Math.max(R, Math.min(H - R, ty));
+  if ((tx < R || tx > W - R) && (ty < R || ty > H - R)) {
+    const dx = tx - cx, dy = ty - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    return [cx + R * (dx / len), cy + R * (dy / len)];
+  }
+  if (tx >= R && tx <= W - R) {
+    return [tx, ty < H / 2 ? 0 : H];
+  }
+  return [tx < W / 2 ? 0 : W, ty];
+}
+
+let stopGlowSeq = 0;
+let stopGlowCards = [];
+let stopGlowPills = [];
+let stopGlowObserver = null;
+
+function stopBearingDeg(lat1, lon1, lat2, lon2) {
+  const p = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * p) * Math.cos(lat2 * p);
+  const x = Math.cos(lat1 * p) * Math.sin(lat2 * p) - Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos((lon2 - lon1) * p);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function stopGlowMount() {
+  if (stopGlowObserver) {
+    stopGlowObserver.disconnect();
+  }
+  stopGlowCards = [];
+  stopGlowPills = [];
+
+  const main = document.getElementById('main');
+  if (!main || S.tab !== 'bus') return;
+
+  const stopEls = main.querySelectorAll('.stop');
+  if (!stopEls.length) return;
+
+  if (!stopGlowObserver) {
+    stopGlowObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const el = entry.target;
+        const rect = entry.contentRect || el.getBoundingClientRect();
+        const W = el.offsetWidth || rect.width;
+        const H = el.offsetHeight || rect.height;
+        if (W <= 0 || H <= 0) continue;
+
+        const card = stopGlowCards.find(c => c.el === el);
+        if (card) {
+          if (card.W !== W || card.H !== H) {
+            card.W = W;
+            card.H = H;
+            const parsedR = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 30;
+            card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
+            card.P = rrect(W, H, card.R);
+            card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+            card.path.setAttribute('d', pth(card.P));
+          }
+          continue;
+        }
+
+        const pill = stopGlowPills.find(p => p.el === el);
+        if (pill) {
+          if (pill.W !== W || pill.H !== H) {
+            pill.W = W;
+            pill.H = H;
+            pill.R = Math.max(0, Math.min(W, H) / 2);
+            pill.P = rrect(W, H, pill.R);
+            pill.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+            pill.path.setAttribute('d', pth(pill.P));
+          }
+        }
+      }
+      stopGlowPaint();
+    });
+  }
+
+  stopEls.forEach(stopEl => {
+    const headAttr = stopEl.dataset.head;
+    const head = headAttr !== undefined && headAttr !== '' ? parseFloat(headAttr) : null;
+    if (Number.isFinite(head)) {
+      const gid = `sg-card-${++stopGlowSeq}`;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'stopglow');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.innerHTML = `<defs><radialGradient id="${gid}" gradientUnits="userSpaceOnUse" r="110"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><path class="glow-path" fill="none" stroke="url(#${gid})" stroke-width="2.5"/><g class="glow-badge"><circle r="11" fill="var(--surface)" stroke="#fff" stroke-width="1.5"/><path d="M0 6 V-3" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><path d="M0 -7.5 L5 -1.5 L-5 -1.5 Z" fill="#fff"/></g>`;
+      stopEl.appendChild(svg);
+      const cardObj = {
+        el: stopEl,
+        svg,
+        gradient: svg.querySelector('radialGradient'),
+        path: svg.querySelector('.glow-path'),
+        badge: svg.querySelector('.glow-badge'),
+        head,
+        W: 0, H: 0, R: 0, P: null,
+      };
+      stopGlowCards.push(cardObj);
+      stopGlowObserver.observe(stopEl);
+    }
+
+    const pillEl = stopEl.querySelector('.pill');
+    const latAttr = stopEl.dataset.lat;
+    const lonAttr = stopEl.dataset.lon;
+    const lat = latAttr !== undefined && latAttr !== '' ? parseFloat(latAttr) : null;
+    const lon = lonAttr !== undefined && lonAttr !== '' ? parseFloat(lonAttr) : null;
+    if (pillEl && Number.isFinite(lat) && Number.isFinite(lon)) {
+      const gid = `sg-pill-${++stopGlowSeq}`;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'pillglow');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.innerHTML = `<defs><radialGradient id="${gid}" gradientUnits="userSpaceOnUse" r="60"><stop offset="0" stop-color="#c8f04a"/><stop offset="1" stop-color="#c8f04a" stop-opacity="0"/></radialGradient></defs><path class="glow-path" fill="none" stroke="url(#${gid})" stroke-width="2.5"/><circle class="glow-dot" r="4" fill="#c8f04a" cx="0" cy="0"/>`;
+      pillEl.appendChild(svg);
+      const pillObj = {
+        el: pillEl,
+        svg,
+        gradient: svg.querySelector('radialGradient'),
+        path: svg.querySelector('.glow-path'),
+        dot: svg.querySelector('.glow-dot'),
+        lat, lon,
+        W: 0, H: 0, R: 0, P: null,
+      };
+      stopGlowPills.push(pillObj);
+      stopGlowObserver.observe(pillEl);
+    }
+  });
+
+  for (const card of stopGlowCards) {
+    const W = card.el.offsetWidth;
+    const H = card.el.offsetHeight;
+    if (W > 0 && H > 0) {
+      card.W = W; card.H = H;
+      const parsedR = parseFloat(getComputedStyle(card.el).borderTopLeftRadius) || 30;
+      card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
+      card.P = rrect(W, H, card.R);
+      card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      card.path.setAttribute('d', pth(card.P));
+    }
+  }
+  for (const pill of stopGlowPills) {
+    const W = pill.el.offsetWidth;
+    const H = pill.el.offsetHeight;
+    if (W > 0 && H > 0) {
+      pill.W = W; pill.H = H;
+      pill.R = Math.max(0, Math.min(W, H) / 2);
+      pill.P = rrect(W, H, pill.R);
+      pill.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      pill.path.setAttribute('d', pth(pill.P));
+    }
+  }
+
+  stopGlowPaint();
+}
+
+function stopGlowPaint() {
+  if (!COMPASS.available) return;
+  const heading = COMPASS.heading;
+  if (heading === null || !Number.isFinite(heading)) return;
+
+  for (const card of stopGlowCards) {
+    if (!card.P || card.W <= 0 || card.H <= 0) continue;
+    const deg = (card.head - heading + 360) % 360;
+    const i = hit(card.P, card.W, card.H, deg);
+    const p = card.P[i];
+    card.gradient.setAttribute('cx', p[0]);
+    card.gradient.setAttribute('cy', p[1]);
+    card.badge.setAttribute('transform', `translate(${p[0]} ${p[1]}) rotate(${card.head - heading})`);
+  }
+
+  const d = S.data;
+  if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
+    for (const pill of stopGlowPills) {
+      if (!pill.P || pill.W <= 0 || pill.H <= 0) continue;
+      const bearing = stopBearingDeg(d.lat, d.lon, pill.lat, pill.lon);
+      const deg = (bearing - heading + 360) % 360;
+      const i = hit(pill.P, pill.W, pill.H, deg);
+      const p = pill.P[i];
+      pill.gradient.setAttribute('cx', p[0]);
+      pill.gradient.setAttribute('cy', p[1]);
+      pill.dot.setAttribute('cx', p[0]);
+      pill.dot.setAttribute('cy', p[1]);
+    }
+  }
+}
+window.stopGlowPaint = stopGlowPaint;
 const skel = n => Array.from({length:n}, () => '<div class="sk"></div>').join('');
 function errBox() {
   if (S.error === 'NO_PROXY') return `<div class="empty" style="margin-top:6px"><div class="star">${I.bus}</div><h3>先設定資料來源</h3>
@@ -1130,8 +1359,6 @@ function vSearch() {
   return h;
 }
 
-// 公車頁站牌清單底部說明；只在有方向感應時顯示（跟箭頭同一個開關）
-const COMPASS_NOTE = '<span class="compass-note">方位以手機朝向為準：<b>↑</b> 前方、<b>→</b> 右方、<b>↓</b> 後方。</span>';
 function filterQ(list, f) { const q = S.q.trim().toLowerCase(); return q ? list.filter(x => f(x).toLowerCase().includes(q)) : list; }
 function vBus() {
   if (S.error === 'NO_PROXY') return errBox();
@@ -1141,11 +1368,11 @@ function vBus() {
   if (!d) return h + (S.error ? '' : skel(3));
   if (d.busError) { if (d.busStops.length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('公車資料暫時讀不到：' + d.busError, 'retryPart', 'data-v="bus"'); }
   const stops = filterQ(d.busStops, s => s.name + ' ' + s.routes.map(r => r.route).join(' '));
-  if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + (stops.length ? COMPASS_NOTE : '') + natSearch(S.q);
+  if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + natSearch(S.q);
   if (!stops.length) return h + `<div class="note">這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。</div>`;
   h += bfBox();
   if (S.bf?.sel) return h + bfResult(d);
-  return h + stops.map(s => stopBlock(s, 6)).join('') + COMPASS_NOTE;
+  return h + stops.map(s => stopBlock(s, 6)).join('');
 }
 /* ---------- v2.35.0 公車目的地篩選：輸入目的地站名或選地點，只留附近站牌有到的路線（同方向）＋坐幾站。
    比對在 Worker（站序只存雲端）；不打 TDX；篩選只在這次使用期間記住，最近3個目的地存在手機 ---------- */
@@ -1209,6 +1436,13 @@ function bfQuery() {
 }
 // v2.35.1：附近有路線在雲端站序裡確實對不到 → Worker 已在背景重抓（每個縣市每天最多一次）
 const bfUpd = B => B.res?.upd?.length ? '（有新路線或新站牌，雲端正在更新站序資料，過幾分鐘再查會更完整）' : '';
+function stopTag(s) {
+  const head = Number.isFinite(s.head) ? s.head : (s.destLines || []).find(l => Number.isFinite(l.head))?.head;
+  const dLat = Number.isFinite(s.lat) ? ` data-lat="${s.lat}"` : '';
+  const dLon = Number.isFinite(s.lon) ? ` data-lon="${s.lon}"` : '';
+  const dHead = Number.isFinite(head) ? ` data-head="${head}"` : '';
+  return `<div class="stop"${dLat}${dLon}${dHead}>`;
+}
 function bfResult(d) {
   const B = S.bf; bfQuery();
   if (B.err) return `<div class="note">篩選暫時無法使用：${esc(B.err)}</div>`;
@@ -1223,25 +1457,25 @@ function bfResult(d) {
       const via = `坐${m.n}站到${m.to}${m.m != null ? `，離目的地約${Math.max(10, Math.round(m.m / 10) * 10)}公尺` : ''}${m.loop ? '（環狀線，繞過起點站）' : ''}${m.part ? '・部分班次（區間車）不到' : ''}`;
       rows.push(`<button class="rrow bfrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}<span class="via">${esc(via)}</span></span>${etaPill(r)}</button>`);
     }
-    if (rows.length) h += `<div class="stop"><div class="stop-h">${busStopHeading(s)}</div>${rows.join('')}</div>`;
+    if (rows.length) h += `${stopTag(s)}<div class="stop-h">${busStopHeading(s)}</div>${rows.join('')}</div>`;
   }
   const nm = B.sel.type === 'place' ? `「${B.sel.name}」附近` : B.sel.name;
   if (!hit.size) return `<div class="note">附近站牌沒有路線會到${esc(nm)}（不含轉乘）。可以改用路線規劃找轉乘的走法。${bfUpd(B)}</div>`;
   const miss = (B.res.miss ? `；${B.res.miss}條路線的站序對不上，沒有列出` : '') + bfUpd(B);
-  return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>` + COMPASS_NOTE;
+  return `<div class="bfsum">附近有${hit.size}條路線（同方向）會到${esc(nm)}；其他${all.size - hit.size}條不會到，先藏起來${miss}</div>` + h + `<span class="bfnote">站數依官方站序；右邊時間是到你這站的即時預估</span>`;
 }
 // 公車頁專用：目的地永遠顯示；無感測時僅恢復 sideTag 的「對面・」規則。
 function busStopHeading(s) {
   const lines = Array.isArray(s.destLines) ? s.destLines : (s.destLine ? [{ destLine: s.destLine, head: s.head }] : []);
   const opposite = s.side === "對向";
   const opp = opposite ? `<span class="compass-opp">對面・</span>` : "";
-  const sub = lines.length || opposite ? `<span class="side-sub">${lines.length ? "" : opp}${lines.map((line, i) => `<span class="dest-line">${i ? "" : opp}${COMPASS.busArrow(line.head)}${esc(line.destLine)}</span>`).join("")}</span>` : "";
-  return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill">${COMPASS.stopArrow(s)}${distTxt(s.dist)}</span>`;
+  const sub = lines.length || opposite ? `<span class="side-sub">${lines.length ? "" : opp}${lines.map((line, i) => `<span class="dest-line">${i ? "" : opp}${esc(line.destLine)}</span>`).join("")}</span>` : "";
+  return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill">${distTxt(s.dist)}</span>`;
 }
 function stopBlock(s, limit) {
   const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
   const shown = limit ? rs.slice(0, limit) : rs;
-  return `<div class="stop"><div class="stop-h">${busStopHeading(s)}</div>
+  return `${stopTag(s)}<div class="stop-h">${busStopHeading(s)}</div>
     ${shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')}
     ${limit && rs.length > limit ? `<button class="more" data-act="stop" data-i="${reg(s)}">顯示全部${rs.length}條路線</button>` : ''}</div>`;
 }
@@ -2403,7 +2637,7 @@ function closeSheet() { const w = $('#sheetWrap'); w.classList.remove('open'); s
 function stopSheet(s, nwtDone) {
   S.sheet = { type:'stop', s };
   openSheet(`<h2>${esc(s.name)}${sideTag(s)}</h2><div class="addr">距離${distTxt(s.dist)}，${s.routes.length}條路線</div>` +
-    stopBlock(s, 0).replace('<div class="stop">','<div class="stop" style="background:none;border:0;padding:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '') +
+    stopBlock(s, 0).replace(/<div class="stop.*?>/,'<div class="stop" style="background:none;border:0;padding:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '') +
     (s.lat ? `<div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="nav" data-lat="${s.lat}" data-lon="${s.lon}">${I.nav}步行前往</button></div>` : ''));
   if (!nwtDone && s.routes && s.routes.some(r => r.routeUID && /^(NWT|TAO|THB|KEE|ILA|HSQ|MIA|CHA|NAN|YUN|CYI|CYQ|PIF|HUA|TTT|PEN|HSZ|TXG|TNN|KHH|LIE|KIN)/.test(r.routeUID))) {   // 官網即時來源只補一次，不輪詢
     api('refreshNwtRoutes', { routes: s.routes }).then(() => {
