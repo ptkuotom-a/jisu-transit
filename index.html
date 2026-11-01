@@ -16,7 +16,7 @@
 :root{
   --bg:#0E100F; --surface:#1A1C1B; --surface2:#252726; --line:#262827;
   --text:#F1F2EF; --muted:#8E918D; --dim:#5E615D;
-  --lime:#C6F135; --ink:#0E100F; --warn:#FFB03A; --bad:#FF5B4F;
+  --lime:#C6F135; --ink:#0E100F; --warn:#FFB03A; --bad:#FF5B4F; --late:#FF6A3D;
   color-scheme:dark;
   box-sizing:border-box;
 }
@@ -85,7 +85,7 @@ html,body,*{scrollbar-width:none;-ms-overflow-style:none}
 /* stop block (bus tab) */
 .stop{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:30px;padding:18px 18px 8px;margin-bottom:22px}
 .stop-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub .dest-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
+.side-sub{display:block;margin-top:2px;font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}.side-sub .dest-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bus-name .side-sub,.bus-name .side-sub .dest-line{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}.side-sub b{color:var(--lime);font-weight:800;margin-right:4px}
 h2 .side-sub{font-size:14px;margin-top:4px}
 .stop-h .name{flex:1;font-size:21px;font-weight:800}
 .stop-h .bus-name{min-width:0}
@@ -102,6 +102,7 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .rdest{flex:1;min-width:0;color:var(--muted);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .eta{flex:none;min-width:76px;text-align:center;padding:7px 12px;border-radius:999px;background:var(--surface2);font-weight:700;font-size:16px}
 .eta.hot{background:var(--lime);color:var(--ink)}
+.tra-row .eta.hot .ltag{color:var(--ink);opacity:.85}
 .eta.soon{color:var(--lime)}
 .eta.off{color:var(--muted);font-weight:600;font-size:14px}
 .more{display:block;width:100%;padding:12px 0 10px;color:var(--lime);font-weight:600;font-size:15px;border-top:1px solid var(--line)}
@@ -265,6 +266,8 @@ button.tgrp.lnk{display:flex;width:auto;margin:14px 6px 0;padding:0;align-items:
 .lstops{display:inline-flex;align-items:center;gap:2px;font-size:13px;font-weight:600;color:var(--lime)} .lstops svg{width:14px;height:14px}
 .ltag{display:block;font-size:10px;font-weight:600;opacity:.75;margin-top:1px;white-space:nowrap}
 .ltag.late{color:var(--warn);opacity:1}
+.tra-row .eta .ltag.late, .tra-row .delay.late{color:var(--late);opacity:1}
+.tra-row .eta.hot .ltag.late{color:#B83A12;font-weight:700;opacity:1}
 .eta.sch{color:var(--text)} .eta.sch .ltag{color:var(--muted);opacity:1}
 .tt b.seat{font-weight:700} .tt b.seat.ok{color:var(--lime)} .tt b.seat.few{color:var(--warn)} .tt b.seat.full{color:var(--bad)}
 .lastt{font-size:11px;color:var(--warn);font-weight:700}
@@ -789,9 +792,12 @@ function mountMap() {
 const COMPASS = (() => {
   const KEY = 'jisu.compassOk', LEGACY_KEY = 'jisu_compass_enabled', root = document.documentElement;
   const orientation = window.DeviceOrientationEvent;
+  // Android（含 Chrome 151 以後也有 requestPermission 的版本）用 deviceorientationabsolute 的 alpha；iOS 用 deviceorientation 的 webkitCompassHeading。
+  const absolute = 'ondeviceorientationabsolute' in window;
   const needsPermission = typeof orientation?.requestPermission === 'function';
-  const supported = !!orientation && (needsPermission || 'ondeviceorientationabsolute' in window);
-  const eventName = needsPermission ? 'deviceorientation' : 'deviceorientationabsolute';
+  const supported = !!orientation && (needsPermission || absolute);
+  const eventName = absolute ? 'deviceorientationabsolute' : 'deviceorientation';
+  let ready = false;   // COMPASS 常數指定完成後才為 true；在那之前 paint 不碰其他模組（避免 TDZ）
   let granted = false, pending = false, listening = false, usable = false, follow = true;
   let heading = null, sample = null, latest = null, frame = 0, lastPaint = -Infinity;
   const norm = a => (a % 360 + 360) % 360;
@@ -819,7 +825,7 @@ const COMPASS = (() => {
     root.style.setProperty('--compass-fan', `${usable && !follow ? heading : 0}deg`);
     root.style.setProperty('--compass-north', `${-mapBearing()}deg`);
     syncMap();
-    window.stopGlowPaint?.();
+    if (ready) window.stopGlowPaint?.();
   }
   function schedule() {
     if (!frame) frame = requestAnimationFrame(tick);
@@ -835,7 +841,7 @@ const COMPASS = (() => {
   }
   function onOrientation(e) {
     if (!listening || !active()) { sync(); return; }
-    if (needsPermission) {
+    if (!absolute) {
       const accuracy = e.webkitCompassAccuracy;
       sample = Number.isFinite(e.webkitCompassHeading) && Number.isFinite(accuracy) && accuracy >= 0 && accuracy <= 35 ? e.webkitCompassHeading : null;
     } else sample = Number.isFinite(e.alpha) && e.absolute !== false ? 360 - e.alpha : null;
@@ -870,7 +876,7 @@ const COMPASS = (() => {
     paint();
   }
   async function request() {
-    if (pending || !supported) return;
+    if (pending || !supported) return 'busy';
     pending = true;
     try {
       // 此函式只由 click handler 直接呼叫；await 前立即要求 iOS 權限。
@@ -886,13 +892,12 @@ const COMPASS = (() => {
         }
       } catch (e) {}
       sync();
+      return granted ? 'granted' : 'denied';
     } catch (e) {
+      // 例外多半是不在使用者手勢內（例如第一下是捲動）：不清除授權紀錄，只停聽，交給下一次點按再試。
       granted = false;
-      try {
-        localStorage.removeItem(KEY);
-        try { localStorage.removeItem(LEGACY_KEY); } catch (err) {}
-      } catch (err) {}
       stop();
+      return 'error';
     } finally { pending = false; }
   }
   document.addEventListener('click', e => {
@@ -904,13 +909,24 @@ const COMPASS = (() => {
       paint();
     }
   });
-  try {
-    if (localStorage.getItem(KEY) === '1' || localStorage.getItem(LEGACY_KEY) === '1') {
-      document.addEventListener('click', e => {
-        if (!e.target.closest('.compass-enable')) request();
-      }, { once: true, capture: true });
+  if (supported) {
+    if (!needsPermission) {
+      setTimeout(request, 0);   // 延到 COMPASS 初始化完成後才執行
+    } else {
+      const arm = () => {
+        document.addEventListener('touchend', onFirstTouch, true);
+        document.addEventListener('click', onFirstTouch, true);
+      };
+      const onFirstTouch = e => {
+        document.removeEventListener('touchend', onFirstTouch, true);
+        document.removeEventListener('click', onFirstTouch, true);
+        if (e.target?.closest?.('.compass-enable')) return;   // 按鈕自己的 click handler 會詢問
+        request().then(r => { if (r === 'error') arm(); });
+      };
+      arm();
     }
-  } catch (e) {}
+  }
+  queueMicrotask(() => { ready = true; });
   document.addEventListener('visibilitychange', sync);
   // 詳情頁以 overlay 開關；偵測其開關即可停聽，不改動各頁的 render。
   new MutationObserver(sync).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
@@ -965,6 +981,35 @@ function hit(P, W, H, deg) {
 
 const pth = (P, ox = 0, oy = 0) => P.map((p, i) => (i ? 'L' : 'M') + (p[0] + ox).toFixed(1) + ' ' + (p[1] + oy).toFixed(1)).join('') + 'Z';
 
+function topHalfPth(P, H, ox = 0, oy = 0) {
+  const midY = H / 2 + 1e-4;
+  let seg1 = [], seg2 = [];
+  for (let i = 0; i < P.length; i++) {
+    if (P[i][1] <= midY) seg1.push(P[i]);
+    else break;
+  }
+  for (let i = P.length - 1; i >= 0; i--) {
+    if (P[i][1] <= midY) seg2.unshift(P[i]);
+    else break;
+  }
+  const pts = seg2.concat(seg1);
+  return pts.map((p, i) => (i ? 'L' : 'M') + (p[0] + ox).toFixed(1) + ' ' + (p[1] + oy).toFixed(1)).join('');
+}
+
+function getCardGlowPoint(P, W, H, R, a) {
+  const S45 = Math.SQRT1_2;
+  if (Math.abs(a) <= 90) {
+    const deg = (a + 360) % 360;
+    const i = hit(P, W, H, deg);
+    return P[i];
+  }
+  if (a >= 0) {
+    return [W - R + R * S45, R - R * S45];
+  } else {
+    return [R - R * S45, R - R * S45];
+  }
+}
+
 function closestPointOnBorder(W, H, R, deg) {
   if (W <= 0 || H <= 0) return [0, 0];
   R = Math.max(0, Math.min(R, Math.min(W, H) / 2));
@@ -988,6 +1033,75 @@ let stopGlowSeq = 0;
 let stopGlowCards = [];
 let stopGlowPills = [];
 let stopGlowObserver = null;
+let busWatchId = null;
+let lastBusGeo = null;
+
+function haversineM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, t = d => d * Math.PI / 180;
+  const a = Math.sin(t(lat2 - lat1) / 2) ** 2 + Math.cos(t(lat1)) * Math.cos(t(lat2)) * Math.sin(t(lon2 - lon1) / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+function updateBusDistances(lat, lon) {
+  const main = document.getElementById('main');
+  if (!main || S.tab !== 'bus' || S.page) return;
+  const stops = main.querySelectorAll('.stop');
+  for (const s of stops) {
+    const sLat = parseFloat(s.dataset.lat);
+    const sLon = parseFloat(s.dataset.lon);
+    if (!Number.isFinite(sLat) || !Number.isFinite(sLon)) continue;
+    const d = haversineM(lat, lon, sLat, sLon);
+    const pill = s.querySelector('.pill');
+    if (!pill) continue;
+    const distEl = pill.querySelector('.pill-dist');
+    if (distEl) distEl.textContent = distTxt(d);
+    else {
+      for (const node of pill.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          node.textContent = distTxt(d);
+          break;
+        }
+      }
+    }
+  }
+  stopGlowPaint();
+}
+
+function syncBusWatch() {
+  const active = S.tab === 'bus' && !S.page && !document.hidden;
+  if (!active) {
+    if (busWatchId !== null) {
+      navigator.geolocation?.clearWatch?.(busWatchId);
+      busWatchId = null;
+    }
+    return;
+  }
+  if (busWatchId !== null || !navigator.geolocation?.watchPosition) return;
+  try {
+    busWatchId = navigator.geolocation.watchPosition(
+      pos => {
+        const lat = pos?.coords?.latitude;
+        const lon = pos?.coords?.longitude;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        if (lastBusGeo && haversineM(lastBusGeo.lat, lastBusGeo.lon, lat, lon) < 5) return;
+        lastBusGeo = { lat, lon };
+        updateBusDistances(lat, lon);
+      },
+      () => {
+        if (busWatchId !== null) {
+          navigator.geolocation?.clearWatch?.(busWatchId);
+          busWatchId = null;
+        }
+      },
+      { enableHighAccuracy: false, maximumAge: 10000 }
+    );
+  } catch (e) {
+    busWatchId = null;
+  }
+}
+
+document.addEventListener('visibilitychange', syncBusWatch);
+new MutationObserver(syncBusWatch).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
 
 function stopBearingDeg(lat1, lon1, lat2, lon2) {
   const p = Math.PI / 180;
@@ -997,6 +1111,7 @@ function stopBearingDeg(lat1, lon1, lat2, lon2) {
 }
 
 function stopGlowMount() {
+  syncBusWatch();
   if (stopGlowObserver) {
     stopGlowObserver.disconnect();
   }
@@ -1027,7 +1142,7 @@ function stopGlowMount() {
             card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
             card.P = rrect(W, H, card.R);
             card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-            card.path.setAttribute('d', pth(card.P));
+            card.path.setAttribute('d', topHalfPth(card.P, H));
           }
           continue;
         }
@@ -1106,7 +1221,7 @@ function stopGlowMount() {
       card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
       card.P = rrect(W, H, card.R);
       card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      card.path.setAttribute('d', pth(card.P));
+      card.path.setAttribute('d', topHalfPth(card.P, H));
     }
   }
   for (const pill of stopGlowPills) {
@@ -1121,6 +1236,10 @@ function stopGlowMount() {
     }
   }
 
+  if (lastBusGeo) {
+    updateBusDistances(lastBusGeo.lat, lastBusGeo.lon);
+  }
+
   stopGlowPaint();
 }
 
@@ -1131,15 +1250,14 @@ function stopGlowPaint() {
 
   for (const card of stopGlowCards) {
     if (!card.P || card.W <= 0 || card.H <= 0) continue;
-    const deg = (card.head - heading + 360) % 360;
-    const i = hit(card.P, card.W, card.H, deg);
-    const p = card.P[i];
+    const a = ((card.head - heading + 540) % 360) - 180;
+    const p = getCardGlowPoint(card.P, card.W, card.H, card.R, a);
     card.gradient.setAttribute('cx', p[0]);
     card.gradient.setAttribute('cy', p[1]);
     card.badge.setAttribute('transform', `translate(${p[0]} ${p[1]}) rotate(${card.head - heading})`);
   }
 
-  const d = S.data;
+  const d = lastBusGeo || S.data;
   if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
     for (const pill of stopGlowPills) {
       if (!pill.P || pill.W <= 0 || pill.H <= 0) continue;
@@ -1470,7 +1588,7 @@ function busStopHeading(s) {
   const opposite = s.side === "對向";
   const opp = opposite ? `<span class="compass-opp">對面・</span>` : "";
   const sub = lines.length || opposite ? `<span class="side-sub">${lines.length ? "" : opp}${lines.map((line, i) => `<span class="dest-line">${i ? "" : opp}${esc(line.destLine)}</span>`).join("")}</span>` : "";
-  return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill">${distTxt(s.dist)}</span>`;
+  return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill"><span class="pill-dist">${distTxt(s.dist)}</span></span>`;
 }
 function stopBlock(s, limit) {
   const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
@@ -1871,6 +1989,7 @@ async function loadRail(auto) {
   S.railLoading = false; S.railAuto = false; renderRail();
 }
 // 右側倒數膠囊：即時／表定／估算都同一種樣式，只換下方小字
+const RAIL_SOON_MIN = 3; // 台鐵即將到站時間（分），可調整
 const cdTxt = m => m >= 60 ? `${Math.floor(m / 60)}時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
 function cdPill(min, tag, o = {}) {
   let txt, k = '';
@@ -1880,14 +1999,15 @@ function cdPill(min, tag, o = {}) {
   else if (o.live && min <= 1) { txt = '將到站'; k = 'hot'; }
   else if (min <= 0) txt = '即將';
   else { txt = cdTxt(min); if (o.live && min <= 3) k = 'soon'; }
-  if (!o.live && !o.tomorrow && min != null) k += ' sch';
-  return `<span class="eta ${k}">${txt}<small class="ltag${o.late ? ' late' : ''}">${tag}</small></span>`;
+  if (o.tra && min != null && min >= 0 && min <= RAIL_SOON_MIN) k = 'hot';
+  if (!o.live && !o.tomorrow && min != null && k !== 'hot') k += ' sch';   // 台鐵即將到站用亮綠底，不加表定的灰白字
+  return `<span class="eta ${k.trim()}">${txt}<small class="ltag${o.late ? ' late' : ''}">${tag}</small></span>`;
 }
 const nowMinUI = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
-function trainCd(t) {   // 台鐵／高鐵：表定時間＋誤點算倒數
+function trainCd(t, isTra = false) {   // 台鐵／高鐵：表定時間＋誤點算倒數
   const now = nowMinUI(); let m = t.t != null ? t.t + (t.delay || 0) - now : null; if (m != null && m < -600) m += 1440;
   const tag = t.delay == null ? '表定' : t.delay > 0 ? `即時・晚${t.delay}` : '即時・準點';
-  return cdPill(m, tag, { late: t.delay > 0 });
+  return cdPill(m, tag, { late: t.delay > 0, tra: isTra });
 }
 function delayPill(t) {
   if (t.delay == null) return `<span class="delay na">表定</span>`;
@@ -1899,8 +2019,8 @@ const CROWD_TAG = { low:['低', '#89B638'], mid:['中', '#F3D726'], busy:['偏�
 const crowdTag = c => { const x = CROWD_TAG[c]; return x ? ` <small title="擁擠度：${x[0]}" style="font-size:11px;font-weight:700;color:${x[1]}">${x[0]}</small>` : ''; };
 const crowdLeg = (ts, op) => ts.some(t => CROWD_TAG[t.crowd]) ? `<div class="ttleg">擁擠度（${op === 'TYMC' ? '桃捷官網・最擠車廂' : '北捷官網'}）：${Object.values(CROWD_TAG).map(([s, c]) => `<b style="color:${c}">${s}</b>`).join('　')}</div>` : '';
 function trainRow(kind, op, t) {
-  if (kind === 'tra') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
-    <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.type || '')} ${esc(t.no)}次</div></span>${trainCd(t)}</div>`;
+  if (kind === 'tra') return `<div class="trow tra-row"><span class="ttime">${esc(t.time)}</span>
+    <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.type || '')} ${esc(t.no)}次</div></span>${trainCd(t, true)}</div>`;
   if (kind === 'thsr') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
     <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.no)}次${t.seats ? `・標準 <b class="seat ${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b>・商務 <b class="seat ${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b>` : ''}</div></span>${trainCd(t)}</div>`;
   if (t.time) return `<div class="trow"><span class="ttime">${esc(t.time)}</span>

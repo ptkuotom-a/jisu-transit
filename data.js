@@ -1634,7 +1634,17 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      const lineOf = rs => { const values = [...new Set(rs.map(r => r.dest))], show = values.slice(0, 2); return `往 ${show.join("／")}${values.length > show.length ? " 等" : ""}`; };
+      const DIRS8 = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+      const d8 = head => DIRS8[Math.round(((head % 360 + 360) % 360) / 45) % 8];
+      const lineOf = (rs, head) => {
+        const values = [...new Set(rs.map(r => r.dest).filter(Boolean))];
+        if (head != null && Number.isFinite(head)) {
+          const show = values.slice(0, 4);
+          return `往${d8(head)}：${show.join("／")}${values.length > show.length ? " 等" : ""}`;
+        }
+        const show = values.slice(0, 2);
+        return `往 ${show.join("／")}${values.length > show.length ? " 等" : ""}`;
+      };
       const destLines = [];
       // 有目的地／缺目的地去程／缺目的地返程三組各自成行，彼此不合併
       const buckets = [
@@ -1644,7 +1654,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       ];
       for (const [rs, txt] of buckets) {
         const noHead = rs.filter(r => r.head == null);
-        if (noHead.length) destLines.push({ destLine: txt(noHead), head: null });
+        if (noHead.length) destLines.push({ destLine: txt(noHead, null), head: null });
         let pool = rs.filter(r => r.head != null);
         // 極端值：45 度內沒有其他路線的 head，先拿出來，最後各自一行
         const lone = pool.filter(r => !pool.some(o => o !== r && angDiff(o.head, r.head) <= 45));
@@ -1656,10 +1666,11 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
             const hit = pool.filter(r => (r.head - seed.head + 360) % 360 <= 45);
             if (hit.length > best.length) best = hit;
           }
-          destLines.push({ destLine: txt(best), head: circMean(best.map(r => r.head)) });
+          const groupHead = circMean(best.map(r => r.head));
+          destLines.push({ destLine: txt(best, groupHead), head: groupHead });
           pool = pool.filter(r => !best.includes(r));
         }
-        for (const r of lone) destLines.push({ destLine: txt([r]), head: r.head });
+        for (const r of lone) destLines.push({ destLine: txt([r], r.head), head: r.head });
       }
       g.destLines = destLines;
       g.destLine = destLines.map(x => x.destLine).join("\n");
