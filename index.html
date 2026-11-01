@@ -92,7 +92,8 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .compass-arrow{display:var(--compass-arrows,none);width:18px;height:18px;vertical-align:-3px;margin-right:6px;color:var(--lime);transform:rotate(calc(var(--target-bearing) - var(--compass-heading,0deg)));transform-origin:center}
 .side-sub .compass-arrow{width:17px;height:17px;vertical-align:-3px}
 .pill .compass-arrow{width:17px;height:17px;vertical-align:-3px;margin-right:7px}
-.stopglow, .pillglow{display:var(--compass-arrows,none);position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible}.stopglow{top:-1px;left:-1px;width:calc(100% + 2px);height:calc(100% + 2px)}
+.pillglow{display:var(--compass-arrows,none);position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.stop-h .pill{margin-left:8px}
 .compass-opp{display:var(--compass-opposite,inline)}
 .compass-enable{display:var(--compass-enable,inline-flex);align-items:center;justify-content:center;padding:9px 14px;border-radius:999px;background:var(--surface2);color:var(--lime);font-size:14px;font-weight:700}
 .bus-compass-enable{margin:0 0 12px}
@@ -981,56 +982,7 @@ function hit(P, W, H, deg) {
 
 const pth = (P, ox = 0, oy = 0) => P.map((p, i) => (i ? 'L' : 'M') + (p[0] + ox).toFixed(1) + ' ' + (p[1] + oy).toFixed(1)).join('') + 'Z';
 
-function topHalfPth(P, H, ox = 0, oy = 0) {
-  const midY = H / 2 + 1e-4;
-  let seg1 = [], seg2 = [];
-  for (let i = 0; i < P.length; i++) {
-    if (P[i][1] <= midY) seg1.push(P[i]);
-    else break;
-  }
-  for (let i = P.length - 1; i >= 0; i--) {
-    if (P[i][1] <= midY) seg2.unshift(P[i]);
-    else break;
-  }
-  const pts = seg2.concat(seg1);
-  return pts.map((p, i) => (i ? 'L' : 'M') + (p[0] + ox).toFixed(1) + ' ' + (p[1] + oy).toFixed(1)).join('');
-}
-
-function getCardGlowPoint(P, W, H, R, a) {
-  const S45 = Math.SQRT1_2;
-  if (Math.abs(a) <= 90) {
-    const deg = (a + 360) % 360;
-    const i = hit(P, W, H, deg);
-    return P[i];
-  }
-  if (a >= 0) {
-    return [W - R + R * S45, R - R * S45];
-  } else {
-    return [R - R * S45, R - R * S45];
-  }
-}
-
-function closestPointOnBorder(W, H, R, deg) {
-  if (W <= 0 || H <= 0) return [0, 0];
-  R = Math.max(0, Math.min(R, Math.min(W, H) / 2));
-  const t = (deg % 360 + 360) % 360 * Math.PI / 180;
-  const tx = W / 2 + (W / 2) * Math.sin(t);
-  const ty = H / 2 - (H / 2) * Math.cos(t);
-  const cx = Math.max(R, Math.min(W - R, tx));
-  const cy = Math.max(R, Math.min(H - R, ty));
-  if ((tx < R || tx > W - R) && (ty < R || ty > H - R)) {
-    const dx = tx - cx, dy = ty - cy;
-    const len = Math.hypot(dx, dy) || 1;
-    return [cx + R * (dx / len), cy + R * (dy / len)];
-  }
-  if (tx >= R && tx <= W - R) {
-    return [tx, ty < H / 2 ? 0 : H];
-  }
-  return [tx < W / 2 ? 0 : W, ty];
-}
-
 let stopGlowSeq = 0;
-let stopGlowCards = [];
 let stopGlowPills = [];
 let stopGlowObserver = null;
 let busWatchId = null;
@@ -1115,7 +1067,6 @@ function stopGlowMount() {
   if (stopGlowObserver) {
     stopGlowObserver.disconnect();
   }
-  stopGlowCards = [];
   stopGlowPills = [];
 
   const main = document.getElementById('main');
@@ -1133,20 +1084,6 @@ function stopGlowMount() {
         const H = el.offsetHeight || rect.height;
         if (W <= 0 || H <= 0) continue;
 
-        const card = stopGlowCards.find(c => c.el === el);
-        if (card) {
-          if (card.W !== W || card.H !== H) {
-            card.W = W;
-            card.H = H;
-            const parsedR = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 30;
-            card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
-            card.P = rrect(W, H, card.R);
-            card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-            card.path.setAttribute('d', topHalfPth(card.P, H));
-          }
-          continue;
-        }
-
         const pill = stopGlowPills.find(p => p.el === el);
         if (pill) {
           if (pill.W !== W || pill.H !== H) {
@@ -1154,8 +1091,15 @@ function stopGlowMount() {
             pill.H = H;
             pill.R = Math.max(0, Math.min(W, H) / 2);
             pill.P = rrect(W, H, pill.R);
+
+            pill.Wo = W + 9;
+            pill.Ho = H + 9;
+            pill.Ro = pill.R + 4.5;
+            pill.Po = rrect(pill.Wo, pill.Ho, pill.Ro);
+
             pill.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-            pill.path.setAttribute('d', pth(pill.P));
+            pill.pathInner.setAttribute('d', pth(pill.P));
+            pill.pathOuter.setAttribute('d', pth(pill.Po, -4.5, -4.5));
           }
         }
       }
@@ -1164,66 +1108,39 @@ function stopGlowMount() {
   }
 
   stopEls.forEach(stopEl => {
-    const headAttr = stopEl.dataset.head;
-    const head = headAttr !== undefined && headAttr !== '' ? parseFloat(headAttr) : null;
-    if (Number.isFinite(head)) {
-      const gid = `sg-card-${++stopGlowSeq}`;
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('class', 'stopglow');
-      svg.setAttribute('aria-hidden', 'true');
-      svg.innerHTML = `<defs><radialGradient id="${gid}" gradientUnits="userSpaceOnUse" r="110"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><path class="glow-path" fill="none" stroke="url(#${gid})" stroke-width="2.5"/><g class="glow-badge"><circle r="11" fill="var(--surface)" stroke="#fff" stroke-width="1.5"/><path d="M0 6 V-3" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><path d="M0 -7.5 L5 -1.5 L-5 -1.5 Z" fill="#fff"/></g>`;
-      stopEl.appendChild(svg);
-      const cardObj = {
-        el: stopEl,
-        svg,
-        gradient: svg.querySelector('radialGradient'),
-        path: svg.querySelector('.glow-path'),
-        badge: svg.querySelector('.glow-badge'),
-        head,
-        W: 0, H: 0, R: 0, P: null,
-      };
-      stopGlowCards.push(cardObj);
-      stopGlowObserver.observe(stopEl);
-    }
-
     const pillEl = stopEl.querySelector('.pill');
     const latAttr = stopEl.dataset.lat;
     const lonAttr = stopEl.dataset.lon;
+    const headAttr = stopEl.dataset.head;
     const lat = latAttr !== undefined && latAttr !== '' ? parseFloat(latAttr) : null;
     const lon = lonAttr !== undefined && lonAttr !== '' ? parseFloat(lonAttr) : null;
+    const head = headAttr !== undefined && headAttr !== '' ? parseFloat(headAttr) : null;
     if (pillEl && Number.isFinite(lat) && Number.isFinite(lon)) {
       const gid = `sg-pill-${++stopGlowSeq}`;
+      const gidW = `sg-white-${stopGlowSeq}`;
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('class', 'pillglow');
       svg.setAttribute('aria-hidden', 'true');
-      svg.innerHTML = `<defs><radialGradient id="${gid}" gradientUnits="userSpaceOnUse" r="60"><stop offset="0" stop-color="#c8f04a"/><stop offset="1" stop-color="#c8f04a" stop-opacity="0"/></radialGradient></defs><path class="glow-path" fill="none" stroke="url(#${gid})" stroke-width="2.5"/><circle class="glow-dot" r="4" fill="#c8f04a" cx="0" cy="0"/>`;
+      svg.innerHTML = `<defs><radialGradient id="${gid}" gradientUnits="userSpaceOnUse" r="60"><stop offset="0" stop-color="#c8f04a"/><stop offset="1" stop-color="#c8f04a" stop-opacity="0"/></radialGradient><radialGradient id="${gidW}"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><path class="pill-outer" fill="none" stroke="#fff" stroke-width="1" opacity="0.55"/><path class="pill-inner" fill="none" stroke="url(#${gid})" stroke-width="2.5"/><circle class="glow-dot" r="4" fill="#c8f04a" cx="0" cy="0"/><g class="pill-wdot"${Number.isFinite(head) ? '' : ' style="display:none"'}><circle class="wdot-glow" r="9" fill="url(#${gidW})"/><circle class="wdot-core" r="4.5" fill="#fff"/></g>`;
+      pillEl.querySelector('.pillglow')?.remove();   // 重複呼叫時不疊加
       pillEl.appendChild(svg);
       const pillObj = {
         el: pillEl,
         svg,
-        gradient: svg.querySelector('radialGradient'),
-        path: svg.querySelector('.glow-path'),
+        gradient: svg.querySelector(`#${gid}`),
+        pathOuter: svg.querySelector('.pill-outer'),
+        pathInner: svg.querySelector('.pill-inner'),
         dot: svg.querySelector('.glow-dot'),
-        lat, lon,
+        wdotGroup: svg.querySelector('.pill-wdot'),
+        lat, lon, head,
         W: 0, H: 0, R: 0, P: null,
+        Wo: 0, Ho: 0, Ro: 0, Po: null,
       };
       stopGlowPills.push(pillObj);
       stopGlowObserver.observe(pillEl);
     }
   });
 
-  for (const card of stopGlowCards) {
-    const W = card.el.offsetWidth;
-    const H = card.el.offsetHeight;
-    if (W > 0 && H > 0) {
-      card.W = W; card.H = H;
-      const parsedR = parseFloat(getComputedStyle(card.el).borderTopLeftRadius) || 30;
-      card.R = Math.max(0, Math.min(parsedR, Math.min(W, H) / 2));
-      card.P = rrect(W, H, card.R);
-      card.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      card.path.setAttribute('d', topHalfPth(card.P, H));
-    }
-  }
   for (const pill of stopGlowPills) {
     const W = pill.el.offsetWidth;
     const H = pill.el.offsetHeight;
@@ -1231,8 +1148,15 @@ function stopGlowMount() {
       pill.W = W; pill.H = H;
       pill.R = Math.max(0, Math.min(W, H) / 2);
       pill.P = rrect(W, H, pill.R);
+
+      pill.Wo = W + 9;
+      pill.Ho = H + 9;
+      pill.Ro = pill.R + 4.5;
+      pill.Po = rrect(pill.Wo, pill.Ho, pill.Ro);
+
       pill.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      pill.path.setAttribute('d', pth(pill.P));
+      pill.pathInner.setAttribute('d', pth(pill.P));
+      pill.pathOuter.setAttribute('d', pth(pill.Po, -4.5, -4.5));
     }
   }
 
@@ -1248,19 +1172,11 @@ function stopGlowPaint() {
   const heading = COMPASS.heading;
   if (heading === null || !Number.isFinite(heading)) return;
 
-  for (const card of stopGlowCards) {
-    if (!card.P || card.W <= 0 || card.H <= 0) continue;
-    const a = ((card.head - heading + 540) % 360) - 180;
-    const p = getCardGlowPoint(card.P, card.W, card.H, card.R, a);
-    card.gradient.setAttribute('cx', p[0]);
-    card.gradient.setAttribute('cy', p[1]);
-    card.badge.setAttribute('transform', `translate(${p[0]} ${p[1]}) rotate(${card.head - heading})`);
-  }
-
   const d = lastBusGeo || S.data;
-  if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
-    for (const pill of stopGlowPills) {
-      if (!pill.P || pill.W <= 0 || pill.H <= 0) continue;
+  const hasGeo = d && Number.isFinite(d.lat) && Number.isFinite(d.lon);
+
+  for (const pill of stopGlowPills) {
+    if (hasGeo && pill.P && pill.W > 0 && pill.H > 0) {
       const bearing = stopBearingDeg(d.lat, d.lon, pill.lat, pill.lon);
       const deg = (bearing - heading + 360) % 360;
       const i = hit(pill.P, pill.W, pill.H, deg);
@@ -1269,6 +1185,13 @@ function stopGlowPaint() {
       pill.gradient.setAttribute('cy', p[1]);
       pill.dot.setAttribute('cx', p[0]);
       pill.dot.setAttribute('cy', p[1]);
+    }
+
+    if (pill.Po && Number.isFinite(pill.head)) {
+      const a = (pill.head - heading + 360) % 360;
+      const io = hit(pill.Po, pill.Wo, pill.Ho, a);
+      const po = pill.Po[io];
+      pill.wdotGroup.setAttribute('transform', `translate(${po[0] - 4.5} ${po[1] - 4.5})`);
     }
   }
 }

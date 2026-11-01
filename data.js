@@ -1634,15 +1634,10 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      const DIRS8 = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
-      const d8 = head => DIRS8[Math.round(((head % 360 + 360) % 360) / 45) % 8];
       const lineOf = (rs, head) => {
         const values = [...new Set(rs.map(r => r.dest).filter(Boolean))];
-        if (head != null && Number.isFinite(head)) {
-          const show = values.slice(0, 4);
-          return `往${d8(head)}：${show.join("／")}${values.length > show.length ? " 等" : ""}`;
-        }
-        const show = values.slice(0, 2);
+        const max = head != null && Number.isFinite(head) ? 4 : 2;
+        const show = values.slice(0, max);
         return `往 ${show.join("／")}${values.length > show.length ? " 等" : ""}`;
       };
       const destLines = [];
