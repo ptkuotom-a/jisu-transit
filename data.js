@@ -964,6 +964,92 @@ function circMean(degs) {
   for (const d of degs) { const r = d * Math.PI / 180; x += Math.cos(r); y += Math.sin(r); }
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
+function groupByRelativeQuadrant(origin, items) {
+  const oLat = origin ? (Array.isArray(origin) ? origin[0] : (origin.lat ?? origin.latitude)) : null;
+  const oLon = origin ? (Array.isArray(origin) ? origin[1] : (origin.lon ?? origin.longitude)) : null;
+
+  const nameOf = r => r.dest || r.n || (r.dirNum === 1 ? "返程" : "去程");
+  const formatDestLine = rs => {
+    const names = rs.map(nameOf).filter(Boolean);
+    const uniq = [...new Set(names)];
+    const show = uniq.slice(0, 4);
+    return `往 ${show.join("／")}${uniq.length > show.length ? " 等" : ""}`;
+  };
+
+  const withB = [];
+  const noB = [];
+
+  for (const item of items || []) {
+    let b = null;
+    if (item.destHead != null && Number.isFinite(item.destHead)) {
+      b = item.destHead;
+    } else if (item.b != null && Number.isFinite(item.b)) {
+      b = item.b;
+    } else if (item.ll && oLat != null && oLon != null) {
+      const dLat = Array.isArray(item.ll) ? item.ll[0] : (item.ll.lat ?? item.ll.latitude);
+      const dLon = Array.isArray(item.ll) ? item.ll[1] : (item.ll.lon ?? item.ll.longitude);
+      if (dLat != null && dLon != null) {
+        b = bearingDeg(oLat, oLon, dLat, dLon);
+      }
+    }
+    const copy = { ...item };
+    if (b != null && Number.isFinite(b)) {
+      copy.b = (b % 360 + 360) % 360;
+      withB.push(copy);
+    } else {
+      copy.b = null;
+      noB.push(copy);
+    }
+  }
+
+  let best = 0, bm = -1;
+  if (withB.length > 1) {
+    for (let a = 0; a < 90; a++) {
+      let m = 90;
+      for (const o of withB) {
+        const t = ((o.b - a) % 90 + 90) % 90;
+        const dist = Math.min(t, 90 - t);
+        if (dist < m) m = dist;
+      }
+      if (m > bm) {
+        bm = m;
+        best = a;
+      }
+    }
+  } else if (withB.length === 1) {
+    best = 0;
+    bm = 0;
+  }
+
+  const g = [[], [], [], []];
+  withB.forEach(o => {
+    const q = Math.floor((((o.b - best) % 360 + 360) % 360) / 90);
+    o.q = q;
+    g[q].push(o);
+  });
+
+  const activeGroups = g.filter(x => x.length > 0);
+  const destLines = activeGroups.map(group => {
+    const heads = group.map(r => r.head).filter(h => h != null && Number.isFinite(h));
+    const groupHead = heads.length ? circMean(heads) : null;
+    return { destLine: formatDestLine(group), head: groupHead };
+  });
+
+  if (noB.length > 0) {
+    const heads = noB.map(r => r.head).filter(h => h != null && Number.isFinite(h));
+    const noBHead = heads.length ? circMean(heads) : null;
+    destLines.push({ destLine: formatDestLine(noB), head: noBHead });
+  }
+
+  return {
+    axis: best,
+    margin: bm,
+    dests: withB.concat(noB),
+    groups: activeGroups,
+    lines: destLines,
+  };
+}
+if (typeof window !== "undefined") window.groupByRelativeQuadrant = groupByRelativeQuadrant;
 function llOf(s) {
   if (!s) return null;
   if (Array.isArray(s.P) && s.P.length >= 2 && s.P[0] != null && s.P[1] != null) return [+s.P[0], +s.P[1]];
@@ -988,13 +1074,59 @@ function travelHead(stops, uid, lat, lon) {
   }
   return null;
 }
-function headFromList(list, routeUID, dirNum, stopUID, lat, lon) {
+function headsFromList(list, routeUID, dirNum, stopUID, lat, lon) {
+  let matchedBranch = null;
+  let head = null;
   for (const r of list || []) {
     if (r.RouteUID !== routeUID || (r.Direction === 1 ? 1 : 0) !== dirNum) continue;
     const h = travelHead(r.Stops || [], stopUID, lat, lon);
-    if (h != null) return h;
+    if (h != null) {
+      head = h;
+      matchedBranch = r;
+      break;
+    }
   }
-  return null;
+  if (!matchedBranch) {
+    for (const r of list || []) {
+      if (r.RouteUID !== routeUID || (r.Direction === 1 ? 1 : 0) !== dirNum) continue;
+      const stops = r.Stops || [];
+      if (stops.some(s => s && s.StopUID === stopUID)) {
+        matchedBranch = r;
+        break;
+      }
+    }
+  }
+  if (!matchedBranch) return { head: null, destHead: null };
+
+  const stops = matchedBranch.Stops || [];
+  const ordered = stops.some(s => s && s.StopSequence > 0)
+    ? stops.slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0))
+    : stops;
+  const idx = ordered.findIndex(s => s && s.StopUID === stopUID);
+  if (idx < 0) return { head, destHead: null };
+
+  const here = lat != null && lon != null ? [+lat, +lon] : llOf(ordered[idx]);
+  if (!here) return { head, destHead: null };
+
+  let destHead = null;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    const p = llOf(ordered[i]);
+    if (p) {
+      if (i > idx && haversine(here[0], here[1], p[0], p[1]) >= 1) {
+        destHead = bearingDeg(here[0], here[1], p[0], p[1]);
+      }
+      break;
+    }
+  }
+
+  return { head, destHead };
+}
+function headFromList(list, routeUID, dirNum, stopUID, lat, lon) {
+  return headsFromList(list, routeUID, dirNum, stopUID, lat, lon).head;
+}
+if (typeof window !== "undefined") {
+  window.headsFromList = headsFromList;
+  window.travelHead = travelHead;
 }
 const sorMem = new Map();
 // v2.42.0：站序先問雲端（Worker 讀 KV 分片，不打 TDX）。雲端沒有這條路線或還沒建這個縣市，才退回 TDX。
@@ -1129,7 +1261,7 @@ function reportSor(routeUID, sor, etas) {
   fetch(proxy + "/bus/sor/report", { method: "POST", headers: { "content-type": "application/json", "x-session": s.token }, body: JSON.stringify({ r }) }).catch(() => {});
 }
 async function loadTravelHead(jobs) {
-  const out = {};
+  const heads = {}, dests = {};
   const want = new Map();
   for (const j of jobs) {
     const k = routeKind(j.routeUID);
@@ -1153,8 +1285,12 @@ async function loadTravelHead(jobs) {
     }
     let hit = 0;
     for (const j of info.jobs) {
-      const h = list ? headFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon) : null;
-      if (h != null) { out[`${j.routeUID}|${j.dirNum}|${j.stopUID}`] = h; hit++; }
+      const res = list ? headsFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon) : null;
+      if (res) {
+        const hk = `${j.routeUID}|${j.dirNum}|${j.stopUID}`;
+        if (res.head != null) { heads[hk] = res.head; hit++; }
+        if (res.destHead != null) dests[hk] = res.destHead;
+      }
     }
     if (hit < info.jobs.length) miss.push(info);
   }));
@@ -1166,12 +1302,15 @@ async function loadTravelHead(jobs) {
   }
   for (const info of miss) for (const j of info.jobs) {
     const hk = `${j.routeUID}|${j.dirNum}|${j.stopUID}`;
-    if (out[hk] != null) continue;
+    if (heads[hk] != null) continue;
     const list = sorMem.get("uid|" + j.routeUID) || (info.route ? sorMem.get(`sor|${info.path}|${info.route}`) : null);
-    const h = headFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon);
-    if (h != null) out[hk] = h;
+    const res = list ? headsFromList(list, j.routeUID, j.dirNum, j.stopUID, j.lat, j.lon) : null;
+    if (res) {
+      if (res.head != null) heads[hk] = res.head;
+      if (res.destHead != null) dests[hk] = res.destHead;
+    }
   }
-  return out;
+  return { heads, dests };
 }
 const nearbyQ = (lat, lon, r) => "?%24spatialFilter=" + enc(`nearby(${lat},${lon},${r})`);
 function routeKind(uid) {
@@ -1561,12 +1700,14 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     for (const row of raw) {
       if (row.r.routeUID && row.uid) need.push({ routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null });
     }
-    let heads = {}, destMap = {};
+    let heads = {}, destHeads = {}, destMap = {};
     const [hR, dR] = await Promise.all([
       need.length ? loadTravelHead(need).catch(() => ({})) : {},
       loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
     ]);
-    heads = hR || {}; destMap = dR || {};
+    heads = (hR && hR.heads) || hR || {};
+    destHeads = (hR && hR.dests) || {};
+    destMap = dR || {};
     const list = [], cardsOf = {};
     for (const [name, ps] of Object.entries(polesOf)) {
       const poles = [...ps.values()];
@@ -1606,9 +1747,15 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
         for (const p of ms) for (const row of p.rows) {
           row.r.dest = destOf(row.r.routeUID, row.r.dirNum, destMap);
           row.r.head = heads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`] ?? (row.pos && B8[row.pos.bear] != null ? B8[row.pos.bear] : null);
+          row.r.destHead = destHeads[`${row.r.routeUID}|${row.r.dirNum}|${row.uid}`] ?? null;
           const rk = `${row.r.routeUID}|${row.r.dirNum}`;
           const old = g.routes[rk];
-          if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) g.routes[rk] = row.r;
+          if (!old || (row.r.sec !== null && (old.sec === null || row.r.sec < old.sec))) {
+            if (old && row.r.destHead == null && old.destHead != null) row.r.destHead = old.destHead;
+            g.routes[rk] = row.r;
+          } else {
+            if (old.destHead == null && row.r.destHead != null) old.destHead = row.r.destHead;
+          }
         }
         cards.push(g); list.push(g);
       }
@@ -1634,42 +1781,28 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     }
     busStops = list.map(g => {
       const routes = Object.values(g.routes);
-      const lineOf = (rs, head) => {
-        const values = [...new Set(rs.map(r => r.dest).filter(Boolean))];
-        const max = head != null && Number.isFinite(head) ? 4 : 2;
-        const show = values.slice(0, max);
-        return `往 ${show.join("／")}${values.length > show.length ? " 等" : ""}`;
-      };
-      const destLines = [];
-      // 有目的地／缺目的地去程／缺目的地返程三組各自成行，彼此不合併
-      const buckets = [
-        [routes.filter(r => r.dest), lineOf],
-        [routes.filter(r => !r.dest && r.dirNum !== 1), () => "去程"],
-        [routes.filter(r => !r.dest && r.dirNum === 1), () => "返程"],
-      ];
-      for (const [rs, txt] of buckets) {
-        const noHead = rs.filter(r => r.head == null);
-        if (noHead.length) destLines.push({ destLine: txt(noHead, null), head: null });
-        let pool = rs.filter(r => r.head != null);
-        // 極端值：45 度內沒有其他路線的 head，先拿出來，最後各自一行
-        const lone = pool.filter(r => !pool.some(o => o !== r && angDiff(o.head, r.head) <= 45));
-        pool = pool.filter(r => !lone.includes(r));
-        while (pool.length) {
-          // 組內任兩條差 ≤45 度＝全落在一段 45 度弧內：每條當弧起點順時針取 45 度內者，取最多的一組
-          let best = [];
-          for (const seed of pool) {
-            const hit = pool.filter(r => (r.head - seed.head + 360) % 360 <= 45);
-            if (hit.length > best.length) best = hit;
+      const qRes = groupByRelativeQuadrant({ lat: g.lat, lon: g.lon }, routes);
+      const destLines = qRes.lines;
+      // 白點（公車行進方向）維持 v2.49.6 的取法：舊 45° 分組中第一個有方位的組的平均方位
+      const legacyHead = (() => {
+        const buckets = [routes.filter(r => r.dest), routes.filter(r => !r.dest && r.dirNum !== 1), routes.filter(r => !r.dest && r.dirNum === 1)];
+        for (const rs of buckets) {
+          let pool = rs.filter(r => r.head != null);
+          if (!pool.length) continue;
+          const lone = pool.filter(r => !pool.some(o => o !== r && angDiff(o.head, r.head) <= 45));
+          pool = pool.filter(r => !lone.includes(r));
+          if (pool.length) {
+            let best = [];
+            for (const seed of pool) { const hit = pool.filter(r => (r.head - seed.head + 360) % 360 <= 45); if (hit.length > best.length) best = hit; }
+            return circMean(best.map(r => r.head));
           }
-          const groupHead = circMean(best.map(r => r.head));
-          destLines.push({ destLine: txt(best, groupHead), head: groupHead });
-          pool = pool.filter(r => !best.includes(r));
+          return lone[0].head;
         }
-        for (const r of lone) destLines.push({ destLine: txt([r], r.head), head: r.head });
-      }
+        return null;
+      })();
       g.destLines = destLines;
       g.destLine = destLines.map(x => x.destLine).join("\n");
-      g.head = destLines.length === 1 ? destLines[0].head : null;
+      g.head = legacyHead;   // index.html stopTag 先用 s.head，所以白點方向和 v2.49.6 相同
       const { dirs, ...rest } = g;
       return { ...rest, bearTxt: BEAR_TXT[g.bear] || null, routes };
     }).sort((a, b) => (a.dist ?? 1e9) - (b.dist ?? 1e9) || String(a.dirTxt || "").localeCompare(String(b.dirTxt || ""), "zh-Hant"));
