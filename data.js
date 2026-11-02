@@ -4805,9 +4805,18 @@ const railDayMem = {}, railParsedMem = {};
 async function railDayTt(op, day) {
   const iso = isoDay(day), k = op + "|" + iso; if (railDayMem[k]) return railDayMem[k];
   return railDayMem[k] = (async () => {
+    let triedTt = false;
+    const now = new Date();
+    const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const targetMid = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+    const diff = Math.round((targetMid - todayMid) / 86400000);
+    if (op === "TRA" && diff >= -1 && diff <= 60) {
+      triedTt = true;
+      try { const j = await authedGet(`/tt/day/TRA/${iso}`); if (j && j.trains && j.trains.length) return { tt: j, daily: true }; } catch (e) {}
+    }
     // ① 國定假日、連假或其前一天：那一天的實際時刻表（TDX DailyTimetable，經 Worker 存在 KV；含疏運加班、停駛）。平常日不抓（v2.20）
     const h = await ttLoad("HOLIDAY").catch(() => null);
-    if (holRel(h && h.dates, iso)) { try { const j = await authedGet(`/tt/day/${op}/${iso}`); if (j && j.trains && j.trains.length) return { tt: j, daily: true }; } catch (e) {} }
+    if (!triedTt && holRel(h && h.dates, iso)) { try { const j = await authedGet(`/tt/day/${op}/${iso}`); if (j && j.trains && j.trains.length) return { tt: j, daily: true }; } catch (e) {} }
     // ② 那個星期幾的那份定期表；定期表沒有國定假日欄，國定假日不用；台鐵還要在定期表自己的有效期間內
     const stored = await ttDow(op, day);
     if (!stored || !stored.trains || ((await dayInfo(day)).hol && !ttHasHol(stored))) return null;
