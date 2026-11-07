@@ -1643,6 +1643,31 @@ function s2sSampleHtml(X) {
   return `<div class="note" style="margin-top:8px;border:1px solid #c33">${esc(`未採用的 TDX 原始交通資料樣本（驗證未通過，不是成功資料）：${e.city === 'Taipei' ? '臺北市' : e.city === 'NewTaipei' ? '新北市' : '未提供'}「${e.route || ''}」・取得時間 ${e.savedAt || '未提供'}・${e.rawAttached ? `含原始資料 ${e.rawChars ?? '?'} 字元` : `沒有原始資料（${e.rawWhy || '原因未提供'}），只有診斷`}`)}<br>${esc(sp.saved ? '只存在這台裝置的瀏覽器（重新整理後還在；登出會刪除）' : (sp.err || '沒有保存到本機') + '')}
     <div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sDl">下載 JSON</button><button class="btn sec2" data-act="s2sClr">清除這份樣本</button></div>${X.sampleMsg ? `<div class="sub">${esc(X.sampleMsg)}</div>` : ''}</div>`;
 }
+// JT-20261108-03：批次匯入（管理者按了才跑；逐條、間隔 10.5 秒；App 進背景或按暫停就停；續跑要手動按）
+function s2sBatchHtml(X) {
+  const b = X.batch, cityL = c => c === 'Taipei' ? '臺北市' : c === 'NewTaipei' ? '新北市' : '';
+  const head = `<div class="sec" style="margin-top:14px"><h2 style="font-size:17px">批次匯入（${cityL(X.c)}）</h2></div><div class="note">只抓雲端還沒有的路線，一條一條來，每條間隔約 10 秒；每條都會用 Worker 的 TDX 點數。遇到權限、限流、寫入額度、網路不確定或資料驗證沒通過就停下。</div>`;
+  if (!b || b.c !== X.c) return head + `<div class="btns" style="margin-top:8px"><button class="btn sec2" data-act="s2sBPrep" ${X.bBusy ? 'disabled' : ''}>建立待匯入清單（不打 TDX）</button></div>${X.bMsg ? `<div class="sub">${esc(X.bMsg)}</div>` : ''}`;
+  const n = b.n, run = b.st === 'running' && b.live, stopRej = b.stop && b.stop.kind === 'reject';
+  const stL = { running: '執行中', paused: '已暫停', stopped: '已停下', done: '完成' }[b.st] || b.st;
+  return head + `<div class="sub" style="margin-top:6px">${esc(`${stL}・共 ${n.total} 條待處理：成功 ${n.ok}・已有略過 ${n.skip}・TDX 查無（新記錄）${n.nodata}・已查無略過 ${n.noneSkip}・失敗 ${n.fail}・剩 ${n.left}${b.cur && b.st !== 'done' ? `・目前「${b.cur}」` : ''}`)}</div>
+    ${b.why ? `<div class="note" style="margin-top:6px">${esc(b.why)}</div>` : ''}
+    ${stopRej && b.stop.diag ? s2sErrHtml(b.stop.diag) : ''}
+    <div class="btns" style="margin-top:8px">${run ? `<button class="btn sec2" data-act="s2sBPause">暫停</button>` : b.st !== 'done' ? `<button class="btn pri" data-act="s2sBRun" ${X.busy || stopRej ? 'disabled' : ''}>${n.left === n.total && !Object.keys(b.res || {}).length ? '開始' : '續跑'}</button>` : ''}${stopRej && !run ? `<button class="btn sec2" data-act="s2sBSkip">略過這條，繼續下一條</button>` : ''}${!run ? `<button class="btn sec2" data-act="s2sBReset">清掉這個批次</button>` : ''}</div>${X.bMsg ? `<div class="sub">${esc(X.bMsg)}</div>` : ''}`;
+}
+async function s2sBPrep() { const X = S.s2s; X.bBusy = true; X.bMsg = '讀取雲端班表的路線名稱…（不打 TDX）'; renderPage(); try { X.batch = await api('s2sBatchPrepare', { c: X.c }); X.bMsg = ''; } catch (e) { X.bMsg = e.message; } X.bBusy = false; if (S.page === 'adv') renderPage(); }
+async function s2sBRun() {
+  const X = S.s2s; if (!X || X.bRun) return; X.bRun = true; X.bStop = false; X.bMsg = ''; X.err = null;
+  try { const r = await api('s2sBatchRun', { shouldPause: () => X.bStop || document.visibilityState !== 'visible', onTick: st => { X.batch = st; if (S.page === 'adv') renderPage(); } });
+    if (r && r.busy) X.bMsg = r.why || '批次已在執行中'; else X.batch = r; }
+  catch (e) { X.bMsg = e.message; X.err = e.s2s || X.err; }
+  X.bRun = false; X.batch = await api('s2sBatchGet').catch(() => X.batch);
+  if (X.batch && X.batch.stop && X.batch.stop.kind === 'reject') { const sp = await api('s2sSampleGet').catch(() => null); if (sp) X.sample = sp; }
+  if (S.page === 'adv') renderPage();
+}
+function s2sBPause() { if (S.s2s) { S.s2s.bStop = true; S.s2s.bMsg = '這一條做完就暫停…'; renderPage(); } }
+async function s2sBSkip() { const X = S.s2s; X.batch = await api('s2sBatchSkipCur'); renderPage(); }
+async function s2sBReset() { const X = S.s2s; if (!confirm('清掉這個批次的進度？（雲端已存的資料不會刪）')) return; try { await api('s2sBatchReset'); X.batch = null; X.bMsg = '已清掉批次進度'; } catch (e) { X.bMsg = e.message; } renderPage(); }
 function s2sDl() {
   const X = S.s2s, sp = X && X.sample; if (!sp || !sp.env) return;
   const safe = x => String(x || '').replace(/[^A-Za-z0-9-]/g, '_').slice(0, 20) || 'x';
@@ -1658,6 +1683,7 @@ async function s2sClr() {
 }
 function s2sHtml() {
   const X = S.s2s || (S.s2s = { c:'Taipei', route:'', force:false, busy:false, msg:'', res:null, meta:null, pend:null });
+  if (!X.bLoaded) { X.bLoaded = true; api('s2sBatchGet').then(v => { X.batch = v; if (S.page === 'adv') renderPage(); }).catch(() => {}); }
   if (!X.sLoaded) { X.sLoaded = true; api('s2sSampleGet').then(v => { if (v && !X.sample) { X.sample = v; if (S.page === 'adv') renderPage(); } }).catch(e => { X.sampleMsg = '讀不到本機的拒收樣本：' + ((e && e.message) || e); if (S.page === 'adv') renderPage(); }); }
   const r = X.res, m = X.meta, pd = X.pend;
   return `<div class="sec" style="margin-top:18px"><h2>站間旅行時間（雙北・試行）</h2><span class="side">TDX 加值・歷史推估</span></div>
@@ -1669,8 +1695,9 @@ function s2sHtml() {
     ${X.msg ? `<div class="note" style="margin-top:8px">${esc(X.msg)}</div>` : ''}
     ${X.err ? s2sErrHtml(X.err) : ''}
     ${s2sSampleHtml(X)}
+    ${s2sBatchHtml(X)}
     ${r && r.ok ? `<div class="note" style="margin-top:8px">已儲存「${esc(r.name)}」：路線 ${esc((r.routes || []).join('、'))}・${r.subs} 個子路線方向・${r.segs} 段站間時間${r.neg ? `（其中 ${r.neg} 段為 -1＝該時段無車）` : ''}・原始 ${r.raw} 字元／壓縮 ${r.gz} 位元組・有效 ${esc(r.eff || '未提供')}～${esc(r.exp || '未提供')}・更新週期 ${r.ui ?? '未提供'} 月${r.mixed ? '・注意：各筆有效期不一致' : ''}${r.up && Object.keys(r.up).length ? `<br>TDX 額度相關回應：${esc(Object.entries(r.up).map(([k, v]) => k + '=' + v).join('，'))}` : '<br>TDX 沒有回額度相關資訊'}</div>` : ''}
-    ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有 ${m.n} 條${m.expired && m.expired.length ? `，已過期 ${m.expired.length} 條` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，未匯入 ${pd.pending.length} 個` : ''}</div>` : ''}`;
+    ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有資料 ${m.n} 條・已查無 ${m.nNone ?? 0} 條${m.srcExpPast && m.srcExpPast.length ? `，其中 ${m.srcExpPast.length} 條的來源標示日期已過（只供參考，照常使用）` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，尚未查 ${pd.pending.length} 個` : ''}</div>` : ''}`;
 }
 async function s2sStat() {
   const X = S.s2s; X.busy = true; X.msg = ''; renderPage();
@@ -1684,9 +1711,9 @@ async function s2sNext() {
   X.busy = false; if (S.page === 'adv') renderPage();
 }
 async function s2sGo() {
-  const X = S.s2s; if (X.busy || !X.route) return;
+  const X = S.s2s; if (X.busy || X.bRun || !X.route) return;
   X.busy = true; X.msg = ''; X.res = null; X.err = null; renderPage();
-  try { const r = await api('s2sImport', { c:X.c, route:X.route, force:X.force }); X.res = r; X.msg = r.skip ? `略過：${r.why}` : ''; X.meta = null; X.pend = null; }
+  try { const r = await api('s2sImport', { c:X.c, route:X.route, force:X.force }); X.res = r; X.msg = r.skip ? `略過：${r.why}` : r.none ? (r.why || 'TDX 查無資料，已記錄') : ''; X.meta = null; X.pend = null; }
   catch (e) { X.msg = e.message; X.err = e.s2s || null; if (e.s2s && e.s2s.sample) { X.sample = e.s2s.sample; X.sampleMsg = ''; } }
   X.busy = false; if (S.page === 'adv') renderPage();
 }
@@ -3510,6 +3537,11 @@ document.addEventListener('click', e => {
     case 's2sCity': S.s2s.c = el.dataset.v; S.s2s.meta = null; S.s2s.pend = null; S.s2s.res = null; S.s2s.msg = ''; renderPage(); break;
     case 's2sNext': s2sNext(); break;
     case 's2sGo': s2sGo(); break;
+    case 's2sBPrep': s2sBPrep(); break;
+    case 's2sBRun': s2sBRun(); break;
+    case 's2sBPause': s2sBPause(); break;
+    case 's2sBSkip': s2sBSkip(); break;
+    case 's2sBReset': s2sBReset(); break;
     case 's2sDl': s2sDl(); break;
     case 's2sClr': s2sClr(); break;
     case 's2sStat': s2sStat(); break;

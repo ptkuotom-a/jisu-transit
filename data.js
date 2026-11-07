@@ -2809,7 +2809,87 @@ async function s2sPending({ c }) {   // 待匯入表：雲端班表（bsch）裡
   const x = await bdCity(c, metaAll);
   if (!x.recs) throw new Error(x.why || "讀不到雲端班表");
   const names = [...new Set(x.recs.map(r => r.n).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hant", { numeric: true }));
-  return { c, total: names.length, pending: names.filter(n => !meta.r[n]), meta };
+  const none = meta.none || {};   // 已查無（TDX 曾回 200＋空陣列）的也不列
+  return { c, total: names.length, pending: names.filter(n => !meta.r[n] && !none[n]), noneN: names.filter(n => !meta.r[n] && none[n]).length, meta };
+}
+// ---------- JT-20261108-03：雙北站間時間批次匯入（管理者主動開始；逐條串行、間隔≥3秒；可暫停／續跑；進度存 localStorage）----------
+// 只匯入雲端還沒有的路線（不送 force）；名單來自雲端班表（s2sPending，不打 TDX）。遇到 401／403／429／寫入額度滿／TDX 錯誤／驗證拒收就停；網路或伺服器不確定時記下那條，續跑前先查雲端。
+const S2SB_KEY = "jisu_s2sb", S2SB_LOCK = "jisu_s2sb_lock", S2SB_GAP = 10500, S2SB_STALE = 90000;   // 間隔 10.5 秒：Worker 匯入端點每個管理者 session 每分鐘最多 6 次（≥3 秒的要求也滿足）
+let s2sbLive = false, s2sbTabId = Math.random().toString(36).slice(2);
+const s2sbLoad = () => { try { const v = JSON.parse(localStorage.getItem(S2SB_KEY)); return v && v.v === 1 ? v : null; } catch (e) { return null; } };
+const s2sbSave = st => { st.t = Date.now(); localStorage.setItem(S2SB_KEY, JSON.stringify(st)); return st; };
+function s2sbCounts(st) { const n = { ok: 0, skip: 0, nodata: 0, noneSkip: 0, fail: 0 }; for (const k of Object.keys(st.res || {})) { const x = st.res[k]; if (n[x.s] !== undefined) n[x.s]++; } return { ...n, total: st.q.length, left: Math.max(0, st.q.length - st.i) }; }
+function s2sBatchGet() {
+  const st = s2sbLoad(); if (!st) return null;
+  if (st.st === "running" && !s2sbLive) { let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SB_LOCK)); } catch (e) {} if (!lk || Date.now() - lk.t > S2SB_STALE) { st.st = "paused"; st.why = "上次中途離開，已暫停（按續跑）"; s2sbSave(st); } }
+  return { ...st, n: s2sbCounts(st), cur: st.q[st.i] || null, live: s2sbLive };
+}
+async function s2sBatchPrepare({ c }) {   // 建立新批次（不開始跑）：同一城市已有未完成的批次就沿用
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次匯入");
+  if (s2sbLive) throw new Error("批次正在執行中");
+  const old = s2sbLoad(); if (old && old.c === c && old.i < old.q.length) return s2sBatchGet();
+  const p = await s2sPending({ c });
+  s2sbSave({ v: 1, c, q: [...new Set(p.pending)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - p.pending.length });
+  return s2sBatchGet();
+}
+function s2sBatchReset() { if (s2sbLive) throw new Error("批次正在執行中，請先暫停"); localStorage.removeItem(S2SB_KEY); localStorage.removeItem(S2SB_LOCK); return null; }
+function s2sBatchSkipCur() {   // 停在驗證拒收那條時，管理者明確選「略過這條」才往下
+  const st = s2sbLoad(); if (!st || s2sbLive) return s2sBatchGet(); const nm = st.q[st.i];
+  if (nm && st.stop && st.stop.kind === "reject") { st.res[nm] = { s: "fail", m: st.stop.m }; st.i++; st.stop = null; st.why = "已略過「" + nm + "」"; s2sbSave(st); }
+  return s2sBatchGet();
+}
+const s2sbSleep = (ms, stopNow) => new Promise(res => { const t0 = Date.now(); const tk = () => { if (stopNow() || Date.now() - t0 >= ms) return res(); setTimeout(tk, 200); }; tk(); });
+// 管理者按「開始／續跑」才呼叫。shouldPause()：畫面要求暫停或 App 進背景時回 true。onTick(state)：每步後通知畫面
+async function s2sBatchRun({ shouldPause, onTick } = {}) {
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次匯入");
+  if (s2sbLive) return { busy: true };
+  let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SB_LOCK)); } catch (e) {}
+  if (lk && lk.id !== s2sbTabId && Date.now() - lk.t < S2SB_STALE) return { busy: true, why: "另一個分頁正在跑批次" };
+  let st = s2sbLoad(); if (!st) throw new Error("還沒有建立批次");
+  s2sbLive = true; const lock = () => localStorage.setItem(S2SB_LOCK, JSON.stringify({ id: s2sbTabId, t: Date.now() }));
+  const pz = () => !!(shouldPause && shouldPause()), tick = () => { try { onTick && onTick(s2sBatchGet()); } catch (e) {} };
+  try {
+    lock(); st.st = "running"; st.why = ""; st.stop = null; s2sbSave(st); tick();
+    if (st.unc) {   // 上次不確定有沒有存成功：先查雲端（只讀），有就算成功，不重抓
+      let m = null; try { m = await authedGet("/bus/s2s/meta?c=" + enc(st.c)); } catch (e) { st.st = "stopped"; st.stop = { kind: "net", m: "確認上一條時連不到伺服器：" + e.message }; st.why = st.stop.m; s2sbSave(st); tick(); return s2sBatchGet(); }
+      if (st.q[st.i] === st.unc && m && m.r && m.r[st.unc]) { st.res[st.unc] = { s: "ok", m: "雲端已有（上次其實已存成功）" }; st.i++; }
+      else if (st.q[st.i] === st.unc && m && m.none && m.none[st.unc]) { st.res[st.unc] = { s: "nodata", m: "雲端已記為查無資料（上次其實已記錄）" }; st.i++; }
+      st.unc = null; s2sbSave(st); tick();
+    }
+    let first = true;
+    while (st.i < st.q.length) {
+      if (pz()) { st.st = "paused"; st.why = "已暫停"; break; }
+      if (!first) { await s2sbSleep(S2SB_GAP, pz); if (pz()) { st.st = "paused"; st.why = "已暫停"; break; } }
+      first = false; lock();
+      const nm = st.q[st.i]; st.unc = nm; s2sbSave(st);
+      let r = null, e = null; try { r = await s2sImportOne({ c: st.c, route: nm, force: false }); } catch (x) { e = x; }
+      if (r && r.none && r.saved === true) { st.res[nm] = { s: "nodata", m: "TDX 查無資料（已記入雲端）" }; st.unc = null; st.i++; s2sbSave(st); tick(); continue; }
+      if (r && r.none && r.skip) { st.res[nm] = { s: "noneSkip", m: r.why || "" }; st.unc = null; st.i++; s2sbSave(st); tick(); continue; }
+      if (r && (r.ok === true || r.skip === true)) { st.res[nm] = r.skip ? { s: "skip", m: r.why || "" } : { s: "ok", m: (r.segs ?? "?") + " 段" }; st.unc = null; st.i++; s2sbSave(st); tick(); continue; }
+      if (r) { st.st = "stopped"; st.stop = { kind: "uncertain", m: "伺服器回應看不懂", route: nm }; st.why = "「" + nm + "」伺服器回應看不懂；續跑時會先查雲端"; break; }
+      const d = e && e.s2s, code = d && d.status;
+      if (code === 400) { st.res[nm] = { s: "fail", m: e.message }; st.unc = null; st.i++; s2sbSave(st); tick(); continue; }
+      if (code === 404) { st.unc = null; st.st = "stopped"; st.stop = { kind: "reject", m: e.message, route: nm, diag: { ...d, sample: undefined } }; st.why = "「" + nm + "」資料驗證沒通過，已停下（診斷與樣本保留在下面）"; break; }
+      if (code && code !== 500) { st.unc = null; st.st = "stopped"; st.stop = { kind: "http" + code, m: e.message, route: nm }; st.why = "「" + nm + "」" + e.message + "，已停下（不換金鑰、不自動重試）"; break; }
+      st.st = "stopped"; st.stop = { kind: "uncertain", m: e ? e.message : "不明錯誤", route: nm }; st.why = "「" + nm + "」結果不確定（" + st.stop.m + "）；續跑時會先查雲端"; break;   // unc 保留
+    }
+    if (st.i >= st.q.length) { st.st = "done"; st.why = "全部處理完"; st.unc = null; }
+    s2sbSave(st); tick(); return s2sBatchGet();
+  } finally { s2sbLive = false; try { const l = JSON.parse(localStorage.getItem(S2SB_LOCK)); if (l && l.id === s2sbTabId) localStorage.removeItem(S2SB_LOCK); } catch (x) {} }
+}
+// ---------- JT-20261108-03：站間時間「雲端唯讀」資料層入口（規劃用；只讀雲端，不打 TDX；來源有效期只供參考，不拒讀）----------
+const s2sMem = new Map();
+async function s2sRouteGet({ c, route }) {
+  const k = c + "|" + route; if (s2sMem.has(k)) return s2sMem.get(k);
+  const proxy = getProxy(), s = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!s) throw new Error("請重新登入");
+  let r; try { r = await fetchT(proxy + "/bus/s2s/route?c=" + enc(c || "") + "&route=" + enc(route || ""), 30000, { headers: { "x-session": s.token } }); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
+  if (r.status === 404) return null;   // 雲端還沒有：不臨時打 TDX
+  if (!r.ok) { const j = await r.json().catch(() => null); throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status)); }
+  const doc = JSON.parse(await new Response(new Blob([await r.arrayBuffer()]).stream().pipeThrough(new DecompressionStream("gzip"))).text());
+  const segs = [];   // 只列真正行駛段（排除 307 那種起點標記：Sequence 1、沒有 FromStopID 與 RunTime）
+  for (const x of doc.d || []) for (const t of x.TravelTimes || []) if (t && t.FromStopID != null && typeof t.RunTime === "number") segs.push({ sub: x.SubRouteUID, dir: x.Direction, seq: t.Sequence, from: t.FromStopID, to: t.ToStopID, sec: t.RunTime, start: t.StartTime, end: t.EndTime, tag: t.ServiceTag });
+  const out = { c, route, ver: doc.ver, srcEff: doc.eff || null, srcExp: doc.exp || null, segs };
+  s2sMem.set(k, out); return out;
 }
 // ---------- 國定假日／連假規則（v2.20） ----------
 // 連假＝含國定假日（或補假）的連續放假日（國定假日＋相連的週末），前一天＝連假第一天的前一天。
@@ -5610,7 +5690,7 @@ async function authMe() {
   } catch (e) { return { ...s, offline: true }; }
 }
 async function authLogout() {
-  const s = getSession(); localStorage.removeItem(SESS_KEY); await s2sSampleClear().catch(() => {});   // JT-20261108-01：登出就刪掉本機拒收樣本
+  const s = getSession(); localStorage.removeItem(SESS_KEY); await s2sSampleClear().catch(() => {}); try { if (!s2sbLive) { localStorage.removeItem(S2SB_KEY); localStorage.removeItem(S2SB_LOCK); } } catch (e) {}   // JT-20261108-01：登出就刪掉本機拒收樣本
   const proxy = getProxy();
   if (s && proxy) { try { await fetch(proxy + "/auth/logout", { method: "POST", headers: { "x-session": s.token } }); } catch (e) {} }
 }
@@ -5640,6 +5720,12 @@ const dataApi0 = async (action, p = {}) => {
     case "schStatus": return authedGet("/bus/sch/meta");
     case "s2sMeta": return authedGet("/bus/s2s/meta?c=" + enc(p.c || ""));
     case "s2sImport": return s2sImportOne(p || {});
+    case "s2sBatchGet": return s2sBatchGet();
+    case "s2sBatchPrepare": return s2sBatchPrepare(p || {});
+    case "s2sBatchRun": return s2sBatchRun(p || {});
+    case "s2sBatchSkipCur": return s2sBatchSkipCur();
+    case "s2sBatchReset": return s2sBatchReset();
+    case "s2sRouteGet": return s2sRouteGet(p || {});
     case "s2sSampleGet": return s2sSampleGet();
     case "s2sSampleClear": return s2sSampleClear();
     case "s2sPending": return s2sPending(p || {});
