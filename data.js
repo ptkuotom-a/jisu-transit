@@ -2678,6 +2678,89 @@ async function ttDow(op, day) {
 }
 const dowSplit = out => DOW.map((d, i) => { const ix = (i + 6) % 7;   // 旗標順序是 一…日
   return [d, { ...out, dow: d, trains: out.trains.filter(t => (t[5] || "")[ix] === "1") }]; });
+// ---------- v2.49.9 試行：自有資料公車直達（busdirect.js） ----------
+// 只用雲端既有資料：公車時刻表分片（/bus/sch/meta＋/bus/sch/shard，只讀 KV）＋雲端站牌座標（/od/citystops，只讀 KV 站序／站牌）。
+// 不呼叫 TDX MaaS／Google，不觸發站序重建；雲端沒有就回「未涵蓋」，不退回外部引擎。
+// 試行縣市（雙北）只是建議；BD_TRIAL 的步行數值是「試行估算值」，不是正式政策，畫面可調整。
+const BD_CITIES = ["Taipei", "NewTaipei"];
+const BD_TRIAL = { walkRadiusM: 500, walkMpm: 70, walkFactor: 1.3 };   // 試行估算值（未定案）
+const BD_LIM = { walkRadiusM: [50, 1500], walkMpm: [30, 150], walkFactor: [1, 3], earlyLimitMin: [1, 1440] };
+const BD_SHARD_MS = 30000, BD_CALC_MS = 20000, BD_MAX_BYTES = 40 * 1024 * 1024;   // 40MB＝Worker 上傳上限（schPut）
+function bdOpts(u) {
+  const o = { ...BD_TRIAL, freqPolicy: "exclude", maxResults: 6 };
+  for (const [k, [lo, hi]] of Object.entries(BD_LIM)) if (u && u[k] != null && u[k] !== "") { const v = +u[k]; if (!(isFinite(v) && v >= lo && v <= hi)) throw new Error(`${k} 要在 ${lo}～${hi} 之間`); o[k] = v; }
+  return o;
+}
+async function bdCity(city, metaAll, signal) {
+  const meta = metaAll && metaAll[city];
+  if (!meta || !(meta.n >= 1)) return { city, recs: null, why: "雲端沒有" + city + "的公車時刻表" };
+  if (meta.bytes > BD_MAX_BYTES) return { city, recs: null, why: city + "的時刻表太大，試行版不下載" };
+  const key = "bd|" + city, c = await IDB.get(key).catch(() => null);
+  if (c && c.t === meta.t && c.n === meta.n && Array.isArray(c.recs)) return { city, recs: c.recs, t: meta.t, cached: true };
+  const proxy = getProxy(), sess = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!sess) throw new Error("請重新登入");
+  const shards = [], hdrT = [];
+  for (let k = 0; k < meta.n; k++) {
+    if (signal && signal.aborted) throw new Error("已取消");
+    let r;
+    try { r = await fetchT(proxy + "/bus/sch/shard?c=" + enc(city) + "&k=" + k, BD_SHARD_MS, { headers: { "x-session": sess.token } }); }
+    catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
+    if (!r.ok) { const j = await r.json().catch(() => null); throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("時刻表分片 " + r.status)); }
+    hdrT.push(r.headers.get("x-sch-t"));
+    const buf = new Uint8Array(await r.arrayBuffer());
+    if (buf[0] !== 31 || buf[1] !== 139) throw new Error("時刻表分片不是 gzip");
+    shards.push(JSON.parse(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text()));
+  }
+  const recs = BusDirect.assemble(meta, shards, { city, hdrT });   // 換版／不一致整包拒用，不混版；舊的快取也不拿來混
+  await IDB.set(key, { t: meta.t, n: meta.n, recs }).catch(() => {});
+  return { city, recs, t: meta.t };
+}
+let bdWorker = null, bdSeq = 0;
+function bdRun(msg) {
+  if (typeof Worker === "undefined") return Promise.resolve(BusDirect.plan(msg));
+  if (!bdWorker) bdWorker = new Worker("./busdirect.js");
+  const id = ++bdSeq, w = bdWorker;
+  return new Promise((res, rej) => {
+    let tm = null;
+    const done = () => { clearTimeout(tm); w.removeEventListener("message", on); w.removeEventListener("error", er); };
+    const on = e => { if (!e.data || e.data.id !== id) return; done(); res(e.data.out); };
+    const er = () => { done(); bdWorker = null; try { w.terminate(); } catch (x) {} rej(new Error("背景計算失敗")); };
+    tm = setTimeout(() => { done(); bdWorker = null; try { w.terminate(); } catch (x) {} rej(new Error("計算逾時")); }, BD_CALC_MS);
+    w.addEventListener("message", on); w.addEventListener("error", er);
+    w.postMessage({ ...msg, id });
+  });
+}
+async function busDirectPlan({ o, d, when, time, opts, signal }) {
+  if (!o || !d || o.lat == null || d.lat == null) throw new Error("請先選好起點和終點");
+  const P = bdOpts(opts);
+  const w = when === "arr" ? "arr" : "dep", t = when === "now" || !time ? BusDirect.isoTpe(Date.now()).slice(0, 16) : time;
+  const metaAll = await authedGet("/bus/sch/meta");
+  const cities = [], miss = [];
+  for (const c of BD_CITIES) { const x = await bdCity(c, metaAll, signal); if (x.recs) cities.push(x); else miss.push(x.why); }
+  const recs = cities.flatMap(x => x.recs), stops = {};
+  for (const x of cities) { const l = await cloudCityStops(x.city).catch(() => null); if (!l) miss.push(x.city + "的雲端站牌座標讀不到"); for (const s of l || []) { const p = s.StopPosition; if (p && p.PositionLat) stops[s.StopUID] = [p.PositionLat, p.PositionLon]; } }
+  if (signal && signal.aborted) throw new Error("已取消");
+  const hol = await ttLoad("HOLIDAY").catch(() => null), holidays = Object.keys((hol && hol.dates) || {}).map(x => x.replace(/-/g, ""));
+  const out = await bdRun({ records: recs, stops, o: { lat: +o.lat, lon: +o.lon }, d: { lat: +d.lat, lon: +d.lon }, when: w, time: t, opts: { ...P, holidays } });
+  out.notes = [...(out.notes || []), ...miss, ...(hol ? [] : ["國定假日曆讀不到，無法排除國定假日"])];
+  out.meta = { cities: cities.map(x => ({ city: x.city, t: x.t, cached: !!x.cached })), opts: P, query: { when: w, time: t } };
+  return out;
+}
+// ---------- JT-20261107-02：站間旅行時間（TDX 加值，歷史推估）管理者匯入：一次一條，由管理者按鈕觸發 ----------
+async function s2sImportOne({ c, route, force }) {
+  const proxy = getProxy(), sess = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!sess) throw new Error("請重新登入");
+  let r, j = null;
+  try { r = await fetchT(proxy + "/bus/s2s/import?c=" + enc(c || "") + "&route=" + enc(route || "") + (force ? "&force=1" : ""), 30000, { method: "POST", headers: { "x-session": sess.token } }); j = await r.json().catch(() => null); }
+  catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
+  if (!r.ok) throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+  return j;
+}
+async function s2sPending({ c }) {   // 待匯入表：雲端班表（bsch）裡這個縣市的路線名稱，去掉雲端已有的；只讀，不打 TDX
+  const [metaAll, meta] = await Promise.all([authedGet("/bus/sch/meta"), authedGet("/bus/s2s/meta?c=" + enc(c || ""))]);
+  const x = await bdCity(c, metaAll);
+  if (!x.recs) throw new Error(x.why || "讀不到雲端班表");
+  const names = [...new Set(x.recs.map(r => r.n).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hant", { numeric: true }));
+  return { c, total: names.length, pending: names.filter(n => !meta.r[n]), meta };
+}
 // ---------- 國定假日／連假規則（v2.20） ----------
 // 連假＝含國定假日（或補假）的連續放假日（國定假日＋相連的週末），前一天＝連假第一天的前一天。
 // 台鐵／高鐵只有這些日期才抓那一天的實際時刻表（/tt/day）；平常的平日和週末一律用七天那份。Worker 也照同一套規則擋。
@@ -5505,6 +5588,9 @@ const dataApi0 = async (action, p = {}) => {
     case "route": return routeView(p);
     case "schedule": return busSchedule(p || {});
     case "schStatus": return authedGet("/bus/sch/meta");
+    case "s2sMeta": return authedGet("/bus/s2s/meta?c=" + enc(p.c || ""));
+    case "s2sImport": return s2sImportOne(p || {});
+    case "s2sPending": return s2sPending(p || {});
     case "schBuild": return schBuild(p || {});
     case "khhSchDate": return khhSchDate();
     case "railBoard": return railBoard(tdx, p);
@@ -5531,6 +5617,7 @@ const dataApi0 = async (action, p = {}) => {
     case "busIndex": return busIndex();
     case "busHeal": return busHeal(p.uids, p.cities);
     case "planRoutes": return planRoutes(p);
+    case "busDirect": return busDirectPlan(p || {});
     case "locatePlan": return locatePlan();
     case "planLive": return planLive(p);
     case "gmapImg": return gmapImg(p || {});

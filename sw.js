@@ -1,8 +1,8 @@
 // 極速通勤 Service Worker：介面檔一律先走網路（略過 HTTP 快取），離線才用快取；即時資料不攔截
 // build 2.47.2b
-const VERSION = "jisu-v2.49.8";
+const VERSION = "jisu-v2.49.10";
 const SHELL = [
-  "./", "./index.html", "./data.js", "./config.js", "./manifest.webmanifest",
+  "./", "./index.html", "./data.js", "./busdirect.js", "./config.js", "./manifest.webmanifest",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png",
   ...["01_emu500","02_emu3000","03_e500","04_hsr_700t","05_taroko","06_emu900","07_puyuma"].map(n => `./icons/train/${n}.svg`),
 ];

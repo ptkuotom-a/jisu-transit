@@ -574,6 +574,7 @@ html.locked,html.locked body{overflow:hidden}
 <div class="rbar" id="rbar" hidden></div><div class="sheet-wrap" id="sheetWrap" hidden><div class="scrim" data-act="closeSheet"></div><div class="sheet" id="sheet"></div></div>
 
 <script src="config.js"></script>
+<script src="busdirect.js"></script>
 <script src="data.js"></script>
 <script>
 const DEMO = /[?&]demo/.test(location.search);
@@ -1610,8 +1611,43 @@ function openAdv() {
   renderPage();
 }
 function advHtml() {
-  return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}</div>`;
+  return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}${S.auth?.role === 'admin' ? s2sHtml() : ''}</div>`;
 }
+// ---------- JT-20261107-02：雙北站間旅行時間（TDX 加值 S2STravelTime，歷史推估）管理者一次匯入一條 ----------
+// 不會自動全部匯入：每按一次「匯入這一條」才打一次 TDX；「找下一條」只讀雲端資料，不打 TDX。
+function s2sHtml() {
+  const X = S.s2s || (S.s2s = { c:'Taipei', route:'', force:false, busy:false, msg:'', res:null, meta:null, pend:null });
+  const r = X.res, m = X.meta, pd = X.pend;
+  return `<div class="sec" style="margin-top:18px"><h2>站間旅行時間（雙北・試行）</h2><span class="side">TDX 加值・歷史推估</span></div>
+    <div class="note">從 TDX 加值 API 下載「站間旅行時間（歷史推估）」存到雲端；一次一條，會用 Worker 的 TDX 點數。這是歷史平均，不是表定時刻。</div>
+    <div class="sseg" style="margin-top:8px">${[['Taipei','臺北市'],['NewTaipei','新北市']].map(([k, l]) => `<button class="${X.c === k ? 'on' : ''}" data-act="s2sCity" data-v="${k}">${l}</button>`).join('')}</div>
+    <input id="s2sRoute" class="inp" style="margin-top:8px" placeholder="路線名稱（例：307）" value="${esc(X.route)}" autocomplete="off">
+    <label style="display:block;margin-top:6px"><input type="checkbox" id="s2sForce" ${X.force ? 'checked' : ''}> 已有資料也強制重抓（會再用點數）</label>
+    <div class="btns" style="margin-top:8px"><button class="btn sec2" data-act="s2sNext" ${X.busy ? 'disabled' : ''}>找下一條未匯入</button><button class="btn pri" data-act="s2sGo" ${X.busy || !X.route ? 'disabled' : ''}>${X.busy ? '處理中…' : '匯入這一條'}</button><button class="btn sec2" data-act="s2sStat" ${X.busy ? 'disabled' : ''}>讀取狀態</button></div>
+    ${X.msg ? `<div class="note" style="margin-top:8px">${esc(X.msg)}</div>` : ''}
+    ${r && r.ok ? `<div class="note" style="margin-top:8px">已儲存「${esc(r.name)}」：路線 ${esc((r.routes || []).join('、'))}・${r.subs} 個子路線方向・${r.segs} 段站間時間${r.neg ? `（其中 ${r.neg} 段為 -1＝該時段無車）` : ''}・原始 ${r.raw} 字元／壓縮 ${r.gz} 位元組・有效 ${esc(r.eff || '未提供')}～${esc(r.exp || '未提供')}・更新週期 ${r.ui ?? '未提供'} 月${r.mixed ? '・注意：各筆有效期不一致' : ''}${r.up && Object.keys(r.up).length ? `<br>TDX 額度相關回應：${esc(Object.entries(r.up).map(([k, v]) => k + '=' + v).join('，'))}` : '<br>TDX 沒有回額度相關資訊'}</div>` : ''}
+    ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有 ${m.n} 條${m.expired && m.expired.length ? `，已過期 ${m.expired.length} 條` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，未匯入 ${pd.pending.length} 個` : ''}</div>` : ''}`;
+}
+async function s2sStat() {
+  const X = S.s2s; X.busy = true; X.msg = ''; renderPage();
+  try { X.meta = await api('s2sMeta', { c:X.c }); } catch (e) { X.msg = e.message; }
+  X.busy = false; if (S.page === 'adv') renderPage();
+}
+async function s2sNext() {
+  const X = S.s2s; X.busy = true; X.msg = '讀取雲端班表的路線名稱…（不打 TDX）'; renderPage();
+  try { const p = await api('s2sPending', { c:X.c }); X.pend = p; X.meta = p.meta; X.route = p.pending[0] || ''; X.msg = p.pending.length ? `下一條：${X.route}（按「匯入這一條」才會下載）` : '這個縣市的班表路線都已匯入'; }
+  catch (e) { X.msg = e.message; }
+  X.busy = false; if (S.page === 'adv') renderPage();
+}
+async function s2sGo() {
+  const X = S.s2s; if (X.busy || !X.route) return;
+  X.busy = true; X.msg = ''; X.res = null; renderPage();
+  try { const r = await api('s2sImport', { c:X.c, route:X.route, force:X.force }); X.res = r; X.msg = r.skip ? `略過：${r.why}` : ''; X.meta = null; X.pend = null; }
+  catch (e) { X.msg = e.message; }
+  X.busy = false; if (S.page === 'adv') renderPage();
+}
+document.addEventListener('input', e => { if (e.target.id === 's2sRoute' && S.s2s) { S.s2s.route = e.target.value.trim(); const b = document.querySelector('[data-act="s2sGo"]'); if (b) b.disabled = S.s2s.busy || !S.s2s.route; } });
+document.addEventListener('change', e => { if (e.target.id === 's2sForce' && S.s2s) S.s2s.force = e.target.checked; });
 // ---------- Siri 捷徑（v2.30.0）：個人捷徑金鑰＋最近車站推播 ----------
 const SC_KEY = 'jisu_sc_tok';
 const scUrl = t => `${getProxyUI()}/shortcut/nearest?t=${t}`;
@@ -2789,7 +2825,8 @@ function planHtml() {
     ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
     <div class="plab">交通工具<span>步行一定會用到</span></div>
     <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button></div>
-    <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.locating ? '定位中…' : P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>`;
+    <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.locating ? '定位中…' : P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>
+    <button class="btn pgo" data-act="bdGo" ${P.o && P.d && !P.bdBusy ? '' : 'disabled'} style="margin-top:8px">${P.bdBusy ? '自有資料計算中…' : '自有資料公車直達（試行）'}</button>${bdHtml(P)}`;
   if (P.loading && !P.res) h += skel(3);
   else if (P.err) h += `<div class="note" style="margin-top:14px">${esc(P.err)}</div>`;
   else if (P.res) {
@@ -2952,6 +2989,43 @@ async function planGo() {
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
   if (tok !== P.tok) return;
   P.loading = false; if (S.page === 'plan') { renderPage(); if (P.res && P.res.length) planScrollRes(); }
+}
+// v2.49.9 試行：自有資料公車直達（busdirect.js，只用雲端時刻表與站牌，不問 TDX／Google）。和上面的「規劃路線」分開列，不混入、不取代
+const bdHm = iso => iso ? iso.slice(11, 16) : '';
+const bdMd = iso => iso ? `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}` : '';
+const BD_FIELDS = [['walkRadiusM','步行半徑（公尺）',500],['walkMpm','步行速度（公尺/分）',70],['walkFactor','直線距離係數',1.3],['earlyLimitMin','提早抵達下限（分，空白＝不套用）','']];
+function bdHtml(P) {
+  const u = P.bdOpt || {};
+  let h = `<details class="sub" style="margin-top:8px"><summary>自有資料直達的試行估算值（未定案，可調整）</summary>${BD_FIELDS.map(([k, l, def]) => `<label style="display:block;margin-top:4px">${l} <input class="inp" data-bdopt="${k}" inputmode="decimal" style="width:90px;display:inline-block" value="${esc(String(u[k] ?? def))}"></label>`).join('')}</details>`;
+  const B = P.bd; if (!B) return h;
+  h += `<div class="sec" style="margin-top:14px"><h2>自有資料公車直達</h2><span class="side">試行・台北時間</span></div>`;
+  if (B.err) return h + `<div class="note">${esc(B.err)}</div>`;
+  const q = B.meta && B.meta.query, qd = q ? q.time.slice(0, 10) : '';
+  if (B.status === 'not-covered') h += `<div class="note">資料未涵蓋：${esc(B.reason || '')}</div>`;
+  else if (B.status === 'no-route') h += `<div class="note">資料內無路線：${esc(B.reason || '')}</div>`;
+  else if (B.status !== 'ok') h += `<div class="note">${esc(B.message || B.reason || '無法計算')}</div>`;
+  for (const r of B.routes || []) {
+    const day = r.startIso.slice(0, 10) !== qd ? `${bdMd(r.startIso)} ` : '';
+    h += `<div class="note" style="margin-top:8px"><b>${day}${bdHm(r.startIso)}–${r.endIso.slice(0, 10) !== r.startIso.slice(0, 10) ? bdMd(r.endIso) + ' ' : ''}${bdHm(r.endIso)}</b>・${esc(r.name)}${r.sub && r.sub !== r.name ? `（${esc(r.sub)}）` : ''}<br>`
+      + `步行約${r.walkO.min}分到${esc(r.from.name)} ${bdHm(r.from.time)}上車 → ${esc(r.to.name)} ${bdHm(r.to.time)}下車（${r.ride}分）→ 步行約${r.walkD.min}分<br><span style="color:var(--dim)">表定時刻（未含即時）；步行是直線距離×係數的試行估算</span></div>`;
+  }
+  const meta = B.meta || {};
+  h += `<div class="sub" style="margin-top:8px">試行範圍：只算一般日、上下車站都有表定時刻的直達班次；只有班距、特殊日、國定假日的班次這版先不算（不是正式政策）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}</div>`;
+  return h;
+}
+async function bdGo() {
+  const P = S.plan; if (!P.o || !P.d || P.bdBusy) return;
+  const opt = {}; document.querySelectorAll('[data-bdopt]').forEach(el => { if (el.value.trim() !== '') opt[el.dataset.bdopt] = el.value.trim(); });
+  P.bdOpt = opt;
+  const tok = P.bdTok = (P.bdTok || 0) + 1, key = JSON.stringify([P.o, P.d, P.when, P.time]);
+  P.bdBusy = true; P.bd = null; renderPage();
+  let res;
+  try { res = await api('busDirect', { o:P.o, d:P.d, when:P.when, time: P.when === 'now' ? null : (P.time || null), opts: opt }); }
+  catch (e) { res = { err: e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message }; }
+  if (tok !== P.bdTok) return;
+  P.bdBusy = false;
+  P.bd = key === JSON.stringify([P.o, P.d, P.when, P.time]) ? res : null;   // 算的途中起訖／時間改了：結果作廢
+  if (S.page === 'plan') renderPage();
 }
 // v2.33.0：第一段公車的即時查詢在背景做完（最多2次，和以前一樣）：換上新清單（可能改變排序）；在別頁時先存著，回到列表才換
 function planLiveDone(tok, L) {
@@ -3388,6 +3462,11 @@ document.addEventListener('click', e => {
     case 'planWhen': S.plan.when = el.dataset.v; if (el.dataset.v !== 'now' && !S.plan.time) S.plan.time = localIso(new Date(Date.now() + 15 * 60000)); planChanged(); break;
     case 'planMode': S.plan.modes[el.dataset.v] = S.plan.modes[el.dataset.v] ? 0 : 1; planSavePref(); planChanged(); break;
     case 'planGo': planGo(); break;
+    case 'bdGo': bdGo(); break;
+    case 's2sCity': S.s2s.c = el.dataset.v; S.s2s.meta = null; S.s2s.pend = null; S.s2s.res = null; S.s2s.msg = ''; renderPage(); break;
+    case 's2sNext': s2sNext(); break;
+    case 's2sGo': s2sGo(); break;
+    case 's2sStat': s2sStat(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
     case 'bfSel': if (o) bfSel(o); break;
