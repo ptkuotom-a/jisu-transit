@@ -2751,8 +2751,17 @@ async function s2sImportOne({ c, route, force }) {
   let r, j = null;
   try { r = await fetchT(proxy + "/bus/s2s/import?c=" + enc(c || "") + "&route=" + enc(route || "") + (force ? "&force=1" : ""), 30000, { method: "POST", headers: { "x-session": sess.token } }); j = await r.json().catch(() => null); }
   catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
-  if (!r.ok) throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+  if (!r.ok) { const e = new Error(r.status === 401 ? "請重新登入" : (j && typeof j.message === "string" && j.message) || ("錯誤 " + r.status)); e.s2s = s2sDiag(r.status, j); throw e; }
   return j;
+}
+// v2.49.11：把 Worker 錯誤回應裡既有的安全診斷（drop／total／up／upstream／detail）整理成純資料，只留合法型別；不猜測、不補值
+function s2sDiag(status, j) {
+  const n = v => (typeof v === "number" && Number.isFinite(v) && v >= 0) ? Math.floor(v) : null;
+  const o = j && typeof j === "object" && !Array.isArray(j) ? j : null, d = { status: n(status), json: !!o, total: o ? n(o.total) : null, drop: null, up: null, upstream: o ? n(o.upstream) : null, detail: null };
+  if (o && o.drop && typeof o.drop === "object") { const x = { name: n(o.drop.name), city: n(o.drop.city), shape: n(o.drop.shape) }; if (x.name !== null || x.city !== null || x.shape !== null) d.drop = x; }
+  if (o && o.up && typeof o.up === "object" && !Array.isArray(o.up)) { const u = Object.entries(o.up).filter(([k, v]) => typeof k === "string" && (typeof v === "string" || typeof v === "number")).slice(0, 20).map(([k, v]) => [k.slice(0, 80), String(v).slice(0, 200)]); d.up = u; }
+  if (o && typeof o.detail === "string" && o.detail) d.detail = o.detail.slice(0, 300);
+  return d;
 }
 async function s2sPending({ c }) {   // 待匯入表：雲端班表（bsch）裡這個縣市的路線名稱，去掉雲端已有的；只讀，不打 TDX
   const [metaAll, meta] = await Promise.all([authedGet("/bus/sch/meta"), authedGet("/bus/s2s/meta?c=" + enc(c || ""))]);

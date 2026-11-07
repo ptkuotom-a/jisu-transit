@@ -1615,6 +1615,17 @@ function advHtml() {
 }
 // ---------- JT-20261107-02：雙北站間旅行時間（TDX 加值 S2STravelTime，歷史推估）管理者一次匯入一條 ----------
 // 不會自動全部匯入：每按一次「匯入這一條」才打一次 TDX；「找下一條」只讀雲端資料，不打 TDX。
+// v2.49.11：匯入失敗時顯示 Worker 回的診斷原文（全部當文字 escape；0 照實顯示；沒有的欄位寫「未提供」，不猜）
+function s2sErrHtml(d) {
+  const v = x => (typeof x === 'number' && Number.isFinite(x)) ? String(x) : '未提供';
+  const rows = [`HTTP 狀態：${v(d.status)}${d.json ? '' : '（回應不是 JSON，沒有診斷欄位）'}`];
+  if (d.upstream !== null && d.upstream !== undefined) rows.push(`TDX 回應狀態：${v(d.upstream)}`);
+  if (d.json) rows.push(`TDX 回傳總筆數：${v(d.total)}`);
+  if (d.json) rows.push(d.drop ? `排除：名稱不符 ${v(d.drop.name)} 筆・縣市不符 ${v(d.drop.city)} 筆・欄位不全 ${v(d.drop.shape)} 筆` : '排除筆數：未提供');
+  if (d.json) rows.push(d.up && d.up.length ? `TDX 額度相關回應：${d.up.map(([k, x]) => k + '=' + x).join('，')}` : 'TDX 額度相關回應：未提供');
+  if (d.detail) rows.push(`TDX 回應內容（前 300 字）：${d.detail}`);
+  return `<div class="note" style="margin-top:8px">${rows.map(esc).join('<br>')}<br>未自動重試；舊資料不動。</div>`;
+}
 function s2sHtml() {
   const X = S.s2s || (S.s2s = { c:'Taipei', route:'', force:false, busy:false, msg:'', res:null, meta:null, pend:null });
   const r = X.res, m = X.meta, pd = X.pend;
@@ -1625,6 +1636,7 @@ function s2sHtml() {
     <label style="display:block;margin-top:6px"><input type="checkbox" id="s2sForce" ${X.force ? 'checked' : ''}> 已有資料也強制重抓（會再用點數）</label>
     <div class="btns" style="margin-top:8px"><button class="btn sec2" data-act="s2sNext" ${X.busy ? 'disabled' : ''}>找下一條未匯入</button><button class="btn pri" data-act="s2sGo" ${X.busy || !X.route ? 'disabled' : ''}>${X.busy ? '處理中…' : '匯入這一條'}</button><button class="btn sec2" data-act="s2sStat" ${X.busy ? 'disabled' : ''}>讀取狀態</button></div>
     ${X.msg ? `<div class="note" style="margin-top:8px">${esc(X.msg)}</div>` : ''}
+    ${X.err ? s2sErrHtml(X.err) : ''}
     ${r && r.ok ? `<div class="note" style="margin-top:8px">已儲存「${esc(r.name)}」：路線 ${esc((r.routes || []).join('、'))}・${r.subs} 個子路線方向・${r.segs} 段站間時間${r.neg ? `（其中 ${r.neg} 段為 -1＝該時段無車）` : ''}・原始 ${r.raw} 字元／壓縮 ${r.gz} 位元組・有效 ${esc(r.eff || '未提供')}～${esc(r.exp || '未提供')}・更新週期 ${r.ui ?? '未提供'} 月${r.mixed ? '・注意：各筆有效期不一致' : ''}${r.up && Object.keys(r.up).length ? `<br>TDX 額度相關回應：${esc(Object.entries(r.up).map(([k, v]) => k + '=' + v).join('，'))}` : '<br>TDX 沒有回額度相關資訊'}</div>` : ''}
     ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有 ${m.n} 條${m.expired && m.expired.length ? `，已過期 ${m.expired.length} 條` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，未匯入 ${pd.pending.length} 個` : ''}</div>` : ''}`;
 }
@@ -1641,9 +1653,9 @@ async function s2sNext() {
 }
 async function s2sGo() {
   const X = S.s2s; if (X.busy || !X.route) return;
-  X.busy = true; X.msg = ''; X.res = null; renderPage();
+  X.busy = true; X.msg = ''; X.res = null; X.err = null; renderPage();
   try { const r = await api('s2sImport', { c:X.c, route:X.route, force:X.force }); X.res = r; X.msg = r.skip ? `略過：${r.why}` : ''; X.meta = null; X.pend = null; }
-  catch (e) { X.msg = e.message; }
+  catch (e) { X.msg = e.message; X.err = e.s2s || null; }
   X.busy = false; if (S.page === 'adv') renderPage();
 }
 document.addEventListener('input', e => { if (e.target.id === 's2sRoute' && S.s2s) { S.s2s.route = e.target.value.trim(); const b = document.querySelector('[data-act="s2sGo"]'); if (b) b.disabled = S.s2s.busy || !S.s2s.route; } });
