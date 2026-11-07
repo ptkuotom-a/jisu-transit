@@ -2751,7 +2751,9 @@ async function s2sImportOne({ c, route, force }) {
   let r, j = null;
   try { r = await fetchT(proxy + "/bus/s2s/import?c=" + enc(c || "") + "&route=" + enc(route || "") + (force ? "&force=1" : ""), 30000, { method: "POST", headers: { "x-session": sess.token } }); j = await r.json().catch(() => null); }
   catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
-  if (!r.ok) { const e = new Error(r.status === 401 ? "請重新登入" : (j && typeof j.message === "string" && j.message) || ("錯誤 " + r.status)); e.s2s = s2sDiag(r.status, j); throw e; }
+  if (!r.ok) { const e = new Error(r.status === 401 ? "請重新登入" : (j && typeof j.message === "string" && j.message) || ("錯誤 " + r.status)); e.s2s = s2sDiag(r.status, j);
+    if (j && j.raw && typeof j.raw === "object") e.s2s.sample = await s2sKeepSample({ c, route, status: r.status, diag: e.s2s, raw: j.raw }, sess);   // JT-20261108-01：拒收樣本留在本機（只限管理者 session）
+    throw e; }
   return j;
 }
 // v2.49.11：把 Worker 錯誤回應裡既有的安全診斷（drop／total／up／upstream／detail）整理成純資料，只留合法型別；不猜測、不補值
@@ -2761,8 +2763,47 @@ function s2sDiag(status, j) {
   if (o && o.drop && typeof o.drop === "object") { const x = { name: n(o.drop.name), city: n(o.drop.city), shape: n(o.drop.shape) }; if (x.name !== null || x.city !== null || x.shape !== null) d.drop = x; }
   if (o && o.up && typeof o.up === "object" && !Array.isArray(o.up)) { const u = Object.entries(o.up).filter(([k, v]) => typeof k === "string" && (typeof v === "string" || typeof v === "number")).slice(0, 20).map(([k, v]) => [k.slice(0, 80), String(v).slice(0, 200)]); d.up = u; }
   if (o && typeof o.detail === "string" && o.detail) d.detail = o.detail.slice(0, 300);
+  d.shape = o ? s2sShapeDiag(o.shape) : null;
+  if (o && o.raw && typeof o.raw === "object") d.raw = { attached: o.raw.attached === true && "data" in o.raw, chars: n(o.raw.chars), why: typeof o.raw.why === "string" ? o.raw.why.slice(0, 100) : null };
   return d;
 }
+// JT-20261108-01：shape 細部原因（只收合法型別，最多 20 筆位置）
+const S2S_SHAPE_R = ["notArray", "empty", "segNull", "fromMissing", "toMissing", "runMissing", "runNull", "runType"];
+function s2sShapeDiag(x) {
+  if (!x || typeof x !== "object") return null;
+  const n = v => (typeof v === "number" && Number.isFinite(v) && v >= 0) ? Math.floor(v) : null, t = (v, m = 60) => typeof v === "string" ? v.slice(0, m) : (typeof v === "number" && Number.isFinite(v) ? String(v) : null);
+  const R = x.reasons && typeof x.reasons === "object" ? x.reasons : {};
+  const rt = x.runTypes && typeof x.runTypes === "object" ? Object.entries(x.runTypes).slice(0, 8).map(([k, v]) => [String(k).slice(0, 20), n(v)]).filter(z => z[1] !== null) : [];
+  const first = Array.isArray(x.first) ? x.first.slice(0, 20).filter(f => f && typeof f === "object").map(f => ({ rec: n(f.rec), seg: n(f.seg), field: t(f.field, 40), reason: S2S_SHAPE_R.includes(f.reason) ? f.reason : null, type: t(f.type, 20), value: t(f.value, 80),
+    route: t(f.route), sub: t(f.sub), dir: t(f.dir, 10), recKeys: Array.isArray(f.recKeys) ? f.recKeys.slice(0, 30).map(k => String(k).slice(0, 40)) : [], segKeys: Array.isArray(f.segKeys) ? f.segKeys.slice(0, 30).map(k => String(k).slice(0, 40)) : [],
+    also: Array.isArray(f.also) ? f.also.filter(r => S2S_SHAPE_R.includes(r)) : [] })) : [];
+  return { recs: n(x.recs), segTotal: n(x.segTotal), segBad: n(x.segBad), reasons: Object.fromEntries(S2S_SHAPE_R.map(k => [k, n(R[k])])), runTypes: rt, first, firstOmitted: n(x.firstOmitted) };
+}
+// JT-20261108-01：拒收的原始交通資料只存本機獨立 IndexedDB「jisu-s2s-sample」（不碰 jisu kv/meta），只留最近一份；綁定這個管理者 session（雜湊），登出就整個刪掉
+const S2SS_DB = "jisu-s2s-sample";
+const s2ssOwner = async sess => { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("s2ss|" + ((sess && sess.token) || ""))); return [...new Uint8Array(b)].slice(0, 16).map(x => x.toString(16).padStart(2, "0")).join(""); };
+function s2ssDb() { return new Promise((res, rej) => { let done = false; const tm = setTimeout(() => { if (!done) { done = true; rej(new Error("瀏覽器資料庫沒有回應")); } }, 3000);
+  try { if (!self.indexedDB) throw new Error("這個瀏覽器不能用 IndexedDB"); const r = indexedDB.open(S2SS_DB, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("s")) r.result.createObjectStore("s"); };
+    r.onsuccess = () => { if (done) { r.result.close(); return; } done = true; clearTimeout(tm); res(r.result); }; r.onerror = () => { if (!done) { done = true; clearTimeout(tm); rej(r.error || new Error("開不了瀏覽器資料庫")); } }; r.onblocked = () => {};
+  } catch (e) { done = true; clearTimeout(tm); rej(e); } }); }
+async function s2ssTx(mode, f) { const db = await s2ssDb(); try { return await new Promise((res, rej) => { const t = db.transaction("s", mode), st = t.objectStore("s"); let out; const q = f(st); if (q) q.onsuccess = () => { out = q.result; }; t.oncomplete = () => res(out); t.onerror = t.onabort = () => rej(t.error || new Error("瀏覽器資料庫寫入失敗")); }); } finally { db.close(); } }
+async function s2sKeepSample({ c, route, status, diag, raw }, sess) {
+  const env = { kind: "jisu-s2s-rejected-sample", notAccepted: true, note: "TDX 原始交通資料，驗證未通過、未採用，只存這台裝置；不是成功資料", savedAt: new Date().toISOString(), city: c, route, httpStatus: status,
+    rawAttached: raw.attached === true && "data" in raw, rawChars: diag.raw ? diag.raw.chars : null, rawWhy: diag.raw ? diag.raw.why : null,
+    diagnostic: { total: diag.total, drop: diag.drop, shape: diag.shape }, tdx: raw.attached === true && "data" in raw ? raw.data : null };
+  const out = { env, saved: false, err: null };
+  if (!sess || sess.role !== "admin") { out.err = "不是管理者，未保留"; return out; }
+  try { const owner = await s2ssOwner(sess); await s2ssTx("readwrite", st => { st.clear(); return st.put({ owner, env }, "last"); }); out.saved = true; }
+  catch (e) { out.err = "本機保存失敗：" + String((e && e.message) || e).slice(0, 80) + "（這頁還能下載，重新整理就會不見）"; }
+  return out;
+}
+async function s2sSampleGet() {
+  const sess = getSession(); if (!sess || sess.role !== "admin") return null;
+  const owner = await s2ssOwner(sess), v = await s2ssTx("readonly", st => st.get("last"));
+  return v && v.owner === owner && v.env && v.env.notAccepted === true ? { env: v.env, saved: true } : null;
+}
+async function s2sSampleClear() { try { await s2ssTx("readwrite", st => st.clear()); } catch (e) {} try { indexedDB.deleteDatabase(S2SS_DB); } catch (e) {} return true; }
 async function s2sPending({ c }) {   // 待匯入表：雲端班表（bsch）裡這個縣市的路線名稱，去掉雲端已有的；只讀，不打 TDX
   const [metaAll, meta] = await Promise.all([authedGet("/bus/sch/meta"), authedGet("/bus/s2s/meta?c=" + enc(c || ""))]);
   const x = await bdCity(c, metaAll);
@@ -5562,14 +5603,14 @@ async function authMe() {
   const proxy = getProxy(); if (!proxy) return { ...s, offline: true };
   try {
     const r = await fetch(proxy + "/auth/me", { headers: { "x-session": s.token }, cache: "no-store" });
-    if (r.status === 401) { localStorage.removeItem(SESS_KEY); return null; }
+    if (r.status === 401) { localStorage.removeItem(SESS_KEY); s2sSampleClear().catch(() => {}); return null; }
     if (!r.ok) return { ...s, offline: true };
     const j = await r.json(); const n = { ...s, name: j.name, role: j.role };
     localStorage.setItem(SESS_KEY, JSON.stringify(n)); return n;
   } catch (e) { return { ...s, offline: true }; }
 }
 async function authLogout() {
-  const s = getSession(); localStorage.removeItem(SESS_KEY);
+  const s = getSession(); localStorage.removeItem(SESS_KEY); await s2sSampleClear().catch(() => {});   // JT-20261108-01：登出就刪掉本機拒收樣本
   const proxy = getProxy();
   if (s && proxy) { try { await fetch(proxy + "/auth/logout", { method: "POST", headers: { "x-session": s.token } }); } catch (e) {} }
 }
@@ -5599,6 +5640,8 @@ const dataApi0 = async (action, p = {}) => {
     case "schStatus": return authedGet("/bus/sch/meta");
     case "s2sMeta": return authedGet("/bus/s2s/meta?c=" + enc(p.c || ""));
     case "s2sImport": return s2sImportOne(p || {});
+    case "s2sSampleGet": return s2sSampleGet();
+    case "s2sSampleClear": return s2sSampleClear();
     case "s2sPending": return s2sPending(p || {});
     case "schBuild": return schBuild(p || {});
     case "khhSchDate": return khhSchDate();

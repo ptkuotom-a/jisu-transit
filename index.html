@@ -1624,10 +1624,41 @@ function s2sErrHtml(d) {
   if (d.json) rows.push(d.drop ? `排除：名稱不符 ${v(d.drop.name)} 筆・縣市不符 ${v(d.drop.city)} 筆・欄位不全 ${v(d.drop.shape)} 筆` : '排除筆數：未提供');
   if (d.json) rows.push(d.up && d.up.length ? `TDX 額度相關回應：${d.up.map(([k, x]) => k + '=' + x).join('，')}` : 'TDX 額度相關回應：未提供');
   if (d.detail) rows.push(`TDX 回應內容（前 300 字）：${d.detail}`);
+  const sh = d.shape;   // JT-20261108-01：「欄位不全」的細部原因
+  if (sh) {
+    const R = sh.reasons || {}, L = { notArray:'TravelTimes 不是陣列', empty:'TravelTimes 是空的', segNull:'整段是 null／不是物件', fromMissing:'缺 FromStopID', toMissing:'缺 ToStopID', runMissing:'缺 RunTime', runNull:'RunTime 是 null', runType:'RunTime 不是數字' };
+    rows.push(`欄位不全細項：被拒 ${v(sh.recs)} 筆・這些筆共 ${v(sh.segTotal)} 段・有問題的段 ${v(sh.segBad)} 段（一段可能同時有多個原因，下面各原因可加總超過段數）`);
+    rows.push(Object.keys(L).map(k => `${L[k]} ${v(R[k])}`).join('・'));
+    if (sh.runTypes && sh.runTypes.length) rows.push(`RunTime 實際型別：${sh.runTypes.map(([k, n]) => `${k} ${n} 段`).join('・')}`);
+    for (const f of sh.first || []) rows.push(`第 ${v(f.rec)} 筆${f.seg ? `第 ${v(f.seg)} 段` : ''}（路線 ${f.route ?? '未提供'}・子路線 ${f.sub ?? '未提供'}・方向 ${f.dir ?? '未提供'}）：${f.reason ? L[f.reason] : '原因未提供'}；欄位 ${f.field ?? '未提供'}，型別 ${f.type ?? '未提供'}，值 ${f.value ?? '未提供'}${f.also && f.also.length ? `；同段另有：${f.also.map(r => L[r]).join('、')}` : ''}；這一筆的欄位：${(f.recKeys || []).join(',') || '無'}${f.seg ? `；這一段的欄位：${(f.segKeys || []).join(',') || '無'}` : ''}`);
+    if (sh.firstOmitted) rows.push(`另有 ${v(sh.firstOmitted)} 筆的位置沒有列出`);
+  }
+  if (d.raw) rows.push(d.raw.attached ? `原始交通資料：已隨回應附上（${v(d.raw.chars)} 字元）` : `原始交通資料：沒有附上（${d.raw.why || '原因未提供'}，${v(d.raw.chars)} 字元）`);
   return `<div class="note" style="margin-top:8px">${rows.map(esc).join('<br>')}<br>未自動重試；舊資料不動。</div>`;
+}
+// JT-20261108-01：管理者的拒收樣本（本機），可下載 JSON／清除；原始資料不畫到畫面上
+function s2sSampleHtml(X) {
+  const sp = X.sample; if (!sp || !sp.env) return X.sampleMsg ? `<div class="note" style="margin-top:8px">${esc(X.sampleMsg)}</div>` : '';
+  const e = sp.env;
+  return `<div class="note" style="margin-top:8px;border:1px solid #c33">${esc(`未採用的 TDX 原始交通資料樣本（驗證未通過，不是成功資料）：${e.city === 'Taipei' ? '臺北市' : e.city === 'NewTaipei' ? '新北市' : '未提供'}「${e.route || ''}」・取得時間 ${e.savedAt || '未提供'}・${e.rawAttached ? `含原始資料 ${e.rawChars ?? '?'} 字元` : `沒有原始資料（${e.rawWhy || '原因未提供'}），只有診斷`}`)}<br>${esc(sp.saved ? '只存在這台裝置的瀏覽器（重新整理後還在；登出會刪除）' : (sp.err || '沒有保存到本機') + '')}
+    <div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sDl">下載 JSON</button><button class="btn sec2" data-act="s2sClr">清除這份樣本</button></div>${X.sampleMsg ? `<div class="sub">${esc(X.sampleMsg)}</div>` : ''}</div>`;
+}
+function s2sDl() {
+  const X = S.s2s, sp = X && X.sample; if (!sp || !sp.env) return;
+  const safe = x => String(x || '').replace(/[^A-Za-z0-9-]/g, '_').slice(0, 20) || 'x';
+  const ts = String(sp.env.savedAt || '').replace(/[^0-9]/g, '').slice(0, 14) || 'time';
+  const name = `jisu-s2s-rejected-${safe(sp.env.city)}-${safe(encodeURIComponent(sp.env.route || '')).slice(0, 20)}-${ts}.json`;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(sp.env, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+  X.sampleMsg = '已產生下載：' + name; renderPage();
+}
+async function s2sClr() {
+  const X = S.s2s; if (!X) return;
+  await api('s2sSampleClear').catch(() => {}); X.sample = null; X.sampleMsg = '已清除本機的拒收樣本'; renderPage();
 }
 function s2sHtml() {
   const X = S.s2s || (S.s2s = { c:'Taipei', route:'', force:false, busy:false, msg:'', res:null, meta:null, pend:null });
+  if (!X.sLoaded) { X.sLoaded = true; api('s2sSampleGet').then(v => { if (v && !X.sample) { X.sample = v; if (S.page === 'adv') renderPage(); } }).catch(e => { X.sampleMsg = '讀不到本機的拒收樣本：' + ((e && e.message) || e); if (S.page === 'adv') renderPage(); }); }
   const r = X.res, m = X.meta, pd = X.pend;
   return `<div class="sec" style="margin-top:18px"><h2>站間旅行時間（雙北・試行）</h2><span class="side">TDX 加值・歷史推估</span></div>
     <div class="note">從 TDX 加值 API 下載「站間旅行時間（歷史推估）」存到雲端；一次一條，會用 Worker 的 TDX 點數。這是歷史平均，不是表定時刻。</div>
@@ -1637,6 +1668,7 @@ function s2sHtml() {
     <div class="btns" style="margin-top:8px"><button class="btn sec2" data-act="s2sNext" ${X.busy ? 'disabled' : ''}>找下一條未匯入</button><button class="btn pri" data-act="s2sGo" ${X.busy || !X.route ? 'disabled' : ''}>${X.busy ? '處理中…' : '匯入這一條'}</button><button class="btn sec2" data-act="s2sStat" ${X.busy ? 'disabled' : ''}>讀取狀態</button></div>
     ${X.msg ? `<div class="note" style="margin-top:8px">${esc(X.msg)}</div>` : ''}
     ${X.err ? s2sErrHtml(X.err) : ''}
+    ${s2sSampleHtml(X)}
     ${r && r.ok ? `<div class="note" style="margin-top:8px">已儲存「${esc(r.name)}」：路線 ${esc((r.routes || []).join('、'))}・${r.subs} 個子路線方向・${r.segs} 段站間時間${r.neg ? `（其中 ${r.neg} 段為 -1＝該時段無車）` : ''}・原始 ${r.raw} 字元／壓縮 ${r.gz} 位元組・有效 ${esc(r.eff || '未提供')}～${esc(r.exp || '未提供')}・更新週期 ${r.ui ?? '未提供'} 月${r.mixed ? '・注意：各筆有效期不一致' : ''}${r.up && Object.keys(r.up).length ? `<br>TDX 額度相關回應：${esc(Object.entries(r.up).map(([k, v]) => k + '=' + v).join('，'))}` : '<br>TDX 沒有回額度相關資訊'}</div>` : ''}
     ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有 ${m.n} 條${m.expired && m.expired.length ? `，已過期 ${m.expired.length} 條` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，未匯入 ${pd.pending.length} 個` : ''}</div>` : ''}`;
 }
@@ -1655,7 +1687,7 @@ async function s2sGo() {
   const X = S.s2s; if (X.busy || !X.route) return;
   X.busy = true; X.msg = ''; X.res = null; X.err = null; renderPage();
   try { const r = await api('s2sImport', { c:X.c, route:X.route, force:X.force }); X.res = r; X.msg = r.skip ? `略過：${r.why}` : ''; X.meta = null; X.pend = null; }
-  catch (e) { X.msg = e.message; X.err = e.s2s || null; }
+  catch (e) { X.msg = e.message; X.err = e.s2s || null; if (e.s2s && e.s2s.sample) { X.sample = e.s2s.sample; X.sampleMsg = ''; } }
   X.busy = false; if (S.page === 'adv') renderPage();
 }
 document.addEventListener('input', e => { if (e.target.id === 's2sRoute' && S.s2s) { S.s2s.route = e.target.value.trim(); const b = document.querySelector('[data-act="s2sGo"]'); if (b) b.disabled = S.s2s.busy || !S.s2s.route; } });
@@ -3478,6 +3510,8 @@ document.addEventListener('click', e => {
     case 's2sCity': S.s2s.c = el.dataset.v; S.s2s.meta = null; S.s2s.pend = null; S.s2s.res = null; S.s2s.msg = ''; renderPage(); break;
     case 's2sNext': s2sNext(); break;
     case 's2sGo': s2sGo(); break;
+    case 's2sDl': s2sDl(); break;
+    case 's2sClr': s2sClr(); break;
     case 's2sStat': s2sStat(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
@@ -4063,7 +4097,7 @@ async function checkAuth() {
 async function doLogout() {
   if (!confirm('確定要登出嗎？')) return;
   await api('authLogout').catch(() => {});
-  S.auth = null;
+  S.auth = null; S.s2s = null;   // JT-20261108-01：登出清掉這頁記憶體裡的拒收樣本
   showLogin();
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth(); });
