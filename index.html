@@ -617,6 +617,7 @@ const S = {
   route:null, routeData:null, routeLoading:false, routeError:null,
   sheet:null, proxy:{},
 };
+if (typeof window !== 'undefined') window.S = S;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const REG = new Map(); let regN = 0;
@@ -1610,6 +1611,7 @@ function openAdv() {
   p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
   renderPage();
 }
+if (typeof window !== 'undefined') window.openAdv = openAdv;
 function advHtml() {
   return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}${S.auth?.role === 'admin' ? s2sHtml() : ''}</div>`;
 }
@@ -1633,6 +1635,7 @@ function s2sErrHtml(d) {
     for (const f of sh.first || []) rows.push(`第 ${v(f.rec)} 筆${f.seg ? `第 ${v(f.seg)} 段` : ''}（路線 ${f.route ?? '未提供'}・子路線 ${f.sub ?? '未提供'}・方向 ${f.dir ?? '未提供'}）：${f.reason ? L[f.reason] : '原因未提供'}；欄位 ${f.field ?? '未提供'}，型別 ${f.type ?? '未提供'}，值 ${f.value ?? '未提供'}${f.also && f.also.length ? `；同段另有：${f.also.map(r => L[r]).join('、')}` : ''}；這一筆的欄位：${(f.recKeys || []).join(',') || '無'}${f.seg ? `；這一段的欄位：${(f.segKeys || []).join(',') || '無'}` : ''}`);
     if (sh.firstOmitted) rows.push(`另有 ${v(sh.firstOmitted)} 筆的位置沒有列出`);
   }
+  if (typeof d.localRaw === 'number') rows.push(`下載成功但資料驗證沒通過；原始交通資料已存在這台裝置（${v(d.localRaw)} 筆），可按「下載拒收資料（JSON）」`);   // JT-20261108-04 本機暫存
   if (d.raw) rows.push(d.raw.attached ? `原始交通資料：已隨回應附上（${v(d.raw.chars)} 字元）` : `原始交通資料：沒有附上（${d.raw.why || '原因未提供'}，${v(d.raw.chars)} 字元）`);
   return `<div class="note" style="margin-top:8px">${rows.map(esc).join('<br>')}<br>未自動重試；舊資料不動。</div>`;
 }
@@ -1681,6 +1684,202 @@ async function s2sClr() {
   const X = S.s2s; if (!X) return;
   await api('s2sSampleClear').catch(() => {}); X.sample = null; X.sampleMsg = '已清除本機的拒收樣本'; renderPage();
 }
+function s2sLocalHtml(X) {
+  if (!X.lLoaded) {
+    X.lLoaded = true;
+    api('s2sLocalCounts').then(c => { X.lCounts = c; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalDlBatchGet').then(b => { X.lDlBatch = b; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalUpBatchGet').then(b => { X.lUpBatch = b; if (S.page === 'adv') renderPage(); }).catch(() => {});
+  }
+  const cnt = X.lCounts || { total: 0, ok: 0, empty: 0, reject: 0, upDone: 0, upPending: 0 };
+  const dlb = X.lDlBatch, upb = X.lUpBatch;
+  const dlRun = dlb && dlb.st === 'running' && dlb.live, dlRej = dlb && dlb.stop && dlb.stop.kind === 'reject';
+  const dlStL = dlb ? ({ running: '執行中', paused: '已暫停', stopped: '已停下', done: '完成' }[dlb.st] || dlb.st) : '尚未開始';
+  const upRun = upb && upb.st === 'running' && upb.live;
+  const upStL = upb ? ({ running: '執行中', paused: '已暫停', stopped: '已停下', done: '完成' }[upb.st] || upb.st) : '尚未開始';
+
+  return `<div class="sec" style="margin-top:20px"><h2 style="font-size:17px">本機暫存（先下載、再上傳）</h2><span class="side">臺北市・兩段式</span></div>
+    <div class="note">下載不寫雲端、上傳不打 TDX、只做臺北市。資料先完整保存在這台裝置的 IndexedDB（jisu-s2s-local），每條都有完整原始資料；可離線檢視匯出，確認無誤後再批次上傳雲端。</div>
+    <div class="sub" style="margin-top:6px">本機筆數：成功 ${cnt.ok}・查無 ${cnt.empty}・拒收 ${cnt.reject}；已上傳 ${cnt.upDone}・待上傳 ${cnt.upPending}</div>
+
+    <div class="sub" style="margin-top:12px;font-weight:bold;color:#4af">【第一段：下載到本機（打 TDX，不寫雲端）】</div>
+    ${!dlb ? `<div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sLDlPrep" ${X.lDlBusy ? 'disabled' : ''}>建立下載清單（不打 TDX）</button></div>` : `
+      <div class="sub" style="margin-top:4px">${esc(`${dlStL}・共 ${dlb.n.total} 條待處理：成功 ${dlb.n.ok}・查無 ${dlb.n.empty}・拒收 ${dlb.n.reject}・略過 ${dlb.n.skip}・剩 ${dlb.n.left}${dlb.cur && dlb.st !== 'done' ? `・目前「${dlb.cur}」` : ''}`)}</div>
+      ${dlb.why ? `<div class="note" style="margin-top:6px">${esc(dlb.why)}</div>` : ''}
+      ${dlRej && dlb.stop && dlb.stop.diag ? s2sErrHtml(dlb.stop.diag) : ''}
+      <div class="btns" style="margin-top:6px">
+        ${dlRun ? `<button class="btn sec2" data-act="s2sLDlPause">暫停下載</button>` : dlb.st !== 'done' ? `<button class="btn pri" data-act="s2sLDlRun" ${X.lDlBusy || dlRej ? 'disabled' : ''}>${dlb.n.left === dlb.n.total && !Object.keys(dlb.res || {}).length ? '開始下載' : '續跑下載'}</button>` : ''}
+        ${dlRej ? `<button class="btn sec2" data-act="s2sLDlDlRej">下載拒收資料（JSON）</button><button class="btn sec2" data-act="s2sLDlSkip">略過這條，繼續下一條</button>` : ''}
+        ${!dlRun ? `<button class="btn sec2" data-act="s2sLDlReset">清掉下載進度</button>` : ''}
+      </div>
+    `}
+
+    <div class="sub" style="margin-top:12px;font-weight:bold;color:#4af">【第二段：上傳到雲端（寫雲端，不打 TDX）】</div>
+    ${!upb ? `<div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sLUpPrep" ${X.lUpBusy ? 'disabled' : ''}>建立上傳清單</button></div>` : `
+      <div class="sub" style="margin-top:4px">${esc(`${upStL}・共 ${upb.n.total} 條待上傳：成功 ${upb.n.ok}・查無記錄 ${upb.n.none}・已有略過 ${upb.n.skip}・拒收 ${upb.n.reject}・剩 ${upb.n.left}${upb.cur && upb.st !== 'done' ? `・目前「${upb.cur}」` : ''}`)}</div>
+      ${upb.why ? `<div class="note" style="margin-top:6px">${esc(upb.why)}</div>` : ''}
+      <div class="btns" style="margin-top:6px">
+        ${upRun ? `<button class="btn sec2" data-act="s2sLUpPause">暫停上傳</button>` : upb.st !== 'done' ? `<button class="btn pri" data-act="s2sLUpRun" ${X.lUpBusy ? 'disabled' : ''}>${upb.n.left === upb.n.total && !Object.keys(upb.res || {}).length ? '開始上傳' : '續跑上傳'}</button>` : ''}
+        ${!upRun ? `<button class="btn sec2" data-act="s2sLUpReset">清掉上傳進度</button>` : ''}
+      </div>
+    `}
+
+    <div class="btns" style="margin-top:12px">
+      <button class="btn sec2" data-act="s2sLExportAll">匯出本機全部 JSON</button>
+      <button class="btn sec2" data-act="s2sLClearAll">清除本機暫存</button>
+    </div>
+    ${X.lMsg ? `<div class="sub" style="margin-top:6px">${esc(X.lMsg)}</div>` : ''}`;
+}
+
+async function s2sLDlPrep() {
+  const X = S.s2s; X.lDlBusy = true; X.lMsg = '讀取待下載清單…（不打 TDX）'; renderPage();
+  try {
+    X.lDlBatch = await api('s2sLocalDlBatchPrepare', { c: 'Taipei' });
+    X.lCounts = await api('s2sLocalCounts');
+    X.lMsg = '';
+  } catch (e) { X.lMsg = e.message; }
+  X.lDlBusy = false; if (S.page === 'adv') renderPage();
+}
+
+async function s2sLDlRun() {
+  const X = S.s2s; if (!X || X.lDlRun) return;
+  X.lDlRun = true; X.lDlStop = false; X.lMsg = '';
+  try {
+    const r = await api('s2sLocalDlBatchRun', {
+      shouldPause: () => X.lDlStop || document.visibilityState !== 'visible',
+      onTick: async st => {
+        X.lDlBatch = st;
+        X.lCounts = await api('s2sLocalCounts').catch(() => X.lCounts);
+        if (S.page === 'adv') renderPage();
+      }
+    });
+    if (r && r.busy) X.lMsg = r.why || '下載批次已在執行中';
+    else X.lDlBatch = r;
+  } catch (e) { X.lMsg = e.message; }
+  X.lDlRun = false;
+  X.lDlBatch = await api('s2sLocalDlBatchGet').catch(() => X.lDlBatch);
+  X.lCounts = await api('s2sLocalCounts').catch(() => X.lCounts);
+  if (S.page === 'adv') renderPage();
+}
+
+function s2sLDlPause() {
+  if (S.s2s) { S.s2s.lDlStop = true; S.s2s.lMsg = '這一條做完就暫停下載…'; renderPage(); }
+}
+
+async function s2sLDlSkip() {
+  const X = S.s2s;
+  X.lDlBatch = await api('s2sLocalDlBatchSkipCur');
+  X.lCounts = await api('s2sLocalCounts');
+  renderPage();
+}
+
+async function s2sLDlReset() {
+  const X = S.s2s;
+  if (!confirm('清掉下載批次的進度？（本機已存的資料不會刪除）')) return;
+  try {
+    await api('s2sLocalDlBatchReset');
+    X.lDlBatch = null;
+    X.lMsg = '已清掉下載批次進度';
+  } catch (e) { X.lMsg = e.message; }
+  renderPage();
+}
+
+async function s2sLDlDlRej() {
+  const X = S.s2s, b = X && X.lDlBatch;
+  if (!b || !b.stop || !b.stop.route) return;
+  const nm = b.stop.route;
+  try {
+    const rec = await api('s2sLocalGet', { c: 'Taipei', route: nm });
+    if (!rec) throw new Error('找不到該路線暫存');
+    const ts = (rec.fetchedAt || new Date().toISOString()).replace(/[^0-9]/g, '').slice(0, 14);
+    const safeName = encodeURIComponent(nm).slice(0, 20);
+    const name = `jisu-s2s-reject-Taipei-${safeName}-${ts}.json`;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(rec, null, 2)], { type: 'application/json' }));
+    const a = document.createElement('a'); a.href = url; a.download = name; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    X.lMsg = '已下載拒收資料：' + name;
+  } catch (e) { X.lMsg = '下載失敗：' + e.message; }
+  renderPage();
+}
+
+async function s2sLUpPrep() {
+  const X = S.s2s; X.lUpBusy = true; X.lMsg = '準備待上傳清單…'; renderPage();
+  try {
+    X.lUpBatch = await api('s2sLocalUpBatchPrepare', { c: 'Taipei' });
+    X.lCounts = await api('s2sLocalCounts');
+    X.lMsg = '';
+  } catch (e) { X.lMsg = e.message; }
+  X.lUpBusy = false; if (S.page === 'adv') renderPage();
+}
+
+async function s2sLUpRun() {
+  const X = S.s2s; if (!X || X.lUpRun) return;
+  X.lUpRun = true; X.lUpStop = false; X.lMsg = '';
+  try {
+    const r = await api('s2sLocalUpBatchRun', {
+      shouldPause: () => X.lUpStop || document.visibilityState !== 'visible',
+      onTick: async st => {
+        X.lUpBatch = st;
+        X.lCounts = await api('s2sLocalCounts').catch(() => X.lCounts);
+        if (S.page === 'adv') renderPage();
+      }
+    });
+    if (r && r.busy) X.lMsg = r.why || '上傳批次已在執行中';
+    else X.lUpBatch = r;
+  } catch (e) { X.lMsg = e.message; }
+  X.lUpRun = false;
+  X.lUpBatch = await api('s2sLocalUpBatchGet').catch(() => X.lUpBatch);
+  X.lCounts = await api('s2sLocalCounts').catch(() => X.lCounts);
+  if (S.page === 'adv') renderPage();
+}
+
+function s2sLUpPause() {
+  if (S.s2s) { S.s2s.lUpStop = true; S.s2s.lMsg = '這一條做完就暫停上傳…'; renderPage(); }
+}
+
+async function s2sLUpReset() {
+  const X = S.s2s;
+  if (!confirm('清掉上傳批次的進度？（本機與雲端的資料不會刪除）')) return;
+  try {
+    await api('s2sLocalUpBatchReset');
+    X.lUpBatch = null;
+    X.lMsg = '已清掉上傳批次進度';
+  } catch (e) { X.lMsg = e.message; }
+  renderPage();
+}
+
+async function s2sLExportAll() {
+  const X = S.s2s; if (!X) return;
+  try {
+    const data = await api('s2sLocalExportAll', { c: 'Taipei' });
+    const ts = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+    const name = `jisu-s2s-local-taipei-${ts}.json`;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const a = document.createElement('a'); a.href = url; a.download = name; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    X.lMsg = '已產生下載：' + name + `（共 ${data.count} 條）`;
+  } catch (e) { X.lMsg = '匯出失敗：' + e.message; }
+  renderPage();
+}
+
+async function s2sLClearAll() {
+  const X = S.s2s; if (!X) return;
+  const cnt = X.lCounts || { upPending: 0 };
+  let msg = '確定要清除本機所有已下載的站間時間暫存嗎？（已上傳到雲端的資料不會刪除）';
+  if (cnt.upPending > 0) {
+    msg += `\n\n【注意】本機還有 ${cnt.upPending} 條資料尚未上傳雲端，清除後將無法恢復！`;
+  }
+  if (!confirm(msg)) return;
+  try {
+    await api('s2sLocalClearAll');
+    X.lCounts = await api('s2sLocalCounts');
+    X.lMsg = '已清除本機暫存';
+  } catch (e) { X.lMsg = '清除失敗：' + e.message; }
+  renderPage();
+}
+
 function s2sHtml() {
   const X = S.s2s || (S.s2s = { c:'Taipei', route:'', force:false, busy:false, msg:'', res:null, meta:null, pend:null });
   if (!X.bLoaded) { X.bLoaded = true; api('s2sBatchGet').then(v => { X.batch = v; if (S.page === 'adv') renderPage(); }).catch(() => {}); }
@@ -1696,6 +1895,7 @@ function s2sHtml() {
     ${X.err ? s2sErrHtml(X.err) : ''}
     ${s2sSampleHtml(X)}
     ${s2sBatchHtml(X)}
+    ${s2sLocalHtml(X)}
     ${r && r.ok ? `<div class="note" style="margin-top:8px">已儲存「${esc(r.name)}」：路線 ${esc((r.routes || []).join('、'))}・${r.subs} 個子路線方向・${r.segs} 段站間時間${r.neg ? `（其中 ${r.neg} 段為 -1＝該時段無車）` : ''}・原始 ${r.raw} 字元／壓縮 ${r.gz} 位元組・有效 ${esc(r.eff || '未提供')}～${esc(r.exp || '未提供')}・更新週期 ${r.ui ?? '未提供'} 月${r.mixed ? '・注意：各筆有效期不一致' : ''}${r.up && Object.keys(r.up).length ? `<br>TDX 額度相關回應：${esc(Object.entries(r.up).map(([k, v]) => k + '=' + v).join('，'))}` : '<br>TDX 沒有回額度相關資訊'}</div>` : ''}
     ${m ? `<div class="sub" style="margin-top:8px">${m.c === 'Taipei' ? '臺北市' : '新北市'}雲端已有資料 ${m.n} 條・已查無 ${m.nNone ?? 0} 條${m.srcExpPast && m.srcExpPast.length ? `，其中 ${m.srcExpPast.length} 條的來源標示日期已過（只供參考，照常使用）` : ''}${pd ? `；班表路線名稱共 ${pd.total} 個，尚未查 ${pd.pending.length} 個` : ''}</div>` : ''}`;
 }
@@ -2855,6 +3055,7 @@ function renderPage() {
   const pg = $('#routePage'); pg.innerHTML = pageHtml(S.page);
   if (S.page === 'planDetail') mountPlanMap();
 }
+if (typeof window !== 'undefined') window.renderPage = renderPage;
 function stackPush(fn) { S.back = S.back || []; S.back.push({ page:S.page, scroll:$('#routePage').scrollTop }); pushAnim(fn); }
 function stackRestore(e) { S.page = e.page; S.rail = null; S.line = null; S.route = null; renderPage(); $('#routePage').scrollTop = e.scroll || 0; }
 function stackPop(quiet) {
@@ -3545,6 +3746,18 @@ document.addEventListener('click', e => {
     case 's2sDl': s2sDl(); break;
     case 's2sClr': s2sClr(); break;
     case 's2sStat': s2sStat(); break;
+    case 's2sLDlPrep': s2sLDlPrep(); break;
+    case 's2sLDlRun': s2sLDlRun(); break;
+    case 's2sLDlPause': s2sLDlPause(); break;
+    case 's2sLDlSkip': s2sLDlSkip(); break;
+    case 's2sLDlReset': s2sLDlReset(); break;
+    case 's2sLDlDlRej': s2sLDlDlRej(); break;
+    case 's2sLUpPrep': s2sLUpPrep(); break;
+    case 's2sLUpRun': s2sLUpRun(); break;
+    case 's2sLUpPause': s2sLUpPause(); break;
+    case 's2sLUpReset': s2sLUpReset(); break;
+    case 's2sLExportAll': s2sLExportAll(); break;
+    case 's2sLClearAll': s2sLClearAll(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
     case 'bfSel': if (o) bfSel(o); break;

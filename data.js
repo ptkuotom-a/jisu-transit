@@ -2891,6 +2891,503 @@ async function s2sRouteGet({ c, route }) {
   const out = { c, route, ver: doc.ver, srcEff: doc.eff || null, srcExp: doc.exp || null, segs };
   s2sMem.set(k, out); return out;
 }
+// ---------- JT-20261108-04：站間時間「本機暫存（先下載到本機、再上傳雲端）」----------
+// 1. 本機存放：IndexedDB「jisu-s2s-local」，綁定管理者 session，每條路線一筆：
+//    { c, route, kind:"ok"|"empty"|"reject", fetchedAt, httpStatus, ver, routeUIDs:[…], segs, err, raw:<原始陣列>, up:"pending"|"done"|"skip"|"none"|"reject", upAt, upMsg }
+const S2SL_DB = "jisu-s2s-local";
+const s2slOwner = async sess => {
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("s2sl|" + ((sess && sess.token) || "")));
+  return [...new Uint8Array(b)].slice(0, 16).map(x => x.toString(16).padStart(2, "0")).join("");
+};
+function s2slDb() {
+  return new Promise((res, rej) => {
+    let done = false;
+    const tm = setTimeout(() => { if (!done) { done = true; rej(new Error("瀏覽器資料庫沒有回應")); } }, 3000);
+    try {
+      const idb = typeof indexedDB !== "undefined" ? indexedDB : (typeof self !== "undefined" ? self.indexedDB : globalThis.indexedDB);
+      if (!idb) throw new Error("這個瀏覽器不能用 IndexedDB");
+      const r = idb.open(S2SL_DB, 1);
+      r.onupgradeneeded = () => {
+        if (!r.result.objectStoreNames.contains("routes")) r.result.createObjectStore("routes");
+      };
+      r.onsuccess = () => { if (done) { r.result.close(); return; } done = true; clearTimeout(tm); res(r.result); };
+      r.onerror = () => { if (!done) { done = true; clearTimeout(tm); rej(r.error || new Error("開不了瀏覽器資料庫")); } };
+      r.onblocked = () => {};
+    } catch (e) { done = true; clearTimeout(tm); rej(e); }
+  });
+}
+async function s2slTx(mode, f) {
+  const db = await s2slDb();
+  try {
+    return await new Promise((res, rej) => {
+      const t = db.transaction("routes", mode), st = t.objectStore("routes");
+      let out;
+      const q = f(st);
+      if (q) q.onsuccess = () => { out = q.result; };
+      t.oncomplete = () => res(out);
+      t.onerror = t.onabort = () => rej(t.error || new Error("瀏覽器資料庫操作失敗"));
+    });
+  } finally {
+    db.close();
+  }
+}
+async function s2slPut(rec) {
+  const sess = getSession();
+  if (!sess || sess.role !== "admin") throw new Error("不是管理者，不能存取本機暫存");
+  const owner = await s2slOwner(sess);
+  const key = `${rec.c}|${rec.route}`;
+  return await s2slTx("readwrite", st => st.put({ owner, ...rec }, key));
+}
+async function s2slGet(c, route) {
+  const sess = getSession();
+  if (!sess || sess.role !== "admin") return null;
+  const owner = await s2slOwner(sess);
+  const key = `${c}|${route}`;
+  const v = await s2slTx("readonly", st => st.get(key));
+  if (!v || v.owner !== owner) return null;
+  const { owner: _o, ...rec } = v;
+  return rec;
+}
+async function s2slGetAll(c) {
+  const sess = getSession();
+  if (!sess || sess.role !== "admin") return {};
+  const owner = await s2slOwner(sess);
+  const db = await s2slDb();
+  try {
+    return await new Promise((res, rej) => {
+      const t = db.transaction("routes", "readonly"), st = t.objectStore("routes");
+      const out = {};
+      const req = st.openCursor();
+      req.onsuccess = e => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const v = cursor.value;
+          if (v && v.owner === owner && (!c || v.c === c)) {
+            const { owner: _o, ...rec } = v;
+            out[rec.route] = rec;
+          }
+          cursor.continue();
+        } else {
+          res(out);
+        }
+      };
+      req.onerror = () => rej(req.error || new Error("讀取資料失敗"));
+    });
+  } finally {
+    db.close();
+  }
+}
+async function s2slClear() {
+  const sess = getSession();
+  if (!sess || sess.role !== "admin") throw new Error("只有管理者可以清除本機暫存");
+  const owner = await s2slOwner(sess);
+  const db = await s2slDb();
+  try {
+    await new Promise((res, rej) => {
+      const t = db.transaction("routes", "readwrite"), st = t.objectStore("routes");
+      const req = st.openCursor();
+      req.onsuccess = e => {
+        const cursor = e.target.result;
+        if (cursor) {
+          if (cursor.value && cursor.value.owner === owner) cursor.delete();
+          cursor.continue();
+        } else {
+          res();
+        }
+      };
+      req.onerror = () => rej(req.error || new Error("清除資料失敗"));
+    });
+    return true;
+  } finally {
+    db.close();
+  }
+}
+async function s2slCounts(c = "Taipei") {
+  const all = await s2slGetAll(c);
+  const items = Object.values(all);
+  let ok = 0, empty = 0, reject = 0, upDone = 0, upPending = 0;
+  for (const it of items) {
+    if (it.kind === "ok") ok++;
+    else if (it.kind === "empty") empty++;
+    else if (it.kind === "reject") reject++;
+    if (it.up === "done") upDone++;
+    else if ((it.kind === "ok" || it.kind === "empty") && it.up === "pending") upPending++;
+  }
+  return { total: items.length, ok, empty, reject, upDone, upPending };
+}
+
+// 2. 下載批次（只打 /bus/s2s/fetch，只開放臺北市，串行 10.5 秒）
+const S2SL_DL_KEY = "jisu_s2sl_dl", S2SL_DL_LOCK = "jisu_s2sl_dl_lock";
+let s2slDlLive = false, s2slDlTabId = Math.random().toString(36).slice(2);
+const s2slDlLoad = () => { try { const v = JSON.parse(localStorage.getItem(S2SL_DL_KEY)); return v && v.v === 1 ? v : null; } catch (e) { return null; } };
+const s2slDlSave = st => { st.t = Date.now(); localStorage.setItem(S2SL_DL_KEY, JSON.stringify(st)); return st; };
+
+function s2sLocalDlBatchGet() {
+  const st = s2slDlLoad(); if (!st) return null;
+  if (st.st === "running" && !s2slDlLive) {
+    let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_DL_LOCK)); } catch (e) {}
+    if (!lk || Date.now() - lk.t > 90000) { st.st = "paused"; st.why = "上次中途離開，已暫停（按續跑）"; s2slDlSave(st); }
+  }
+  const n = { ok: 0, empty: 0, reject: 0, skip: 0, fail: 0 };
+  for (const k of Object.keys(st.res || {})) { const x = st.res[k]; if (n[x.s] !== undefined) n[x.s]++; }
+  return { ...st, n: { ...n, total: st.q.length, left: Math.max(0, st.q.length - st.i) }, cur: st.q[st.i] || null, live: s2slDlLive };
+}
+
+async function s2sLocalDlBatchPrepare({ c = "Taipei" } = {}) {
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次下載");
+  if (c !== "Taipei") throw new Error("只開放臺北市");
+  if (s2slDlLive) throw new Error("下載批次正在執行中");
+  const old = s2slDlLoad();
+  if (old && old.c === c && old.i < old.q.length) return s2sLocalDlBatchGet();
+  const p = await s2sPending({ c: "Taipei" });
+  const localMap = await s2slGetAll("Taipei");
+  const pending = p.pending.filter(n => !localMap[n]);
+  s2slDlSave({ v: 1, c: "Taipei", q: [...new Set(pending)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - pending.length });
+  return s2sLocalDlBatchGet();
+}
+
+function s2sLocalDlBatchReset() {
+  if (s2slDlLive) throw new Error("下載批次正在執行中，請先暫停");
+  localStorage.removeItem(S2SL_DL_KEY);
+  localStorage.removeItem(S2SL_DL_LOCK);
+  return null;
+}
+
+function s2sLocalDlBatchSkipCur() {
+  const st = s2slDlLoad(); if (!st || s2slDlLive) return s2sLocalDlBatchGet();
+  const nm = st.q[st.i];
+  if (nm && st.stop && st.stop.kind === "reject") {
+    st.res[nm] = { s: "reject", m: st.stop.m };
+    st.i++; st.stop = null; st.why = "已略過「" + nm + "」";
+    s2slDlSave(st);
+  }
+  return s2sLocalDlBatchGet();
+}
+
+async function s2sLocalDlBatchRun({ shouldPause, onTick, gap } = {}) {
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次下載");
+  if (s2slDlLive) return { busy: true };
+  let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_DL_LOCK)); } catch (e) {}
+  if (lk && lk.id !== s2slDlTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑下載批次" };
+  let st = s2slDlLoad(); if (!st) throw new Error("還沒有建立下載批次");
+  if (st.c !== "Taipei") throw new Error("只開放臺北市");
+
+  s2slDlLive = true;
+  const lock = () => localStorage.setItem(S2SL_DL_LOCK, JSON.stringify({ id: s2slDlTabId, t: Date.now() }));
+  const pz = () => !!(shouldPause && shouldPause()), tick = () => { try { onTick && onTick(s2sLocalDlBatchGet()); } catch (e) {} };
+  const waitMs = typeof gap === "number" ? gap : 10500;
+
+  try {
+    lock(); st.st = "running"; st.why = ""; st.stop = null; s2slDlSave(st); tick();
+    if (st.unc) {
+      const rec = await s2slGet(st.c, st.unc);
+      if (rec) {
+        st.res[st.unc] = { s: rec.kind, m: "本機已存" };
+        st.i++;
+      }
+      st.unc = null; s2slDlSave(st); tick();
+    }
+    let first = true;
+    while (st.i < st.q.length) {
+      if (pz()) { st.st = "paused"; st.why = "已暫停"; break; }
+      if (!first) { await s2sbSleep(waitMs, pz); if (pz()) { st.st = "paused"; st.why = "已暫停"; break; } }
+      first = false; lock();
+      const nm = st.q[st.i]; st.unc = nm; s2slDlSave(st);
+      const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+
+      let r = null, j = null, netErr = null;
+      try {
+        r = await fetchT(proxy + "/bus/s2s/fetch?c=" + enc(st.c) + "&route=" + enc(nm), 30000, {
+          method: "POST",
+          headers: { "x-session": sess.token }
+        });
+        j = await r.json().catch(() => null);
+      } catch (e) {
+        netErr = e;
+      }
+
+      if (netErr) {
+        st.st = "stopped";
+        st.stop = { kind: "net", m: "連線錯誤：" + (netErr.message || netErr), route: nm };
+        st.why = "「" + nm + "」連線錯誤（" + st.stop.m + "）；續跑時會先查本機";
+        break;
+      }
+
+      if (!r.ok) {
+        const code = r.status, msg = (j && j.message) || ("HTTP " + code);
+        st.unc = null;
+        if (code === 401) {
+          st.st = "stopped"; st.stop = { kind: "http401", m: "請重新登入", route: nm };
+          st.why = "登入已逾期，請重新登入";
+          break;
+        }
+        if (code === 403 || code === 429) {
+          st.st = "stopped"; st.stop = { kind: "http" + code, m: msg, route: nm };
+          st.why = "「" + nm + "」" + msg + (/不自動重試/.test(msg) ? "" : "，已停下（不換金鑰、不自動重試）");   // Worker 的 TDX 403／429 訊息已含這句，不重複
+          break;
+        }
+        if (code === 502 || code >= 500) {
+          st.st = "stopped"; st.stop = { kind: "http" + code, m: msg, route: nm };
+          st.why = "「" + nm + "」TDX 錯誤（" + msg + "），已停下";
+          break;
+        }
+        st.st = "stopped"; st.stop = { kind: "http" + code, m: msg, route: nm };
+        st.why = "「" + nm + "」錯誤（" + msg + "），已停下";
+        break;
+      }
+
+      if (j && j.cloudHas === true) {
+        await s2slPut({
+          c: st.c, route: nm, kind: "cloud", fetchedAt: j.fetchedAt || new Date().toISOString(),
+          httpStatus: 200, ver: j.ver || null, routeUIDs: j.routes || [], segs: j.segs || 0,
+          err: null, raw: [], up: "skip", upAt: new Date().toISOString(), upMsg: "雲端已有資料"
+        });
+        st.res[nm] = { s: "skip", m: "雲端已有略過" };
+        st.unc = null; st.i++; s2slDlSave(st); tick();
+        continue;
+      }
+
+      if (j && j.kind === "ok" && !(Array.isArray(j.raw) && j.raw.length)) {   // 成功卻沒帶原始資料：不存、不往下
+        st.st = "stopped"; st.stop = { kind: "uncertain", m: "回應缺原始資料", route: nm };
+        st.why = "「" + nm + "」伺服器回應缺原始資料，沒有存；續跑時會先查本機"; break;
+      }
+      if (j && j.kind === "ok") {
+        await s2slPut({
+          c: st.c, route: nm, kind: "ok", fetchedAt: j.fetchedAt || new Date().toISOString(),
+          httpStatus: 200, ver: j.ver || null, routeUIDs: j.routes || [], segs: j.segs || 0,
+          err: null, raw: j.raw || [], up: "pending", upAt: null, upMsg: null
+        });
+        st.res[nm] = { s: "ok", m: (j.segs ?? "?") + " 段" };
+        st.unc = null; st.i++; s2slDlSave(st); tick();
+        continue;
+      }
+
+      if (j && j.kind === "empty") {
+        await s2slPut({
+          c: st.c, route: nm, kind: "empty", fetchedAt: j.fetchedAt || new Date().toISOString(),
+          httpStatus: 200, ver: null, routeUIDs: [], segs: 0,
+          err: null, raw: [], up: "pending", upAt: null, upMsg: null
+        });
+        st.res[nm] = { s: "empty", m: "查無資料" };
+        st.unc = null; st.i++; s2slDlSave(st); tick();
+        continue;
+      }
+
+      if (j && j.kind === "reject") {
+        await s2slPut({
+          c: st.c, route: nm, kind: "reject", fetchedAt: j.fetchedAt || new Date().toISOString(),
+          httpStatus: 200, ver: null, routeUIDs: [], segs: null,
+          err: j.err || "資料驗證沒通過", raw: j.raw || [], up: "reject", upAt: null, upMsg: j.err
+        });
+        st.unc = null;
+        st.st = "stopped";
+        st.res[nm] = { s: "reject", m: j.err || "資料驗證沒通過" };   // 停下時就計入拒收（略過時沿用同一筆）
+        st.stop = { kind: "reject", m: j.err || "資料驗證沒通過", route: nm, diag: { ...s2sDiag(200, { ...j, raw: undefined }), localRaw: Array.isArray(j.raw) ? j.raw.length : null } };   // 下載本身是 200；原始陣列另存本機   // 原始 JSON 只存 IndexedDB，不放 localStorage（可能數 MB）
+        st.why = "「" + nm + "」資料驗證沒通過，已存本機並停下";
+        s2slDlSave(st); tick();
+        break;
+      }
+
+      st.st = "stopped"; st.stop = { kind: "uncertain", m: "伺服器回應看不懂", route: nm };
+      st.why = "「" + nm + "」伺服器回應看不懂；續跑時會先查本機";
+      break;
+    }
+    if (st.i >= st.q.length) { st.st = "done"; st.why = "下載完成"; st.unc = null; }
+    s2slDlSave(st); tick(); return s2sLocalDlBatchGet();
+  } finally {
+    s2slDlLive = false;
+    try { const l = JSON.parse(localStorage.getItem(S2SL_DL_LOCK)); if (l && l.id === s2slDlTabId) localStorage.removeItem(S2SL_DL_LOCK); } catch (x) {}
+  }
+}
+
+// 3. 上傳批次（只打 /bus/s2s/upload，絕不打 TDX，串行 10.5 秒）
+const S2SL_UP_KEY = "jisu_s2sl_up", S2SL_UP_LOCK = "jisu_s2sl_up_lock";
+let s2slUpLive = false, s2slUpTabId = Math.random().toString(36).slice(2);
+const s2slUpLoad = () => { try { const v = JSON.parse(localStorage.getItem(S2SL_UP_KEY)); return v && v.v === 1 ? v : null; } catch (e) { return null; } };
+const s2slUpSave = st => { st.t = Date.now(); localStorage.setItem(S2SL_UP_KEY, JSON.stringify(st)); return st; };
+
+function s2sLocalUpBatchGet() {
+  const st = s2slUpLoad(); if (!st) return null;
+  if (st.st === "running" && !s2slUpLive) {
+    let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_UP_LOCK)); } catch (e) {}
+    if (!lk || Date.now() - lk.t > 90000) { st.st = "paused"; st.why = "上次中途離開，已暫停（按續跑）"; s2slUpSave(st); }
+  }
+  const n = { ok: 0, none: 0, skip: 0, reject: 0, fail: 0 };
+  for (const k of Object.keys(st.res || {})) { const x = st.res[k]; if (n[x.s] !== undefined) n[x.s]++; }
+  return { ...st, n: { ...n, total: st.q.length, left: Math.max(0, st.q.length - st.i) }, cur: st.q[st.i] || null, live: s2slUpLive };
+}
+
+async function s2sLocalUpBatchPrepare({ c = "Taipei" } = {}) {
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次上傳");
+  if (c !== "Taipei") throw new Error("只開放臺北市");
+  if (s2slUpLive) throw new Error("上傳批次正在執行中");
+  const old = s2slUpLoad();
+  if (old && old.c === c && old.i < old.q.length) return s2sLocalUpBatchGet();
+  const localMap = await s2slGetAll(c);
+  const q = Object.values(localMap)
+    .filter(it => (it.kind === "ok" || it.kind === "empty") && it.up === "pending")
+    .map(it => it.route);
+  s2slUpSave({ v: 1, c, q: [...new Set(q)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now() });
+  return s2sLocalUpBatchGet();
+}
+
+function s2sLocalUpBatchReset() {
+  if (s2slUpLive) throw new Error("上傳批次正在執行中，請先暫停");
+  localStorage.removeItem(S2SL_UP_KEY);
+  localStorage.removeItem(S2SL_UP_LOCK);
+  return null;
+}
+
+async function s2sLocalUpBatchRun({ shouldPause, onTick, gap } = {}) {
+  const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次上傳");
+  if (s2slUpLive) return { busy: true };
+  let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_UP_LOCK)); } catch (e) {}
+  if (lk && lk.id !== s2slUpTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑上傳批次" };
+  let st = s2slUpLoad(); if (!st) throw new Error("還沒有建立上傳批次");
+
+  s2slUpLive = true;
+  const lock = () => localStorage.setItem(S2SL_UP_LOCK, JSON.stringify({ id: s2slUpTabId, t: Date.now() }));
+  const pz = () => !!(shouldPause && shouldPause()), tick = () => { try { onTick && onTick(s2sLocalUpBatchGet()); } catch (e) {} };
+  const waitMs = typeof gap === "number" ? gap : 10500;
+
+  try {
+    lock(); st.st = "running"; st.why = ""; st.stop = null; s2slUpSave(st); tick();
+    if (st.unc) {
+      let m = null;
+      try { m = await authedGet("/bus/s2s/meta?c=" + enc(st.c)); } catch (e) {
+        st.st = "stopped"; st.stop = { kind: "net", m: "確認上一條時連不到伺服器：" + e.message };
+        st.why = st.stop.m; s2slUpSave(st); tick(); return s2sLocalUpBatchGet();
+      }
+      const rec = await s2slGet(st.c, st.unc);
+      if (m && m.r && m.r[st.unc]) {
+        if (rec) { rec.up = "done"; rec.upAt = new Date().toISOString(); rec.upMsg = "雲端已有（上次其實已存成功）"; await s2slPut(rec); }
+        st.res[st.unc] = { s: "ok", m: "雲端已有（上次其實已存成功）" };
+        st.i++;
+      } else if (m && m.none && m.none[st.unc]) {
+        if (rec) { rec.up = "none"; rec.upAt = new Date().toISOString(); rec.upMsg = "雲端已記錄查無（上次其實已記錄）"; await s2slPut(rec); }
+        st.res[st.unc] = { s: "none", m: "雲端已記錄查無（上次其實已記錄）" };
+        st.i++;
+      }
+      st.unc = null; s2slUpSave(st); tick();
+    }
+    let first = true;
+    while (st.i < st.q.length) {
+      if (pz()) { st.st = "paused"; st.why = "已暫停"; break; }
+      if (!first) { await s2sbSleep(waitMs, pz); if (pz()) { st.st = "paused"; st.why = "已暫停"; break; } }
+      first = false; lock();
+      const nm = st.q[st.i]; st.unc = nm; s2slUpSave(st);
+      const rec = await s2slGet(st.c, nm);
+      if (!rec || rec.up !== "pending") {
+        st.unc = null; st.i++; s2slUpSave(st); tick(); continue;
+      }
+      const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+      if (rec.kind !== "ok" && rec.kind !== "empty" || !Array.isArray(rec.raw) || (rec.kind === "ok") !== (rec.raw.length > 0)) {   // 成功卻沒有原始資料（或反過來）就不上傳，免得被雲端記成查無
+        st.unc = null; st.st = "stopped"; st.stop = { kind: "local", m: "本機資料不完整", route: nm };
+        st.why = "「" + nm + "」本機資料不完整（狀態和原始資料對不上），沒有上傳，已停下"; break;
+      }
+
+      let r = null, j = null, netErr = null;
+      try {
+        const bodyStr = JSON.stringify({ v: 1, c: st.c, route: nm, fetchedAt: rec.fetchedAt, raw: rec.raw });
+        r = await fetchT(proxy + "/bus/s2s/upload?c=" + enc(st.c) + "&route=" + enc(nm), 30000, {
+          method: "POST",
+          headers: { "x-session": sess.token, "content-type": "application/json; charset=utf-8" },
+          body: bodyStr
+        });
+        j = await r.json().catch(() => null);
+      } catch (e) {
+        netErr = e;
+      }
+
+      if (netErr) {
+        st.st = "stopped";
+        st.stop = { kind: "net", m: "連線錯誤：" + (netErr.message || netErr), route: nm };
+        st.why = "「" + nm + "」結果不確定（連線錯誤）；續跑前會先查雲端";
+        break;
+      }
+
+      if (!r.ok) {
+        const code = r.status, msg = (j && j.message) || ("HTTP " + code);
+        st.unc = null;
+        if (code === 401) {
+          st.st = "stopped"; st.stop = { kind: "http401", m: "請重新登入", route: nm };
+          st.why = "登入已逾期，請重新登入";
+          break;
+        }
+        if (code === 403 || code === 429) {
+          st.st = "stopped"; st.stop = { kind: "http" + code, m: msg, route: nm };
+          st.why = "「" + nm + "」" + msg + "，已停下";
+          break;
+        }
+        if (code === 503) {
+          st.st = "stopped"; st.stop = { kind: "http503", m: msg, route: nm };
+          st.why = "「" + nm + "」雲端寫入額度已滿（503），已停下";
+          break;
+        }
+        if (code === 404) {
+          rec.up = "reject"; rec.upAt = new Date().toISOString(); rec.upMsg = msg;
+          await s2slPut(rec);
+          st.res[nm] = { s: "reject", m: msg };
+          st.st = "stopped"; st.stop = { kind: "reject", m: msg, route: nm, diag: s2sDiag(404, j) };
+          st.why = "「" + nm + "」雲端拒收（" + msg + "），已停下";
+          break;
+        }
+        st.st = "stopped"; st.stop = { kind: "http" + code, m: msg, route: nm };
+        st.why = "「" + nm + "」錯誤（" + msg + "），已停下";
+        break;
+      }
+
+      if (j && j.skip) {
+        if (j.none) {
+          rec.up = "none"; rec.upAt = new Date().toISOString(); rec.upMsg = j.why || "雲端已記錄查無";
+          await s2slPut(rec);
+          st.res[nm] = { s: "none", m: rec.upMsg };
+        } else {
+          rec.up = "skip"; rec.upAt = new Date().toISOString(); rec.upMsg = j.why || "雲端已有略過";
+          await s2slPut(rec);
+          st.res[nm] = { s: "skip", m: rec.upMsg };
+        }
+        st.unc = null; st.i++; s2slUpSave(st); tick(); continue;
+      }
+
+      if (j && j.none && j.saved) {
+        rec.up = "none"; rec.upAt = new Date().toISOString(); rec.upMsg = "查無資料已記雲端";
+        await s2slPut(rec);
+        st.res[nm] = { s: "none", m: rec.upMsg };
+        st.unc = null; st.i++; s2slUpSave(st); tick(); continue;
+      }
+
+      if (j && j.ok) {
+        rec.up = "done"; rec.upAt = new Date().toISOString(); rec.upMsg = (j.segs ?? "?") + " 段";
+        await s2slPut(rec);
+        st.res[nm] = { s: "ok", m: rec.upMsg };
+        st.unc = null; st.i++; s2slUpSave(st); tick(); continue;
+      }
+
+      st.st = "stopped"; st.stop = { kind: "uncertain", m: "伺服器回應看不懂", route: nm };
+      st.why = "「" + nm + "」伺服器回應看不懂；續跑時會先查雲端";
+      break;
+    }
+    if (st.i >= st.q.length) { st.st = "done"; st.why = "上傳完成"; st.unc = null; }
+    s2slUpSave(st); tick(); return s2sLocalUpBatchGet();
+  } finally {
+    s2slUpLive = false;
+    try { const l = JSON.parse(localStorage.getItem(S2SL_UP_LOCK)); if (l && l.id === s2slUpTabId) localStorage.removeItem(S2SL_UP_LOCK); } catch (x) {}
+  }
+}
+
+async function s2sLocalExportAll(c = "Taipei") {
+  const all = await s2slGetAll(c);
+  const items = Object.values(all);
+  return {
+    kind: "jisu-s2s-local-export",
+    v: 1,
+    exportedAt: new Date().toISOString(),
+    city: c,
+    count: items.length,
+    items
+  };
+}
 // ---------- 國定假日／連假規則（v2.20） ----------
 // 連假＝含國定假日（或補假）的連續放假日（國定假日＋相連的週末），前一天＝連假第一天的前一天。
 // 台鐵／高鐵只有這些日期才抓那一天的實際時刻表（/tt/day）；平常的平日和週末一律用七天那份。Worker 也照同一套規則擋。
@@ -5729,6 +6226,19 @@ const dataApi0 = async (action, p = {}) => {
     case "s2sSampleGet": return s2sSampleGet();
     case "s2sSampleClear": return s2sSampleClear();
     case "s2sPending": return s2sPending(p || {});
+    case "s2sLocalCounts": return s2slCounts(p && p.c);
+    case "s2sLocalGet": return s2slGet(p.c, p.route);
+    case "s2sLocalDlBatchGet": return s2sLocalDlBatchGet();
+    case "s2sLocalDlBatchPrepare": return s2sLocalDlBatchPrepare(p || {});
+    case "s2sLocalDlBatchRun": return s2sLocalDlBatchRun(p || {});
+    case "s2sLocalDlBatchSkipCur": return s2sLocalDlBatchSkipCur();
+    case "s2sLocalDlBatchReset": return s2sLocalDlBatchReset();
+    case "s2sLocalUpBatchGet": return s2sLocalUpBatchGet();
+    case "s2sLocalUpBatchPrepare": return s2sLocalUpBatchPrepare(p || {});
+    case "s2sLocalUpBatchRun": return s2sLocalUpBatchRun(p || {});
+    case "s2sLocalUpBatchReset": return s2sLocalUpBatchReset();
+    case "s2sLocalExportAll": return s2sLocalExportAll(p && p.c);
+    case "s2sLocalClearAll": return s2slClear();
     case "schBuild": return schBuild(p || {});
     case "khhSchDate": return khhSchDate();
     case "railBoard": return railBoard(tdx, p);
