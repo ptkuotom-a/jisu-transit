@@ -3003,7 +3003,7 @@ async function s2slClear() {
   }
 }
 async function s2slCounts(c = "Taipei") {
-  const all = await s2slGetAll(c === "all" ? null : c);   // "all"：兩個縣市合計（清除前的警告用）
+  const all = await s2slGetAll(c === "all" ? null : c);   // "all"：全部縣市合計（清除前的警告用）
   const items = Object.values(all);
   let ok = 0, empty = 0, reject = 0, upDone = 0, upPending = 0;
   for (const it of items) {
@@ -3011,15 +3011,41 @@ async function s2slCounts(c = "Taipei") {
     else if (it.kind === "empty") empty++;
     else if (it.kind === "reject") reject++;
     if (it.up === "done") upDone++;
-    else if ((it.kind === "ok" || it.kind === "empty") && it.up === "pending") upPending++;
+    else if ((it.kind === "ok" || it.kind === "empty") && it.up === "pending") {
+      if (S2SL_CITIES.includes(it.c)) upPending++;   // 只有臺北、新北能上傳；其他縣市只存本機，不算待上傳
+    }
   }
   return { total: items.length, ok, empty, reject, upDone, upPending };
 }
 
-// 2. 下載批次（只打 /bus/s2s/fetch，開放臺北市、新北市，串行 10.5 秒）
-// JT-20261108-05：城市代碼沿用 app 既有的 Taipei／NewTaipei（Worker S2S_CITY 也是這兩個）；一次只跑一個城市的批次，進度仍存同一個 key（和 v2.49.14 相容）
-const S2SL_CITIES = ["Taipei", "NewTaipei"], S2SL_CITY_ZH = { Taipei: "臺北市", NewTaipei: "新北市" };
+// 2. 下載批次（只打 /bus/s2s/fetch，下載開放 22 縣市＋公路客運，串行 12 秒）
+const S2SL_CITIES = ["Taipei", "NewTaipei"];
+const S2SL_DL_CITIES = [
+  "Taipei", "NewTaipei", "Keelung", "Taoyuan",
+  "Hsinchu", "HsinchuCounty", "MiaoliCounty", "Taichung",
+  "ChanghuaCounty", "NantouCounty", "YunlinCounty", "Chiayi",
+  "ChiayiCounty", "Tainan", "Kaohsiung", "PingtungCounty",
+  "YilanCounty", "HualienCounty", "TaitungCounty", "PenghuCounty",
+  "KinmenCounty", "LienchiangCounty", "InterCity"
+];
+const S2SL_CITY_ZH = {
+  Taipei: "臺北市", NewTaipei: "新北市", Keelung: "基隆市", Taoyuan: "桃園市",
+  Hsinchu: "新竹市", HsinchuCounty: "新竹縣", MiaoliCounty: "苗栗縣",
+  Taichung: "臺中市", ChanghuaCounty: "彰化縣", NantouCounty: "南投縣",
+  YunlinCounty: "雲林縣", Chiayi: "嘉義市", ChiayiCounty: "嘉義縣",
+  Tainan: "臺南市", Kaohsiung: "高雄市", PingtungCounty: "屏東縣",
+  YilanCounty: "宜蘭縣", HualienCounty: "花蓮縣", TaitungCounty: "臺東縣",
+  PenghuCounty: "澎湖縣", KinmenCounty: "金門縣", LienchiangCounty: "連江縣",
+  InterCity: "公路客運"
+};
 const s2slCityOk = c => { if (!S2SL_CITIES.includes(c)) throw new Error("只開放臺北市、新北市"); };
+const s2slDlCityOk = c => { if (!S2SL_DL_CITIES.includes(c)) throw new Error("這個縣市不在下載清單"); };
+function s2sRouteOk(name) {
+  if (typeof name !== "string") return false;
+  const n = name.trim();
+  return n === name && n.length >= 1 && n.length <= 30 && /^[\p{L}\p{N}\-()（）]+$/u.test(n);
+}
+const S2SL_DL_GAP = 12000, S2SL_UP_GAP = 10500;
 const S2SL_DL_KEY = "jisu_s2sl_dl", S2SL_DL_LOCK = "jisu_s2sl_dl_lock";
 let s2slDlLive = false, s2slDlTabId = Math.random().toString(36).slice(2);
 const s2slDlLoad = () => { try { const v = JSON.parse(localStorage.getItem(S2SL_DL_KEY)); return v && v.v === 1 ? v : null; } catch (e) { return null; } };
@@ -3038,7 +3064,7 @@ function s2sLocalDlBatchGet() {
 
 async function s2sLocalDlBatchPrepare({ c = "Taipei" } = {}) {
   const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次下載");
-  s2slCityOk(c);
+  s2slDlCityOk(c);
   if (s2slDlLive) throw new Error("下載批次正在執行中");
   const old = s2slDlLoad();
   if (old && old.c === c && old.i < old.q.length) return s2sLocalDlBatchGet();
@@ -3046,19 +3072,32 @@ async function s2sLocalDlBatchPrepare({ c = "Taipei" } = {}) {
   const p = await s2sPending({ c });
   const localMap = await s2slGetAll(c);
   const pending = p.pending.filter(n => !localMap[n]);
-  s2slDlSave({ v: 1, c, q: [...new Set(pending)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - pending.length });
+  const valid = [], bad = [];
+  for (const n of pending) {
+    if (s2sRouteOk(n)) valid.push(n);
+    else bad.push(n);
+  }
+  const badNames = bad.length ? { count: bad.length, total: bad.length, names: bad.slice(0, 20), list: bad.slice(0, 20) } : null;
+  s2slDlSave({
+    v: 1, c, q: [...new Set(valid)], i: 0, res: {}, st: "paused", why: "尚未開始",
+    unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - pending.length,
+    badNames, lastReject: null, rejNames: []
+  });
   return s2sLocalDlBatchGet();
 }
 
-function s2sLocalDlBatchReset() {
+function s2sLocalDlBatchReset({ c } = {}) {
   if (s2slDlLive) throw new Error("下載批次正在執行中，請先暫停");
+  const st = s2slDlLoad();
+  if (st && c && st.c !== c) throw new Error("下載進度屬於" + (S2SL_CITY_ZH[st.c] || st.c) + "，請切回" + (S2SL_CITY_ZH[st.c] || st.c) + "再操作");
   localStorage.removeItem(S2SL_DL_KEY);
   localStorage.removeItem(S2SL_DL_LOCK);
   return null;
 }
 
-function s2sLocalDlBatchSkipCur() {
+function s2sLocalDlBatchSkipCur({ c } = {}) {
   const st = s2slDlLoad(); if (!st || s2slDlLive) return s2sLocalDlBatchGet();
+  if (c && st.c !== c) throw new Error("下載進度屬於" + (S2SL_CITY_ZH[st.c] || st.c) + "，請切回" + (S2SL_CITY_ZH[st.c] || st.c) + "再操作");
   const nm = st.q[st.i];
   if (nm && st.stop && st.stop.kind === "reject") {
     st.res[nm] = { s: "reject", m: st.stop.m };
@@ -3068,18 +3107,19 @@ function s2sLocalDlBatchSkipCur() {
   return s2sLocalDlBatchGet();
 }
 
-async function s2sLocalDlBatchRun({ shouldPause, onTick, gap } = {}) {
+async function s2sLocalDlBatchRun({ c, shouldPause, onTick, gap } = {}) {
   const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次下載");
   if (s2slDlLive) return { busy: true };
   let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_DL_LOCK)); } catch (e) {}
   if (lk && lk.id !== s2slDlTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑下載批次" };
   let st = s2slDlLoad(); if (!st) throw new Error("還沒有建立下載批次");
-  s2slCityOk(st.c);
+  if (c && st.c !== c) throw new Error("下載進度屬於" + (S2SL_CITY_ZH[st.c] || st.c) + "，請切回" + (S2SL_CITY_ZH[st.c] || st.c) + "再操作");
+  s2slDlCityOk(st.c);
 
   s2slDlLive = true;
   const lock = () => localStorage.setItem(S2SL_DL_LOCK, JSON.stringify({ id: s2slDlTabId, t: Date.now() }));
   const pz = () => !!(shouldPause && shouldPause()), tick = () => { try { onTick && onTick(s2sLocalDlBatchGet()); } catch (e) {} };
-  const waitMs = typeof gap === "number" ? gap : 10500;
+  const waitMs = typeof gap === "number" ? gap : S2SL_DL_GAP;
 
   try {
     lock(); st.st = "running"; st.why = ""; st.stop = null; s2slDlSave(st); tick();
@@ -3098,6 +3138,16 @@ async function s2sLocalDlBatchRun({ shouldPause, onTick, gap } = {}) {
       first = false; lock();
       const nm = st.q[st.i]; st.unc = nm; s2slDlSave(st);
       const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+
+      const existing = await s2slGet(st.c, nm);
+      if (existing) {
+        st.res[nm] = { s: existing.kind, m: "本機已存" };
+        st.unc = null;
+        st.i++;
+        s2slDlSave(st);
+        tick();
+        continue;
+      }
 
       let r = null, j = null, netErr = null;
       try {
@@ -3183,13 +3233,19 @@ async function s2sLocalDlBatchRun({ shouldPause, onTick, gap } = {}) {
           httpStatus: 200, ver: null, routeUIDs: [], segs: null,
           err: j.err || "資料驗證沒通過", raw: j.raw || [], up: "reject", upAt: null, upMsg: j.err
         });
+        st.res[nm] = { s: "reject", m: j.err || "資料驗證沒通過" };
+        if (!Array.isArray(st.rejNames)) st.rejNames = [];
+        if (st.rejNames.length < 200) st.rejNames.push(nm);
+        st.lastReject = {
+          route: nm,
+          err: j.err || "資料驗證沒通過",
+          diag: { ...s2sDiag(200, { ...j, raw: undefined }), localRaw: Array.isArray(j.raw) ? j.raw.length : null }
+        };
         st.unc = null;
-        st.st = "stopped";
-        st.res[nm] = { s: "reject", m: j.err || "資料驗證沒通過" };   // 停下時就計入拒收（略過時沿用同一筆）
-        st.stop = { kind: "reject", m: j.err || "資料驗證沒通過", route: nm, diag: { ...s2sDiag(200, { ...j, raw: undefined }), localRaw: Array.isArray(j.raw) ? j.raw.length : null } };   // 下載本身是 200；原始陣列另存本機   // 原始 JSON 只存 IndexedDB，不放 localStorage（可能數 MB）
-        st.why = "「" + nm + "」資料驗證沒通過，已存本機並停下";
-        s2slDlSave(st); tick();
-        break;
+        st.i++;
+        s2slDlSave(st);
+        tick();
+        continue;
       }
 
       st.st = "stopped"; st.stop = { kind: "uncertain", m: "伺服器回應看不懂", route: nm };
@@ -3236,25 +3292,28 @@ async function s2sLocalUpBatchPrepare({ c = "Taipei" } = {}) {
   return s2sLocalUpBatchGet();
 }
 
-function s2sLocalUpBatchReset() {
+function s2sLocalUpBatchReset({ c } = {}) {
   if (s2slUpLive) throw new Error("上傳批次正在執行中，請先暫停");
+  const st = s2slUpLoad();
+  if (st && c && st.c !== c) throw new Error("上傳進度屬於" + (S2SL_CITY_ZH[st.c] || st.c) + "，請切回" + (S2SL_CITY_ZH[st.c] || st.c) + "再操作");
   localStorage.removeItem(S2SL_UP_KEY);
   localStorage.removeItem(S2SL_UP_LOCK);
   return null;
 }
 
-async function s2sLocalUpBatchRun({ shouldPause, onTick, gap } = {}) {
+async function s2sLocalUpBatchRun({ c, shouldPause, onTick, gap } = {}) {
   const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次上傳");
   if (s2slUpLive) return { busy: true };
   let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_UP_LOCK)); } catch (e) {}
   if (lk && lk.id !== s2slUpTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑上傳批次" };
   let st = s2slUpLoad(); if (!st) throw new Error("還沒有建立上傳批次");
+  if (c && st.c !== c) throw new Error("上傳進度屬於" + (S2SL_CITY_ZH[st.c] || st.c) + "，請切回" + (S2SL_CITY_ZH[st.c] || st.c) + "再操作");
   s2slCityOk(st.c);
 
   s2slUpLive = true;
   const lock = () => localStorage.setItem(S2SL_UP_LOCK, JSON.stringify({ id: s2slUpTabId, t: Date.now() }));
   const pz = () => !!(shouldPause && shouldPause()), tick = () => { try { onTick && onTick(s2sLocalUpBatchGet()); } catch (e) {} };
-  const waitMs = typeof gap === "number" ? gap : 10500;
+  const waitMs = typeof gap === "number" ? gap : S2SL_UP_GAP;
 
   try {
     lock(); st.st = "running"; st.why = ""; st.stop = null; s2slUpSave(st); tick();
@@ -6237,12 +6296,12 @@ const dataApi0 = async (action, p = {}) => {
     case "s2sLocalDlBatchGet": return s2sLocalDlBatchGet();
     case "s2sLocalDlBatchPrepare": return s2sLocalDlBatchPrepare(p || {});
     case "s2sLocalDlBatchRun": return s2sLocalDlBatchRun(p || {});
-    case "s2sLocalDlBatchSkipCur": return s2sLocalDlBatchSkipCur();
-    case "s2sLocalDlBatchReset": return s2sLocalDlBatchReset();
+    case "s2sLocalDlBatchSkipCur": return s2sLocalDlBatchSkipCur(p || {});
+    case "s2sLocalDlBatchReset": return s2sLocalDlBatchReset(p || {});
     case "s2sLocalUpBatchGet": return s2sLocalUpBatchGet();
     case "s2sLocalUpBatchPrepare": return s2sLocalUpBatchPrepare(p || {});
     case "s2sLocalUpBatchRun": return s2sLocalUpBatchRun(p || {});
-    case "s2sLocalUpBatchReset": return s2sLocalUpBatchReset();
+    case "s2sLocalUpBatchReset": return s2sLocalUpBatchReset(p || {});
     case "s2sLocalExportAll": return s2sLocalExportAll(p && p.c);
     case "s2sLocalClearAll": return s2slClear();
     case "schBuild": return schBuild(p || {});
