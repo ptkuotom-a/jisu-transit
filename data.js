@@ -3003,7 +3003,7 @@ async function s2slClear() {
   }
 }
 async function s2slCounts(c = "Taipei") {
-  const all = await s2slGetAll(c);
+  const all = await s2slGetAll(c === "all" ? null : c);   // "all"：兩個縣市合計（清除前的警告用）
   const items = Object.values(all);
   let ok = 0, empty = 0, reject = 0, upDone = 0, upPending = 0;
   for (const it of items) {
@@ -3016,7 +3016,10 @@ async function s2slCounts(c = "Taipei") {
   return { total: items.length, ok, empty, reject, upDone, upPending };
 }
 
-// 2. 下載批次（只打 /bus/s2s/fetch，只開放臺北市，串行 10.5 秒）
+// 2. 下載批次（只打 /bus/s2s/fetch，開放臺北市、新北市，串行 10.5 秒）
+// JT-20261108-05：城市代碼沿用 app 既有的 Taipei／NewTaipei（Worker S2S_CITY 也是這兩個）；一次只跑一個城市的批次，進度仍存同一個 key（和 v2.49.14 相容）
+const S2SL_CITIES = ["Taipei", "NewTaipei"], S2SL_CITY_ZH = { Taipei: "臺北市", NewTaipei: "新北市" };
+const s2slCityOk = c => { if (!S2SL_CITIES.includes(c)) throw new Error("只開放臺北市、新北市"); };
 const S2SL_DL_KEY = "jisu_s2sl_dl", S2SL_DL_LOCK = "jisu_s2sl_dl_lock";
 let s2slDlLive = false, s2slDlTabId = Math.random().toString(36).slice(2);
 const s2slDlLoad = () => { try { const v = JSON.parse(localStorage.getItem(S2SL_DL_KEY)); return v && v.v === 1 ? v : null; } catch (e) { return null; } };
@@ -3035,14 +3038,15 @@ function s2sLocalDlBatchGet() {
 
 async function s2sLocalDlBatchPrepare({ c = "Taipei" } = {}) {
   const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次下載");
-  if (c !== "Taipei") throw new Error("只開放臺北市");
+  s2slCityOk(c);
   if (s2slDlLive) throw new Error("下載批次正在執行中");
   const old = s2slDlLoad();
   if (old && old.c === c && old.i < old.q.length) return s2sLocalDlBatchGet();
-  const p = await s2sPending({ c: "Taipei" });
-  const localMap = await s2slGetAll("Taipei");
+  if (old && old.c !== c && old.i < old.q.length) throw new Error((S2SL_CITY_ZH[old.c] || old.c) + "的下載批次還沒跑完，請先跑完或清掉下載進度");   // 不蓋掉另一個城市的進度
+  const p = await s2sPending({ c });
+  const localMap = await s2slGetAll(c);
   const pending = p.pending.filter(n => !localMap[n]);
-  s2slDlSave({ v: 1, c: "Taipei", q: [...new Set(pending)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - pending.length });
+  s2slDlSave({ v: 1, c, q: [...new Set(pending)], i: 0, res: {}, st: "paused", why: "尚未開始", unc: null, stop: null, made: Date.now(), cityTotal: p.total, had: p.total - pending.length });
   return s2sLocalDlBatchGet();
 }
 
@@ -3070,7 +3074,7 @@ async function s2sLocalDlBatchRun({ shouldPause, onTick, gap } = {}) {
   let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_DL_LOCK)); } catch (e) {}
   if (lk && lk.id !== s2slDlTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑下載批次" };
   let st = s2slDlLoad(); if (!st) throw new Error("還沒有建立下載批次");
-  if (st.c !== "Taipei") throw new Error("只開放臺北市");
+  s2slCityOk(st.c);
 
   s2slDlLive = true;
   const lock = () => localStorage.setItem(S2SL_DL_LOCK, JSON.stringify({ id: s2slDlTabId, t: Date.now() }));
@@ -3219,10 +3223,11 @@ function s2sLocalUpBatchGet() {
 
 async function s2sLocalUpBatchPrepare({ c = "Taipei" } = {}) {
   const sess = getSession(); if (!sess || sess.role !== "admin") throw new Error("只有管理者可以批次上傳");
-  if (c !== "Taipei") throw new Error("只開放臺北市");
+  s2slCityOk(c);
   if (s2slUpLive) throw new Error("上傳批次正在執行中");
   const old = s2slUpLoad();
   if (old && old.c === c && old.i < old.q.length) return s2sLocalUpBatchGet();
+  if (old && old.c !== c && old.i < old.q.length) throw new Error((S2SL_CITY_ZH[old.c] || old.c) + "的上傳批次還沒跑完，請先跑完或清掉上傳進度");
   const localMap = await s2slGetAll(c);
   const q = Object.values(localMap)
     .filter(it => (it.kind === "ok" || it.kind === "empty") && it.up === "pending")
@@ -3244,6 +3249,7 @@ async function s2sLocalUpBatchRun({ shouldPause, onTick, gap } = {}) {
   let lk = null; try { lk = JSON.parse(localStorage.getItem(S2SL_UP_LOCK)); } catch (e) {}
   if (lk && lk.id !== s2slUpTabId && Date.now() - lk.t < 90000) return { busy: true, why: "另一個分頁正在跑上傳批次" };
   let st = s2slUpLoad(); if (!st) throw new Error("還沒有建立上傳批次");
+  s2slCityOk(st.c);
 
   s2slUpLive = true;
   const lock = () => localStorage.setItem(S2SL_UP_LOCK, JSON.stringify({ id: s2slUpTabId, t: Date.now() }));
