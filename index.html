@@ -1704,13 +1704,16 @@ const S2SL_CITY_ZH = {
 };
 function s2sLocalHtml(X) {
   X.lCity = X.lCity || 'Taipei';
-  if (!X.lLoaded) {
+  if (!X.lLoaded || X.lLoadedCity !== X.lCity) {
     X.lLoaded = true;
-    api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' }).then(c => { X.lCounts = c; if (S.page === 'adv') renderPage(); }).catch(() => {});
-    api('s2sLocalDlBatchGet').then(b => { X.lDlBatch = b; if (b && b.c && !X.lCityPicked && b.c !== X.lCity && S2SL_CITY_ZH[b.c]) { X.lCity = b.c; X.lLoaded = false; } if (S.page === 'adv') renderPage(); }).catch(() => {});
-    api('s2sLocalUpBatchGet').then(b => { X.lUpBatch = b; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    X.lLoadedCity = X.lCity;
+    api('s2sLocalCounts', { c: X.lCity }).then(c => { X.lCounts = c; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalDlBatchGet', { c: X.lCity }).then(b => { X.lDlBatch = b; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalUpBatchGet', { c: X.lCity }).then(b => { X.lUpBatch = b; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalDlBatchOpen').then(o => { X.lDlOpen = o; if (S.page === 'adv') renderPage(); }).catch(() => {});
+    api('s2sLocalUpBatchOpen').then(o => { X.lUpOpen = o; if (S.page === 'adv') renderPage(); }).catch(() => {});
   }
-  const cnt = X.lCounts || { total: 0, ok: 0, empty: 0, reject: 0, upDone: 0, upPending: 0 };
+  const cnt = { total: 0, ok: 0, empty: 0, reject: 0, cloud: 0, kindOther: 0, upDone: 0, upNone: 0, upRejectCloud: 0, upPending: 0, upSkip: 0, upOther: 0, ...(X.lCounts || {}) };   // 審查修正：筆數還沒讀到時每個欄位都顯示 0，不會出現 undefined
   const dlb = X.lDlBatch, upb = X.lUpBatch;
   const dlMatch = !!(dlb && dlb.c === X.lCity);
   const upMatch = !!(upb && upb.c === X.lCity);
@@ -1725,22 +1728,33 @@ function s2sLocalHtml(X) {
   const badN = dlMatch && dlb.badNames ? (dlb.badNames.count ?? dlb.badNames.total ?? (Array.isArray(dlb.badNames) ? dlb.badNames.length : 0)) : 0;
   const hasRej = dlRej || !!(dlMatch && dlb && dlb.lastReject);
   const rejDiag = dlMatch ? ((dlb && dlb.stop && dlb.stop.diag) || (dlb && dlb.lastReject && dlb.lastReject.diag)) : null;
+  const otherDlOpen = (X.lDlOpen || []).find(c => c !== X.lCity);
+  const otherUpOpen = (X.lUpOpen || []).find(c => c !== X.lCity);
 
   return `<div class="sec" style="margin-top:20px"><h2 style="font-size:17px">本機暫存（先下載、再上傳）</h2><span class="side">${S2SL_CITY_ZH[X.lCity]}・兩段式</span></div>
     <div style="margin-top:8px">
       <select id="s2sLCity" class="inp" ${anyRun ? 'disabled' : ''}>${S2SL_DL_CITIES.map(k => `<option value="${k}" ${X.lCity === k ? 'selected' : ''}>${S2SL_CITY_ZH[k] || k}</option>`).join('')}</select>
       ${anyRun ? `<div class="note" style="margin-top:4px;color:#f90">${dlActive ? '下載' : '上傳'}執行中，按暫停後才能切換縣市</div>` : ''}
     </div>
-    <div class="note">下載不寫雲端、上傳不打 TDX。下載開放 22 縣市和公路客運（一次一個）；上傳只開放臺北市、新北市；下載每條間隔 12 秒。</div>
-    <div class="sub" style="margin-top:6px">${S2SL_CITY_ZH[X.lCity]}本機筆數：成功 ${cnt.ok}・查無 ${cnt.empty}・拒收 ${cnt.reject}${(X.lCity === 'Taipei' || X.lCity === 'NewTaipei') ? `；已上傳 ${cnt.upDone}・待上傳 ${cnt.upPending}` : '（只存本機，不上傳）'}</div>
+    <div class="note">下載不寫雲端、上傳不打 TDX。下載、上傳都開放 22 縣市和公路客運（一次一個）；下載每條間隔 12 秒、上傳 10.5 秒。</div>
+    <div class="sub" style="margin-top:6px">${(() => {
+      const p1 = [`成功 ${cnt.ok}`, `查無 ${cnt.empty}`, `拒收 ${cnt.reject}`];
+      if (cnt.cloud > 0) p1.push(`雲端已有 ${cnt.cloud}`);
+      if (cnt.kindOther > 0) p1.push(`其他 ${cnt.kindOther}`);
+      const p2 = [`已上傳 ${cnt.upDone}`, `查無已上傳 ${cnt.upNone}`, `拒收已上傳 ${cnt.upRejectCloud}`, `待上傳 ${cnt.upPending}`];
+      if (cnt.upSkip > 0) p2.push(`略過 ${cnt.upSkip}`);
+      if (cnt.upOther > 0) p2.push(`其他 ${cnt.upOther}`);
+      return `${S2SL_CITY_ZH[X.lCity]}本機筆數：${p1.join('・')}；${p2.join('・')}`;
+    })()}</div>
 
     <div class="sub" style="margin-top:12px;font-weight:bold;color:#4af">【第一段：下載到本機（打 TDX，不寫雲端）】</div>
     ${!dlMatch ? `
       <div class="sub" style="margin-top:4px">尚未開始</div>
-      ${dlb && dlb.c && dlb.c !== X.lCity ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[dlb.c] || dlb.c}有下載進度，切回${S2SL_CITY_ZH[dlb.c] || dlb.c}查看</div>` : ''}
+      ${otherDlOpen ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[otherDlOpen] || otherDlOpen}有未完成的下載進度</div>` : ''}
       <div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sLDlPrep" ${X.lDlBusy ? 'disabled' : ''}>建立下載清單（不打 TDX）</button></div>
     ` : `
       <div class="sub" style="margin-top:4px">${esc(`${S2SL_CITY_ZH[dlb.c] || ''}${dlStL}・共 ${dlb.n.total} 條待處理：成功 ${dlb.n.ok}・查無 ${dlb.n.empty}・${dlb.n.reject > 0 ? `拒收 ${dlb.n.reject} 條（已存本機、自動往下）` : `拒收 ${dlb.n.reject}`}・略過 ${dlb.n.skip}・剩 ${dlb.n.left}${dlb.cur && dlb.st !== 'done' ? `・目前「${dlb.cur}」` : ''}`)}</div>
+      ${otherDlOpen ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[otherDlOpen] || otherDlOpen}有未完成的下載進度</div>` : ''}
       ${badN > 0 ? `<div class="note" style="margin-top:4px">名稱格式不符，沒有下載 ${badN} 條</div>` : ''}
       ${dlb.why ? `<div class="note" style="margin-top:6px">${esc(dlb.why)}</div>` : ''}
       ${rejDiag ? s2sErrHtml(rejDiag) : ''}
@@ -1752,18 +1766,19 @@ function s2sLocalHtml(X) {
     `}
 
     <div class="sub" style="margin-top:12px;font-weight:bold;color:#4af">【第二段：上傳到雲端（寫雲端，不打 TDX）】</div>
-    ${(X.lCity === 'Taipei' || X.lCity === 'NewTaipei') ? (!upMatch ? `
+    ${!upMatch ? `
       <div class="sub" style="margin-top:4px">尚未開始</div>
-      ${upb && upb.c && upb.c !== X.lCity ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[upb.c] || upb.c}有上傳進度，切回${S2SL_CITY_ZH[upb.c] || upb.c}查看</div>` : ''}
+      ${otherUpOpen ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[otherUpOpen] || otherUpOpen}有未完成的上傳進度</div>` : ''}
       <div class="btns" style="margin-top:6px"><button class="btn sec2" data-act="s2sLUpPrep" ${X.lUpBusy ? 'disabled' : ''}>建立上傳清單</button></div>
     ` : `
-      <div class="sub" style="margin-top:4px">${esc(`${S2SL_CITY_ZH[upb.c] || ''}${upStL}・共 ${upb.n.total} 條待上傳：成功 ${upb.n.ok}・查無記錄 ${upb.n.none}・已有略過 ${upb.n.skip}・拒收 ${upb.n.reject}・剩 ${upb.n.left}${upb.cur && upb.st !== 'done' ? `・目前「${upb.cur}」` : ''}`)}</div>
+      <div class="sub" style="margin-top:4px">${esc(`${S2SL_CITY_ZH[upb.c] || ''}${upStL}・已封存 ${upb.n.sealed || 0}・已打包上傳 ${upb.n.packed || 0}（成功 ${upb.n.ok || 0}・查無 ${upb.n.none || 0}・拒收紀錄 ${upb.n.reject || 0}）・略過 ${upb.n.skip || 0}・剩 ${upb.n.left || 0}${upb.st !== 'done' ? `（${upb.phase === 'pack' ? '打包中' : '封存中'}）` : ''}`)}</div>
+      ${otherUpOpen ? `<div class="note" style="margin-top:4px">${S2SL_CITY_ZH[otherUpOpen] || otherUpOpen}有未完成的上傳進度</div>` : ''}
       ${upb.why ? `<div class="note" style="margin-top:6px">${esc(upb.why)}</div>` : ''}
       <div class="btns" style="margin-top:6px">
         ${upRun ? `<button class="btn sec2" data-act="s2sLUpPause">暫停上傳</button>` : upb.st !== 'done' ? `<button class="btn pri" data-act="s2sLUpRun" ${X.lUpBusy ? 'disabled' : ''}>${upb.n.left === upb.n.total && !Object.keys(upb.res || {}).length ? '開始上傳' : '續跑上傳'}</button>` : ''}
         ${!upRun ? `<button class="btn sec2" data-act="s2sLUpReset">清掉上傳進度</button>` : ''}
       </div>
-    `) : `<div class="note" style="margin-top:6px">上傳只開放臺北市、新北市；這個縣市只下載到本機</div>`}
+    `}
 
     <div class="btns" style="margin-top:12px">
       <button class="btn sec2" data-act="s2sLExportAll">匯出本機全部 JSON</button>
@@ -1776,6 +1791,7 @@ async function s2sLDlPrep() {
   const X = S.s2s; X.lDlBusy = true; X.lMsg = '讀取待下載清單…（不打 TDX）'; renderPage();
   try {
     X.lDlBatch = await api('s2sLocalDlBatchPrepare', { c: X.lCity || 'Taipei' });
+    X.lDlOpen = await api('s2sLocalDlBatchOpen').catch(() => []);
     X.lCounts = await api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' });
     X.lMsg = '';
   } catch (e) { X.lMsg = e.message; }
@@ -1799,7 +1815,8 @@ async function s2sLDlRun() {
     else X.lDlBatch = r;
   } catch (e) { X.lMsg = e.message; }
   X.lDlRun = false;
-  X.lDlBatch = await api('s2sLocalDlBatchGet').catch(() => X.lDlBatch);
+  X.lDlBatch = await api('s2sLocalDlBatchGet', { c: X.lCity || 'Taipei' }).catch(() => X.lDlBatch);
+  X.lDlOpen = await api('s2sLocalDlBatchOpen').catch(() => []);
   X.lCounts = await api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' }).catch(() => X.lCounts);
   if (S.page === 'adv') renderPage();
 }
@@ -1812,6 +1829,7 @@ async function s2sLDlSkip() {
   const X = S.s2s;
   try {
     X.lDlBatch = await api('s2sLocalDlBatchSkipCur', { c: X.lCity || 'Taipei' });
+    X.lDlOpen = await api('s2sLocalDlBatchOpen').catch(() => []);
     X.lCounts = await api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' });
   } catch (e) { X.lMsg = e.message; }
   renderPage();
@@ -1823,6 +1841,7 @@ async function s2sLDlReset() {
   try {
     await api('s2sLocalDlBatchReset', { c: X.lCity || 'Taipei' });
     X.lDlBatch = null;
+    X.lDlOpen = await api('s2sLocalDlBatchOpen').catch(() => []);
     X.lMsg = '已清掉下載批次進度';
   } catch (e) { X.lMsg = e.message; }
   renderPage();
@@ -1856,6 +1875,7 @@ async function s2sLUpPrep() {
   const X = S.s2s; X.lUpBusy = true; X.lMsg = '準備待上傳清單…'; renderPage();
   try {
     X.lUpBatch = await api('s2sLocalUpBatchPrepare', { c: X.lCity || 'Taipei' });
+    X.lUpOpen = await api('s2sLocalUpBatchOpen').catch(() => []);
     X.lCounts = await api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' });
     X.lMsg = '';
   } catch (e) { X.lMsg = e.message; }
@@ -1879,7 +1899,8 @@ async function s2sLUpRun() {
     else X.lUpBatch = r;
   } catch (e) { X.lMsg = e.message; }
   X.lUpRun = false;
-  X.lUpBatch = await api('s2sLocalUpBatchGet').catch(() => X.lUpBatch);
+  X.lUpBatch = await api('s2sLocalUpBatchGet', { c: X.lCity || 'Taipei' }).catch(() => X.lUpBatch);
+  X.lUpOpen = await api('s2sLocalUpBatchOpen').catch(() => []);
   X.lCounts = await api('s2sLocalCounts', { c: S.s2s.lCity || 'Taipei' }).catch(() => X.lCounts);
   if (S.page === 'adv') renderPage();
 }
@@ -1894,6 +1915,7 @@ async function s2sLUpReset() {
   try {
     await api('s2sLocalUpBatchReset', { c: X.lCity || 'Taipei' });
     X.lUpBatch = null;
+    X.lUpOpen = await api('s2sLocalUpBatchOpen').catch(() => []);
     X.lMsg = '已清掉上傳批次進度';
   } catch (e) { X.lMsg = e.message; }
   renderPage();
