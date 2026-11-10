@@ -14,6 +14,7 @@ const UID_CITY = {
   ILA: "YilanCounty", HUA: "HualienCounty", TTT: "TaitungCounty",
   PEN: "PenghuCounty", KIN: "KinmenCounty", LIE: "LienchiangCounty",
 };
+const STOP_CITY = { ...UID_CITY, THB: "InterCity" };
 const BIKE_TYPE = { 1: "YouBike 1.0", 2: "YouBike 2.0", 3: "T-Bike", 4: "P-Bike", 5: "K-Bike" };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -192,24 +193,135 @@ const isKhhR = uid => /^(KHH|LIE)/.test(uid || "");   // 高雄、連江都走 t
 const isKinR = uid => /^KIN/.test(uid || "");
 const CITYBUS = new Set(["KEE", "ILA", "HSQ", "MIA", "CHA", "NAN", "YUN", "CYI", "CYQ", "PIF", "HUA", "TTT", "PEN"]);
 const isCitybusR = uid => CITYBUS.has((uid || "").slice(0, 3));
-// v2.49.3：附近站牌一律先用雲端開放資料（台北、新北）＋台灣公車官網（公路客運），下拉更新也一樣；
-// 只有附近有這三種以外的站牌（基隆、桃園等）、或雲端／官網讀不到時，才問 TDX（只取讀不到的那部分）
+// v2.49.20：附近站牌與預估到站不再呼叫 TDX；讀不到即時時以雲端時刻表補路線，到站欄位顯示「暫無免 TDX 的即時資料」
 const NEAR_OK = new Set(["TPE", "NWT", "THB"]);
+const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
 async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
-  let c = null;
-  if (geoKey) { c = await IDB.get("geo|" + geoKey).catch(() => null); if (!c || oldCloud(c)) c = (await cloudStops(geoKey).catch(() => null)) || c; }
-  const nearSt = c ? c.d.filter(a => a[0] && a[2] != null && haversine(+lat, +lon, a[2], a[3]) <= r + 30) : null;
-  const otherKnown = nearSt ? nearSt.some(a => !NEAR_OK.has(a[0].slice(0, 3))) : null;
-  const tdxP = otherKnown === true ? tdx(profile, tdxUrl) : null; if (tdxP) tdxP.catch(() => {});
-  const od = await Promise.race([odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))]).catch(() => null);
-  if (!od || !Array.isArray(od.list)) return tdxP || tdx(profile, tdxUrl);   // 雲端讀不到：照舊
-  const inArea = nearSt ? true : (od.tpNear != null && od.tpNear <= 2000) || od.list.length > 0 || od.thbN > 0;
-  if (!inArea) return tdxP || tdx(profile, tdxUrl);                       // 不在雙北：照舊
-  const okNwt = !!od.nwtOk, okThb = !!od.thbOk || !(od.thbN > 0);
-  if (okNwt && okThb && !(od.othx > 0) && otherKnown !== true) return od.list;   // 0 次 TDX
-  const covered = u => isTpeR(u) || (okNwt && isNwtR(u)) || (okThb && isThbR(u));
-  const t = await (tdxP || tdx(profile, tdxUrl));
-  return [...od.list.filter(e => covered(e.RouteUID)), ...t.filter(e => !covered(e.RouteUID))];
+  const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${Math.min(r + 200, 1000)}`);
+  let c = await IDB.get("geo|" + gKey).catch(() => null);
+  let covZero = false;
+  if (!c || oldCloud(c)) {
+    const cs = await cloudStops(gKey).catch(() => null);
+    if (cs && cs.cov === 0) {
+      if (!c) covZero = true;
+    } else if (cs) {
+      c = cs;
+    }
+  }
+
+  const thbData = await odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${Math.min(r + 200, 1000)}`, fresh ? 0 : 6 * 3600000).catch(() => null);
+  const hw = thbData && Array.isArray(thbData.list) ? thbData.list : [];
+  const cityStops = c && Array.isArray(c.d) ? c.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
+  const nearSt = [...cityStops, ...hw].filter(s => {
+    const p = s.StopPosition;
+    return p && p.PositionLat != null && haversine(+lat, +lon, p.PositionLat, p.PositionLon) <= r + 30;
+  });
+
+  const od = await Promise.race([
+    odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
+    new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
+  ]).catch(() => null);
+
+  const liveOk = !!(od && Array.isArray(od.list));
+  const okNwt = !!(od && od.nwtOk);
+  const okThb = !!(od && (od.thbOk || !(od.thbN > 0)));
+  const isCovered = uid => isTpeR(uid) || (okNwt && isNwtR(uid)) || (okThb && isThbR(uid));
+  const coveredRows = liveOk ? od.list.filter(e => isCovered(e.RouteUID)) : [];
+
+  const uncoveredStops = nearSt.filter(s => {
+    const pfx = (s.StopUID || "").slice(0, 3);
+    if (!liveOk) return true;
+    if (pfx === "TPE") return false;
+    if (pfx === "NWT") return !okNwt;
+    if (pfx === "THB") return !okThb;
+    return true;
+  });
+
+  const noLiveRows = [];
+  if (uncoveredStops.length) {
+    let schMetaAll = null;
+    try { schMetaAll = await authedGet("/bus/sch/meta"); } catch (e) {}
+
+    const cityMap = new Map();
+    for (const s of uncoveredStops) {
+      const pfx = (s.StopUID || "").slice(0, 3);
+      const city = STOP_CITY[pfx];
+      if (!city) continue;
+      if (!cityMap.has(city)) cityMap.set(city, []);
+      cityMap.get(city).push(s);
+    }
+
+    const seenRoutes = new Set();
+    for (const [city, stops] of cityMap) {
+      let recs = null;
+      try {
+        const x = await bdCity(city, schMetaAll);
+        if (x && Array.isArray(x.recs)) recs = x.recs;
+      } catch (e) {}
+      if (!recs) {
+        const cached = await IDB.get("bd|" + city).catch(() => null);
+        if (cached && Array.isArray(cached.recs)) recs = cached.recs;
+      }
+
+      for (const s of stops) {
+        const stopUID = s.StopUID;
+        const stopName = (s.StopName && s.StopName.Zh_tw) || "";
+        let found = 0;
+        if (Array.isArray(recs)) {
+          for (const rec of recs) {
+            if (!rec.st || !Array.isArray(rec.st)) continue;
+            const hit = rec.st.find(pair => pair && pair[0] === stopUID);
+            if (hit) {
+              const dir = rec.d === 1 ? 1 : 0;
+              const rk = `${rec.u}|${dir}|${stopUID}`;
+              if (!seenRoutes.has(rk)) {
+                seenRoutes.add(rk);
+                found++;
+                noLiveRows.push({
+                  RouteUID: rec.u,
+                  RouteName: { Zh_tw: rec.n },
+                  Direction: dir,
+                  StopUID: stopUID,
+                  StopName: { Zh_tw: hit[1] || stopName },
+                  EstimateTime: null,
+                  StopStatus: null,
+                  noLive: true
+                });
+              }
+            }
+          }
+        }
+        if (!found) {
+          noLiveRows.push({
+            RouteUID: null,
+            RouteName: { Zh_tw: "" },
+            Direction: 0,
+            StopUID: stopUID,
+            StopName: { Zh_tw: stopName },
+            EstimateTime: null,
+            StopStatus: null,
+            noLive: true,
+            noRoutes: true
+          });
+        }
+      }
+    }
+  }
+
+  const rows = [...coveredRows, ...noLiveRows];
+  rows.liveOk = liveOk;
+  if (covZero) {
+    rows.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
+  } else if (!liveOk) {
+    rows.noLiveWhy = (!nearSt.length && !coveredRows.length)
+      ? "雲端站牌清單和即時資料都讀不到，請稍後下拉更新"
+      : "雲端即時資料讀不到";
+  } else if (noLiveRows.length) {
+    rows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
+  } else {
+    rows.noLiveWhy = null;
+  }
+  return rows;
 }
 // v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
 // 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
@@ -225,6 +337,7 @@ function cloudStops(geoKey) {
     if (!m) return null;
     const c = await IDB.get("geo|" + geoKey).catch(() => null); if (c && !oldCloud(c)) return c;
     const j = await Promise.race([odGet(`/od/stops?lat=${m[1]}&lon=${m[2]}&r=${m[3]}`), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))]).catch(() => null);
+    if (j && j.cov === 0) return { cov: 0, d: [] };
     if (!j || j.cov !== 1 || !Array.isArray(j.d)) return null;
     const v = { t: Date.now(), d: j.d, src: "od", hv: j.d.some(a => a[5]) ? 1 : 0 }; await IDB.set("geo|" + geoKey, v).catch(() => {}); return v;
   })();
@@ -937,6 +1050,7 @@ async function refreshNwtRoutes(routes) {
           r.status = hit.StopStatus ?? 0;
           r.next = hit.NextBusTime || null;
           r.src = res.src || "ebus";
+          if (r.sec !== null || r.next || (r.status !== 0 && r.status != null)) r.noLive = false;
         }
       }
     }
@@ -1544,6 +1658,13 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
     let city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
+    if (!city.length) {
+      const cached = await IDB.get("geo|" + `s|${lat},${lon},${qStop}`).catch(() => null);
+      if (cached && Array.isArray(cached.d)) city = cached.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s));
+      else if (od && od.cov === 0 && eta) {
+        eta.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
+      }
+    }
     if (od && od.cov === 1) {
       const have = new Set(city.map(s => s.StopUID)), miss = new Map();
       for (const e of eta || []) if (e.StopUID && !isThbStop(e) && !have.has(e.StopUID)) miss.set(e.StopUID, [e.RouteUID || "", e.StopUID, (e.StopName && e.StopName.Zh_tw) || ""]);
@@ -1608,8 +1729,8 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const bikeS = settle(bikeP);
   const [busR_, railR_, favBus] = await Promise.all([settle(busP), settle(railP), favBusP]);
   try {   // 全市搜尋名單的自動補救（只比對、不額外呼叫；發現新站才重抓）
-    placeHeal(busR_.status === "fulfilled" ? busR_.value[0].map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw })) : [], []);
-    if (busR_.status === "fulfilled") busHeal(busR_.value[0].map(e => e.RouteUID));          // 全台路線清單沒有的 RouteUID
+    placeHeal(busR_.status === "fulfilled" ? busR_.value[0].filter(e => e.StopUID).map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw })) : [], []);
+    if (busR_.status === "fulfilled") busHeal(busR_.value[0].map(e => e.RouteUID).filter(Boolean));          // 全台路線清單沒有的 RouteUID
     if (railR_.status === "fulfilled") exitHeal(railR_.value);                               // 附近捷運站沒有出口資料
   } catch (e) {}
   const busStops = await busGroup(busR_);
@@ -1653,6 +1774,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       const r = {
         route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum,
         stopUID: uid || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null,
+        noLive: !!it.noLive, noRoutes: !!it.noRoutes,
       };
       rawMap.set(key, { name, uid, pos, r });
     }
@@ -1844,6 +1966,8 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     only, rail: railR_.status === "fulfilled" ? railR_.value : [],
     railError: doRail && railR_.status === "rejected" ? String(railR_.reason.message || railR_.reason).slice(0, 120) : null,
     busError: doBus && busR_.status === "rejected" ? String(busR_.reason.message || busR_.reason).slice(0, 120) : null,
+    noLiveWhy: busR_.status === "fulfilled" && busR_.value[0] && busR_.value[0].noLiveWhy || null,
+    liveOk: busR_.status === "fulfilled" && busR_.value[0] && busR_.value[0].liveOk,
     favs: favLive,
   };
   }
@@ -1854,37 +1978,60 @@ async function liveFavs(favs, fresh) {
   const out = { bus: {}, bike: {} };
   const jobs = [];
   // 公車：依城市分組，用 $filter 一次查多筆
-  const bg = {};
   const putBus = t => {
     const key = `${t.RouteUID}|${t.Direction === 1 ? 1 : 0}|${t.StopUID}`;
     const sec = typeof t.EstimateTime === "number" ? t.EstimateTime : null;
     const old = out.bus[key];
-    if (!old || (sec !== null && (old.sec === null || sec < old.sec))) out.bus[key] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
+    if (!old || (sec !== null && (old.sec === null || sec < old.sec))) out.bus[key] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null, noLive: false };
   };
-  const fb = (favs.bus || []).slice(0, 30), tp = fb.filter(f => isTpeR(f.routeUID) || (!fresh && isNwtR(f.routeUID)));   // v2.37.0：自動更新時新北收藏也用開放資料
+  const fb = (favs.bus || []).slice(0, 30);
+  const tp = fb.filter(f => isTpeR(f.routeUID) || isNwtR(f.routeUID));
   let odOk = false, nwtOk = false;
-  if (tp.length) { try { const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}${fresh ? "&fresh=1" : "&nwt=1"}`); for (const t of j.list || []) putBus(t); odOk = true; nwtOk = !!j.nwtOk; } catch (e) {} }   // v2.36.1 台北市公車：開放資料
-  for (const f of fb) { if (((odOk && isTpeR(f.routeUID)) || (nwtOk && isNwtR(f.routeUID))) && out.bus[`${f.routeUID}|${f.dirNum}|${f.stopUID}`]) continue;   // 開放資料對不到的那幾站才問 TDX
-     const k = routeKind(f.routeUID); if (k) (bg[k.path] = bg[k.path] || []).push(f); }
-  for (const [path, list] of Object.entries(bg)) {
-    for (let i = 0; i < list.length; i += 10) {
-      const chunk = list.slice(i, i + 10);
-      const filter = chunk.map(f => `(RouteUID eq '${f.routeUID}' and StopUID eq '${f.stopUID}' and Direction eq ${f.dirNum})`).join(" or ");
-      jobs.push(tdx("main", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${path}?%24filter=${enc(filter)}&%24top=100&%24format=JSON`).then(list => {
-        for (const t of list) putBus(t);
-      }).catch(() => {}));
+  if (tp.length) {
+    try {
+      const j = await odGet(`/od/eta?stops=${[...new Set(tp.map(f => f.stopUID))].join(",")}&nwt=1${fresh ? "&fresh=1" : ""}`);
+      for (const t of j.list || []) putBus(t);
+      odOk = true; nwtOk = !!j.nwtOk;
+    } catch (e) {}
+  }
+  const otherBuses = [];
+  for (const f of fb) {
+    const key = `${f.routeUID}|${f.dirNum}|${f.stopUID}`;
+    if (out.bus[key]) continue;
+    if (isTpeR(f.routeUID) || (nwtOk && isNwtR(f.routeUID))) {
+      out.bus[key] = { sec: null, status: null, noLive: true };
+      continue;
     }
+    otherBuses.push({ route: f.route || f.name, routeUID: f.routeUID, dirNum: f.dirNum, stopUID: f.stopUID });
+  }
+  if (otherBuses.length) {
+    jobs.push(refreshNwtRoutes(otherBuses).then(() => {
+      for (const r of otherBuses) {
+        const key = `${r.routeUID}|${r.dirNum}|${r.stopUID}`;
+        if (r.sec != null || r.next || (r.status != null && r.status !== 0)) {
+          out.bus[key] = { sec: r.sec, status: r.status ?? 0, next: r.next || null, noLive: false };
+        } else {
+          out.bus[key] = { sec: null, status: null, noLive: true };
+        }
+      }
+    }).catch(() => {
+      for (const r of otherBuses) {
+        const key = `${r.routeUID}|${r.dirNum}|${r.stopUID}`;
+        out.bus[key] = { sec: null, status: null, noLive: true };
+      }
+    }));
   }
   // YouBike：依城市分組
+  const favBikes = (favs.bike || []).slice(0, 30);
   const kg = {};
-  for (const f of (favs.bike || []).slice(0, 30)) { const c = UID_CITY[(f.uid || "").slice(0, 3)]; if (c) (kg[c] = kg[c] || []).push(f.uid); }
+  for (const f of favBikes) { const c = UID_CITY[(f.uid || "").slice(0, 3)]; if (c) (kg[c] = kg[c] || []).push(f.uid); }
   jobs.push((async () => {
-    const feedU = [], northU = [], tdxKg = {};
+    const feedU = [], northU = [];
     for (const [city, uids] of Object.entries(kg)) {
       // 所有可對應 YouBike 官網代碼的縣市先用同一份 feed；未命中才各自備援。
       feedU.push(...uids.filter(isCloudBike));
       const other = uids.filter(u => !isCloudBike(u));
-      if (other.length) (tdxKg[city] = tdxKg[city] || []).push(...other);
+      northU.push(...other.filter(isOdBike));
     }
     if (feedU.length) {
       try {
@@ -1892,22 +2039,19 @@ async function liveFavs(favs, fresh) {
         for (const uid of feedU) {
           if (map[uid]) out.bike[uid] = odBikeLive(map[uid], "yb");
           else if (isOdBike(uid)) northU.push(uid);
-          else { const city = UID_CITY[uid.slice(0, 3)]; if (city) (tdxKg[city] = tdxKg[city] || []).push(uid); }
         }
       } catch (e) {
         northU.push(...feedU.filter(isOdBike));
-        for (const u of feedU.filter(u => !isOdBike(u))) { const c = UID_CITY[u.slice(0, 3)]; if (c) (tdxKg[c] = tdxKg[c] || []).push(u); }
       }
     }
     if (northU.length) {
       try { const j = await odMemoGet(`/od/bike?ids=${[...new Set(northU)].join(",")}${fresh ? "&fresh=1" : ""}`, fresh ? 0 : 90000); for (const a of j.list || []) out.bike[a.StationUID] = odBikeLive(a, "od"); } catch (e) {}
     }
-    await Promise.all(Object.entries(tdxKg).map(([city, uids]) => {
-      const filter = [...new Set(uids)].map(u => `StationUID eq '${u}'`).join(" or ");
-      return memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(filter)}&%24top=50&%24format=JSON`, fresh ? 0 : 90000).then(list => {
-        for (const a of list) out.bike[a.StationUID] = odBikeLive(a, "tdx");
-      }).catch(() => {});
-    }));
+    for (const f of favBikes) {
+      if (!out.bike[f.uid]) {
+        out.bike[f.uid] = { rent: null, ret: null, src: "none", noLive: true };
+      }
+    }
   })());
   await Promise.all(jobs);
   return out;
@@ -5304,7 +5448,7 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
   for (const it of eta) {
     if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
     const dirNum = it.Direction === 1 ? 1 : 0, sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
-    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null };
+    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null, noLive: !!it.noLive, noRoutes: !!it.noRoutes };
     const k = `${x.routeUID}|${dirNum}|${x.stopUID || ""}`, old = routes[k];
     if (!old || (sec !== null && (old.sec === null || sec < old.sec))) routes[k] = x;
   }
@@ -5320,15 +5464,15 @@ async function bikeAt({ uid, uLat = null, uLon = null, ...b }) {
   let a = {};
   let feedHit = false, src = null;
   if (city && isCloudBike(uid)) try { const feed = await youbikeFeed(false); if (feed[uid]) { a = feed[uid]; feedHit = true; src = "yb"; } } catch (e) {}
-  // 官網沒有此站或失敗時，雙北才改市府資料；其他原本可查的城市維持既有 TDX 備援。
+  // 官網沒有此站或失敗時，雙北才改市府資料；TDX 備援已全數移除。
   if (!feedHit && city && isOdBike(uid)) { try { const b = ((await odMemoGet(`/od/bike?ids=${uid}`, 90000)).list || [])[0]; if (b) { a = b; src = "od"; } } catch (e) {} }
-  if (!feedHit && city && !isOdBike(uid)) { try { const b = (await memoTdx("route", `${BASE}/basic/v2/Bike/Availability/City/${city}?%24filter=${enc(`StationUID eq '${uid}'`)}&%24top=5&%24format=JSON`, 90000))[0]; if (b) { a = b; src = "tdx"; } } catch (e) {} }
   if (a.StationUID) try { placeHeal([], [a.StationUID]); } catch (e) {}
   const det = a.AvailableRentBikesDetail || null;
+  const noLive = !src || (typeof a.AvailableRentBikes !== "number" && typeof a.AvailableReturnBikes !== "number");
   return { ...b, uid, type: BIKE_TYPE[b.type] || b.type || null, dist: uLat == null ? null : haversine(uLat, uLon, b.lat, b.lon),
     rent: typeof a.AvailableRentBikes === "number" ? a.AvailableRentBikes : null, ret: typeof a.AvailableReturnBikes === "number" ? a.AvailableReturnBikes : null,
     general: det ? det.GeneralBikes ?? null : null, electric: det ? det.ElectricBikes ?? null : null,
-    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || a.UpdateTime || null, src };
+    status: typeof a.ServiceStatus === "number" ? a.ServiceStatus : null, update: a.SrcUpdateTime || a.UpdateTime || null, src: src || "none", noLive };
 }
 
 // 推播／下車提醒（Worker 端點）
@@ -6969,6 +7113,8 @@ const dataApi0 = async (action, p = {}) => {
     case "busDirect": return busDirectPlan(p || {});
     case "locatePlan": return locatePlan();
     case "planLive": return planLive(p);
+    case "rpBusNear": return rpBusNear(p || {});
+    case "liveFavs": return liveFavs(p.favs || {}, p.fresh);
     case "gmapImg": return gmapImg(p || {});
     case "geoSearch": return geoSearch(p);
     case "geoReverse": return geoReverse(p);

@@ -630,6 +630,7 @@ const distTxt = m => m == null ? '—' : m < 1000 ? `${m}公尺` : `${(m/1000).t
 const hhmm = s => { const d = new Date(s); return isNaN(d) ? '' : String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); };
 function eta(r) {
   if (!r) return { t:'—', k:'off' };
+  if (r.noLive && r.sec == null && !r.next && (r.status === 0 || r.status == null)) return { t:'暫無免 TDX 的即時資料', k:'off' };
   if (r.status === 0 && r.sec != null) {
     if (r.sec < 60) return { t:'進站中', k:'hot' };
     if (r.sec < 180) return { t:'將到站', k:'hot' };
@@ -1230,7 +1231,8 @@ function stopCard(s) {
 }
 function bikeCard(b) {
   const off = b.status != null && b.status !== 1;
-  const d = off ? '暫停營運' : `借 <b class="${bikeCls(b.rent,b.status)}">${b.rent ?? '?'}</b>　還 <b class="${bikeCls(b.ret,b.status)}">${b.ret ?? '?'}</b>`;
+  const noLive = b.noLive || b.src === 'none' || (!off && b.rent == null && b.ret == null);
+  const d = off ? '暫停營運' : noLive ? '暫無資料' : `借 <b class="${bikeCls(b.rent,b.status)}">${b.rent ?? '?'}</b>　還 <b class="${bikeCls(b.ret,b.status)}">${b.ret ?? '?'}</b>`;
   return `<button class="card" data-act="bikeSheet" data-i="${reg(b)}">
     <span class="badge">${I.bike}</span>
     <span class="body"><div class="title">${esc(b.name)}</div><div class="desc">${d}</div></span>
@@ -1278,7 +1280,9 @@ function vFavs() {
   }
   for (const f of fk) {
     const b = live.bike?.[f.uid];
-    const d = !b ? '讀取中' : (b.status != null && b.status !== 1) ? '暫停營運' : `借 <b class="${bikeCls(b.rent,b.status)}">${b.rent ?? '?'}</b>　還 <b class="${bikeCls(b.ret,b.status)}">${b.ret ?? '?'}</b>`;
+    const off = b && b.status != null && b.status !== 1;
+    const noLive = b && (b.noLive || b.src === 'none' || (!off && b.rent == null && b.ret == null));
+    const d = !b ? '讀取中' : noLive ? '暫無資料' : off ? '暫停營運' : `借 <b class="${bikeCls(b.rent,b.status)}">${b.rent ?? '?'}</b>　還 <b class="${bikeCls(b.ret,b.status)}">${b.ret ?? '?'}</b>`;
     h += `<button class="card" data-act="bikeSheet" data-i="${reg({ ...f, ...(b || {}), uid:f.uid, name:f.name, src:b?.src || null, fromFav:true })}">
       <span class="badge">${I.bike}</span>
       <span class="body"><div class="title">${esc(f.name)}</div><div class="desc">${d}</div></span><span class="chev">${I.chev}</span></button>`;
@@ -1409,10 +1413,16 @@ function vBus() {
   h += `<div class="sec"><h2>附近站牌</h2><span class="side">${S.settings.busR}公尺內${d ? `，${d.busStops.length}站` : ''}</span></div>`;
   h += '<button class="compass-enable bus-compass-enable">開啟方向</button>';
   if (!d) return h + (S.error ? '' : skel(3));
-  if (d.busError) { if (d.busStops.length) h += eb ? '' : staleNote(); else if (!S.q) return h + failBox('公車資料暫時讀不到：' + d.busError, 'retryPart', 'data-v="bus"'); }
+  if (d.busError) {
+    if (d.busStops.length) h += eb ? '' : staleNote();
+    else if (!S.q) return h + `<div class="note">${esc(d.noLiveWhy || d.busError || '雲端站牌清單和即時資料都讀不到，請稍後下拉更新')}</div>`;
+  }
   const stops = filterQ(d.busStops, s => s.name + ' ' + s.routes.map(r => r.route).join(' '));
   if (S.q) return h + stops.map(s => stopBlock(s, 6)).join('') + natSearch(S.q);
-  if (!stops.length) return h + `<div class="note">這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。</div>`;
+  if (!stops.length) return h + `<div class="note">${esc(d.noLiveWhy || '這個範圍內沒有公車到站資料。到「設定」把公車範圍調大。')}</div>`;
+  if (d.noLiveWhy === '雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料') {
+    h += `<div class="note" style="margin-bottom:12px">${esc(d.noLiveWhy)}</div>`;
+  }
   h += bfBox();
   if (S.bf?.sel) return h + bfResult(d);
   return h + stops.map(s => stopBlock(s, 6)).join('');
@@ -1516,10 +1526,14 @@ function busStopHeading(s) {
   return `<span class="name bus-name">${esc(s.name)}${sub}</span><span class="pill"><span class="pill-dist">${distTxt(s.dist)}</span></span>`;
 }
 function stopBlock(s, limit) {
-  const rs = [...s.routes].sort((a,b) => etaRank(a) - etaRank(b));
+  const valid = (s.routes || []).filter(r => r.routeUID && !r.noRoutes);
+  const rs = [...valid].sort((a,b) => etaRank(a) - etaRank(b));
   const shown = limit ? rs.slice(0, limit) : rs;
+  const body = rs.length
+    ? shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')
+    : `<div class="rrow"><span class="rno" style="font-size:13px;color:var(--c-sub);grid-column:1/-1">暫無免 TDX 的即時資料</span></div>`;
   return `${stopTag(s)}<div class="stop-h">${busStopHeading(s)}</div>
-    ${shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')}
+    ${body}
     ${limit && rs.length > limit ? `<button class="more" data-act="stop" data-i="${reg(s)}">顯示全部${rs.length}條路線</button>` : ''}</div>`;
 }
 function vBike() {
@@ -1532,11 +1546,12 @@ function vBike() {
   if (!bikes.length) return d.bikeError ? h : d.bikePending ? h + `<div class="note">YouBike 讀取中…</div>` : h + `<div class="note">這個範圍內沒有 YouBike 站點。到「設定」把 YouBike 範圍調大。</div>`;
   return h + bikes.map(b => {
     const off = b.status != null && b.status !== 1;
+    const noLive = b.noLive || b.src === 'none' || (!off && b.rent == null && b.ret == null);
     return `<button class="bike" data-act="bikeSheet" data-i="${reg(b)}">
       <div class="bike-h"><span class="name">${esc(b.name)}</span><span class="pill">${distTxt(b.dist)}</span></div>
       <div class="nums">
-        <div class="num"><b class="${bikeCls(b.rent,b.status)}">${off ? '—' : b.rent ?? '?'}</b><span>${off ? '暫停營運' : b.electric ? `可借（電輔${b.electric}）` : '可借'}</span></div>
-        <div class="num"><b class="${bikeCls(b.ret,b.status)}">${off ? '—' : b.ret ?? '?'}</b><span>可還空位</span></div>
+        <div class="num"><b class="${bikeCls(b.rent,b.status)}" style="${noLive?'font-size:20px':''}">${off ? '—' : noLive ? '暫無資料' : b.rent ?? '?'}</b><span>${off ? '暫停營運' : noLive ? '可借' : b.electric ? `可借（電輔${b.electric}）` : '可借'}</span></div>
+        <div class="num"><b class="${bikeCls(b.ret,b.status)}" style="${noLive?'font-size:20px':''}">${off ? '—' : noLive ? '暫無資料' : b.ret ?? '?'}</b><span>可還空位</span></div>
       </div></button>`;
   }).join('') + bikeSrcNote(bikes);
 }
@@ -3070,7 +3085,8 @@ function openSheet(html) { const w = $('#sheetWrap'); $('#sheet').innerHTML = '<
 function closeSheet() { const w = $('#sheetWrap'); w.classList.remove('open'); setTimeout(() => { w.hidden = true; S.sheet = null; if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
 function stopSheet(s, nwtDone) {
   S.sheet = { type:'stop', s };
-  openSheet(`<h2>${esc(s.name)}${sideTag(s)}</h2><div class="addr">距離${distTxt(s.dist)}，${s.routes.length}條路線</div>` +
+  const rCount = (s.routes || []).filter(r => r.routeUID && !r.noRoutes).length;
+  openSheet(`<h2>${esc(s.name)}${sideTag(s)}</h2><div class="addr">距離${distTxt(s.dist)}，${rCount}條路線</div>` +
     stopBlock(s, 0).replace(/<div class="stop.*?>/,'<div class="stop" style="background:none;border:0;padding:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '') +
     (s.lat ? `<div class="btns" style="grid-template-columns:1fr"><button class="btn pri" data-act="nav" data-lat="${s.lat}" data-lon="${s.lon}">${I.nav}步行前往</button></div>` : ''));
   if (!nwtDone && s.routes && s.routes.some(r => r.routeUID && /^(NWT|TAO|THB|KEE|ILA|HSQ|MIA|CHA|NAN|YUN|CYI|CYQ|PIF|HUA|TTT|PEN|HSZ|TXG|TNN|KHH|LIE|KIN)/.test(r.routeUID))) {   // 官網即時來源只補一次，不輪詢
@@ -3082,11 +3098,12 @@ function stopSheet(s, nwtDone) {
 function bikeSheet(b) {
   S.sheet = { type:'bike', b };
   const off = b.status != null && b.status !== 1;
+  const noLive = b.noLive || b.src === 'none' || (!off && b.rent == null && b.ret == null);
   const on = isFavBike(b.uid);
   openSheet(`<h2>${esc(b.name)}</h2>${b.address ? `<div class="addr">${esc(b.address)}</div>` : ''}
     <div class="nums" style="margin:14px 0 8px">
-      <div class="num"><b class="${bikeCls(b.rent,b.status)}">${off?'—':b.rent ?? '?'}</b><span>可借</span></div>
-      <div class="num"><b class="${bikeCls(b.ret,b.status)}">${off?'—':b.ret ?? '?'}</b><span>可還空位</span></div></div>
+      <div class="num"><b class="${bikeCls(b.rent,b.status)}" style="${noLive?'font-size:20px':''}">${off?'—':noLive?'暫無資料':b.rent ?? '?'}</b><span>可借</span></div>
+      <div class="num"><b class="${bikeCls(b.ret,b.status)}" style="${noLive?'font-size:20px':''}">${off?'—':noLive?'暫無資料':b.ret ?? '?'}</b><span>可還空位</span></div></div>
     ${b.electric != null ? `<div class="kv"><span>一般／電輔</span>${b.general ?? 0}／${b.electric}</div>` : ''}
     ${b.capacity != null ? `<div class="kv"><span>總柱數</span>${b.capacity}</div>` : ''}
     ${b.type ? `<div class="kv"><span>類型</span>${esc(b.type)}</div>` : ''}
