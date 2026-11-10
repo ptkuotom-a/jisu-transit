@@ -196,7 +196,7 @@ const isCitybusR = uid => CITYBUS.has((uid || "").slice(0, 3));
 // v2.49.20：附近站牌與預估到站不再呼叫 TDX；讀不到即時時以雲端時刻表補路線，到站欄位顯示「暫無免 TDX 的即時資料」
 const NEAR_OK = new Set(["TPE", "NWT", "THB"]);
 const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
-async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
+async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {}) {
   const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${Math.min(r + 200, 1000)}`);
   let c = await IDB.get("geo|" + gKey).catch(() => null);
   let covZero = false;
@@ -228,12 +228,13 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
   const isCovered = uid => isTpeR(uid) || (okNwt && isNwtR(uid)) || (okThb && isThbR(uid));
   const coveredRows = liveOk ? od.list.filter(e => isCovered(e.RouteUID)) : [];
 
+  const coveredStopUIDs = new Set(coveredRows.map(e => e.StopUID).filter(Boolean));
   const uncoveredStops = nearSt.filter(s => {
     const pfx = (s.StopUID || "").slice(0, 3);
     if (!liveOk) return true;
-    if (pfx === "TPE") return false;
-    if (pfx === "NWT") return !okNwt;
-    if (pfx === "THB") return !okThb;
+    if (pfx === "TPE") return !coveredStopUIDs.has(s.StopUID);
+    if (pfx === "NWT") return !okNwt || !coveredStopUIDs.has(s.StopUID);
+    if (pfx === "THB") return !okThb || !coveredStopUIDs.has(s.StopUID);
     return true;
   });
 
@@ -321,6 +322,7 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh) {
   } else {
     rows.noLiveWhy = null;
   }
+  await fillOfficialEta(rows, { lat, lon, nearSt, fresh, auto: (opt && opt.auto) || AUTO > 0 }).catch(() => {});
   return rows;
 }
 // v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
@@ -345,7 +347,7 @@ function cloudStops(geoKey) {
   return job;
 }
 // 單一路線的預估到站（＋公車位置）：TPE 用開放資料；NWT 先用 ebus 再用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
-async function odRouteEta(routeUID, near, routeName) {
+async function odRouteEta(routeUID, near, routeName, ttl = 15000) {
   if (isTpeR(routeUID)) {
     try { const j = await odGet(`/od/eta?route=${routeUID}${near ? "&near=1" : ""}`); if (j.list && j.list.length) return j; } catch (e) {}
     return null;
@@ -353,7 +355,7 @@ async function odRouteEta(routeUID, near, routeName) {
   if (isNwtR(routeUID)) {
     if (routeName) {
       try {
-        const j = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(routeName)}`, 15000, 17000);
+        const j = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(routeName)}`, ttl, 17000);
         if (j && Array.isArray(j.list) && j.list.length) return j;
       } catch (e) {}
     }
@@ -377,11 +379,11 @@ function thbSubs(routeUID, dirNum, sor) {
   }
   return out;
 }
-async function thbRouteEta(routeUID, dirNum, sor) {
+async function thbRouteEta(routeUID, dirNum, sor, ttl = 15000) {
   const subs = thbSubs(routeUID, dirNum, sor);
   if (!subs.length) return null;
   try {
-    const j = await odMemoGet(`/thb?sub=${subs.join(",")}&route=${routeUID}`, 15000);
+    const j = await odMemoGet(`/thb?sub=${subs.join(",")}&route=${routeUID}`, ttl);
     return j && Array.isArray(j.list) && j.list.length ? j : null;
   } catch (e) { return null; }
 }
@@ -403,11 +405,11 @@ function subTag(routeUID, route, sub) {
   const m = /[(（]([^()（）]{1,3}?)線[)）]/.exec(route || "");
   return (m ? m[1] : "支") + L.toUpperCase();
 }
-async function citybusRouteEta(routeUID, routeName, sor) {
+async function citybusRouteEta(routeUID, routeName, sor, ttl = 15000) {
   const stops = citybusStops(routeUID, sor); if (!stops) return null;
   try {
     const subs = [...new Set((sor || []).filter(x => x.RouteUID === routeUID && x.SubRouteUID).map(x => x.SubRouteUID))].slice(0, 8).join(",");
-    const j = await odMemoGet(`/citybus?route=${enc(routeUID)}&name=${enc(routeName)}&stops=${enc(stops)}${subs ? "&subs=" + enc(subs) : ""}`, 15000);
+    const j = await odMemoGet(`/citybus?route=${enc(routeUID)}&name=${enc(routeName)}&stops=${enc(stops)}${subs ? "&subs=" + enc(subs) : ""}`, ttl);
     return j && Array.isArray(j.list) && j.list.length ? j : null;
   } catch (e) { return null; }
 }
@@ -503,10 +505,10 @@ function mapHszToTdx(j, routeUID, sor) {
   if (!list.length) return null;
   return { list, upd, src: "hccg" };
 }
-async function hszRouteEta(routeUID, name, sor) {
+async function hszRouteEta(routeUID, name, sor, ttl = 15000) {
   if (!sor || !Array.isArray(sor) || !sor.length) return null;
   try {
-    const j = await odMemoGet(`/hszbus?route=${enc(routeUID)}&name=${enc(name)}`, 15000);
+    const j = await odMemoGet(`/hszbus?route=${enc(routeUID)}&name=${enc(name)}`, ttl);
     if (!j) return null;
     return mapHszToTdx(j, routeUID, sor);
   } catch (e) {
@@ -605,10 +607,10 @@ function mapTcgoToTdx(j, routeUID, sor) {
     return null;
   }
 }
-async function tcgoRouteEta(routeUID, name, sor) {
+async function tcgoRouteEta(routeUID, name, sor, ttl = 15000) {
   if (!sor || !Array.isArray(sor) || !sor.length) return null;
   try {
-    const j = await odMemoGet(`/tcgo?route=${enc(routeUID)}&name=${enc(name)}`, 15000);
+    const j = await odMemoGet(`/tcgo?route=${enc(routeUID)}&name=${enc(name)}`, ttl);
     if (!j) return null;
     return mapTcgoToTdx(j, routeUID, sor);
   } catch (e) {
@@ -711,10 +713,10 @@ function mapTnbusToTdx(j, routeUID, sor) {
     return null;
   }
 }
-async function tnbusRouteEta(routeUID, name, sor) {
+async function tnbusRouteEta(routeUID, name, sor, ttl = 15000) {
   if (!sor || !Array.isArray(sor) || !sor.length) return null;
   try {
-    const j = await odMemoGet(`/tnbus?route=${enc(routeUID)}&name=${enc(name)}`, 15000);
+    const j = await odMemoGet(`/tnbus?route=${enc(routeUID)}&name=${enc(name)}`, ttl);
     if (!j) return null;
     return mapTnbusToTdx(j, routeUID, sor);
   } catch (e) {
@@ -821,10 +823,10 @@ function mapTwhToTdx(j, routeUID, sor) {
     return null;
   }
 }
-async function twhRouteEta(routeUID, name, sor) {
+async function twhRouteEta(routeUID, name, sor, ttl = 15000) {
   if (!sor || !Array.isArray(sor) || !sor.length) return null;
   try {
-    const j = await odMemoGet(`/twh?route=${enc(routeUID)}&name=${enc(name)}`, 15000);
+    const j = await odMemoGet(`/twh?route=${enc(routeUID)}&name=${enc(name)}`, ttl);
     if (!j || j.empty) return null;
     return mapTwhToTdx(j, routeUID, sor);
   } catch (e) {
@@ -925,20 +927,20 @@ function kinbusIds(routeUID, sor, stopUIDs) {
   }
   return out.slice(0, 4);
 }
-async function kinbusRouteEta(routeUID, name, sor, stopUIDs) {
+async function kinbusRouteEta(routeUID, name, sor, stopUIDs, ttl = 15000) {
   if (!sor || !Array.isArray(sor) || !sor.length) return null;
   try {
     const ids = kinbusIds(routeUID, sor, stopUIDs);
-    const j = await odMemoGet(`/kinbus?route=${enc(routeUID)}&name=${enc(name)}${ids.length ? `&ids=${ids.join(",")}` : ""}`, 15000);
+    const j = await odMemoGet(`/kinbus?route=${enc(routeUID)}&name=${enc(name)}${ids.length ? `&ids=${ids.join(",")}` : ""}`, ttl);
     if (!j) return null;
     return mapKinbusToTdx(j, routeUID, sor);
   } catch (e) {
     return null;
   }
 }
-async function taoRouteEta(routeUID) {
+async function taoRouteEta(routeUID, ttl = 15000) {
   try {
-    const j = await odMemoGet(`/tyebus?route=${enc(routeUID)}`, 15000);
+    const j = await odMemoGet(`/tyebus?route=${enc(routeUID)}`, ttl);
     return j && Array.isArray(j.list) ? j : null;
   } catch (e) { return null; }
 }
@@ -982,22 +984,152 @@ async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站�
   return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}?%24filter=${enc(`RouteUID eq '${b.routeUID}'`)}&%24top=600&%24format=JSON`);   // v2.46.3：用 RouteUID 過濾（高雄等路線名稱當路徑會回空）
 }
 
-// 使用者正在看的那幾條線（公車卡展開、站牌小視窗）：官方即時來源只補最快前四條
-async function refreshNwtRoutes(routes) {
-  const rank = r => r.sec != null ? r.sec : r.status === 0 ? 1e6 : 2e6;   // 只補最快到的幾條，避免一個大站牌一次打幾十條 ebus
-  const nwt = (routes || []).filter(r => r && (isNwtR(r.routeUID) || isTaoR(r.routeUID) || isThbR(r.routeUID) || isCitybusR(r.routeUID) || isHszR(r.routeUID) || isTxgR(r.routeUID) || isTnnR(r.routeUID) || isKhhR(r.routeUID) || isKinR(r.routeUID)) && r.route).sort((a, b) => rank(a) - rank(b));
-  if (!nwt.length) return;
-  const keep = new Set(nwt.map(r => r.routeUID).filter((u, i, a) => a.indexOf(u) === i).slice(0, 4));
-  for (let i = nwt.length - 1; i >= 0; i--) if (!keep.has(nwt[i].routeUID)) nwt.splice(i, 1);
-  const byRoute = new Map();
-  for (const r of nwt) {
-    if (!byRoute.has(r.routeUID)) byRoute.set(r.routeUID, { name: r.route, items: [] });
-    byRoute.get(r.routeUID).items.push(r);
+const NEAR_OFFICIAL_MAX = 8;
+const NEAR_OFFICIAL_TTL = 30000;
+const nearOfficialCache = new Map();
+
+const uidOf = r => (r && (r.RouteUID || r.routeUID)) || "";
+const nameOf = r => (r && ((r.RouteName && r.RouteName.Zh_tw) || r.route || r.name)) || "";
+const dirOf = r => (r && r.Direction != null) ? (r.Direction === 1 ? 1 : 0) : ((r && r.dirNum === 1) ? 1 : 0);
+const stopOf = r => (r && (r.StopUID || r.stopUID)) || "";
+
+function applyOfficialHit(r, hit, src) {
+  const est = typeof hit.EstimateTime === "number" ? hit.EstimateTime : null;
+  const stat = hit.StopStatus ?? 0;
+  const nxt = hit.NextBusTime || null;
+
+  if (est != null) {
+    r.EstimateTime = est;
+    r.sec = est;
+  } else {
+    r.EstimateTime = null;
+    r.sec = null;
   }
-  // 客運／縣市公車要站序配對：手機沒快取的，一次向雲端下載（只讀雲端 KV，不打 TDX）並存進手機
+  r.StopStatus = stat;
+  r.status = stat;
+  r.NextBusTime = nxt;
+  r.next = nxt;
+  r.src = src || hit.src || "official";
+
+  if (est !== null || nxt || (stat !== 0 && stat != null)) {
+    r.noLive = false;
+  }
+}
+
+async function fetchOfficialRoute(routeUID, name, items = [], sor = null, fresh = false) {
+  const ttl = fresh ? 0 : 15000;
+  let res = null;
+  if (isTpeR(routeUID)) {
+    res = await odRouteEta(routeUID, true, name, ttl);
+    if (res) res.src = res.src || "od";
+  } else if (isNwtR(routeUID)) {
+    if (name) {
+      try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, ttl, 17000); } catch (e) {}
+    }
+    if (!res || !Array.isArray(res.list) || !res.list.length) {
+      try { res = await odGet(`/od/eta?route=${routeUID}&nwt=1`); } catch (e) {}
+    }
+    if (res) res.src = res.src || "ebus";
+  } else if (isTaoR(routeUID)) {
+    res = await taoRouteEta(routeUID, ttl);
+    if (res) res.src = res.src || "tyebus";
+  } else {
+    if (!sor) {
+      sor = sorMem.get("uid|" + routeUID);
+      if (!sor) {
+        const k = routeKind(routeUID), c = k && await IDB.get(`sor|${k.path}|${name}`).catch(() => null);
+        sor = c && c.d;
+      }
+    }
+    if (isThbR(routeUID)) {
+      const dirNum = items[0] ? dirOf(items[0]) : 0;
+      const rows = (sor || []).filter(x => x.RouteUID === routeUID && (items.length === 0 || items.some(r => (x.Direction === 1 ? 1 : 0) === dirOf(r) && (x.Stops || []).some(s => s.StopUID === stopOf(r)))));
+      const subs = thbSubs(routeUID, dirNum, rows.length ? rows : (sor || []));
+      if (subs.length) {
+        try { res = await odMemoGet(`/thb?sub=${subs.join(",")}&route=${routeUID}`, ttl); } catch (e) {}
+      }
+      if (res) res.src = res.src || "thb";
+    } else if (isCitybusR(routeUID)) {
+      res = await citybusRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "citybus";
+    } else if (isHszR(routeUID)) {
+      res = await hszRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "hszbus";
+    } else if (isTxgR(routeUID)) {
+      res = await tcgoRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "tcgo";
+    } else if (isTnnR(routeUID)) {
+      res = await tnbusRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "tnbus";
+    } else if (isKhhR(routeUID)) {
+      res = await twhRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "twh";
+    } else if (isKinR(routeUID)) {
+      res = await kinbusRouteEta(routeUID, name, sor, items.map(stopOf), ttl);
+      if (res) res.src = res.src || "kinbus";
+    }
+  }
+  return res && Array.isArray(res.list) ? res : null;
+}
+
+// 使用者正在看的那幾條線（公車卡展開、站牌小視窗）：官方即時來源只補最快前四條
+async function refreshNwtRoutes(routes, opt = {}) {
+  const isCand = r => {
+    if (!r) return false;
+    const u = uidOf(r);
+    if (!u) return false;
+    const hasLive = (r.sec != null && r.sec >= 0) || (r.EstimateTime != null && r.EstimateTime >= 0);
+    if (hasLive && !r.noLive) return false;
+    return isTpeR(u) || isNwtR(u) || isTaoR(u) || isThbR(u) || isCitybusR(u) || isHszR(u) || isTxgR(u) || isTnnR(u) || isKhhR(u) || isKinR(u);
+  };
+  const list = (routes || []).filter(isCand);
+  if (!list.length) return;
+
+  const max = opt.max || 4;
+  let orderedUids = [];
+
+  if (opt.near) {
+    let stopDist = opt.stopDist;
+    if (!stopDist && opt.nearSt && opt.lat != null && opt.lon != null) {
+      stopDist = new Map();
+      for (const s of opt.nearSt) {
+        if (s.StopUID && s.StopPosition && s.StopPosition.PositionLat != null) {
+          stopDist.set(s.StopUID, haversine(+opt.lat, +opt.lon, s.StopPosition.PositionLat, s.StopPosition.PositionLon));
+        }
+      }
+    }
+    const uidDist = new Map();
+    for (const r of list) {
+      const u = uidOf(r);
+      const s = stopOf(r);
+      const d = (stopDist && stopDist.get(s)) ?? r.dist ?? (r.pos && r.pos.d) ?? Infinity;
+      const cur = uidDist.get(u);
+      if (cur == null || d < cur) uidDist.set(u, d);
+    }
+    const uniqUids = [...new Set(list.map(uidOf))];
+    uniqUids.sort((a, b) => (uidDist.get(a) ?? Infinity) - (uidDist.get(b) ?? Infinity));
+    orderedUids = uniqUids.slice(0, max);
+  } else {
+    const rank = r => r.sec != null ? r.sec : (r.status === 0 || r.StopStatus === 0) ? 1e6 : 2e6;
+    list.sort((a, b) => rank(a) - rank(b));
+    orderedUids = list.map(uidOf).filter((u, i, a) => a.indexOf(u) === i).slice(0, max);
+  }
+
+  const keep = new Set(orderedUids);
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!keep.has(uidOf(list[i]))) list.splice(i, 1);
+  }
+
+  const byRoute = new Map();
+  for (const r of list) {
+    const u = uidOf(r);
+    if (!byRoute.has(u)) byRoute.set(u, { name: nameOf(r), items: [] });
+    byRoute.get(u).items.push(r);
+  }
+
   const needSor = [];
   for (const [uid, { name }] of byRoute) {
-    if (isNwtR(uid) || isTaoR(uid) || sorMem.get("uid|" + uid)) continue;
+    if (isTpeR(uid) || isNwtR(uid) || isTaoR(uid) || sorMem.get("uid|" + uid)) continue;
     const k = routeKind(uid), c = k && await IDB.get(`sor|${k.path}|${name}`).catch(() => null);
     if (c && c.d && c.d.some(x => x.RouteUID === uid)) { sorMem.set("uid|" + uid, c.d); continue; }
     needSor.push(uid);
@@ -1008,53 +1140,57 @@ async function refreshNwtRoutes(routes) {
       if (!rows || !rows.length) continue;
       sorMem.set("uid|" + uid, rows);
       const k = routeKind(uid), nm = byRoute.get(uid) && byRoute.get(uid).name;
-      if (k && nm) { const key = `sor|${k.path}|${nm}`, old = await IDB.get(key).catch(() => null); IDB.set(key, { t: Date.now(), d: [...((old && old.d) || []).filter(x => x.RouteUID !== uid), ...rows], src: "kv" }).catch(() => {}); }   // 同名其他路線保留
-    }
-  }
-  await Promise.all([...byRoute.entries()].map(async ([routeUID, { name, items }]) => {
-    let res = null;
-    if (isNwtR(routeUID)) {
-      try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, 15000, 17000); } catch (e) {}
-    } else if (isTaoR(routeUID)) {
-      res = await taoRouteEta(routeUID);
-    } else {
-      let sor = sorMem.get("uid|" + routeUID);
-      if (!sor) { const k = routeKind(routeUID), c = k && await IDB.get(`sor|${k.path}|${name}`).catch(() => null); sor = c && c.d; }
-      if (isThbR(routeUID)) {
-        const rows = (sor || []).filter(x => x.RouteUID === routeUID && items.some(r => (x.Direction === 1 ? 1 : 0) === r.dirNum && (x.Stops || []).some(s => s.StopUID === r.stopUID)));
-        const subs = thbSubs(routeUID, items[0].dirNum, rows);
-        if (subs.length) try { res = await odMemoGet(`/thb?sub=${subs.join(",")}&route=${routeUID}`, 15000); } catch (e) {}
-      } else if (isCitybusR(routeUID)) {
-        res = await citybusRouteEta(routeUID, name, sor);
-      } else if (isHszR(routeUID)) {
-        res = await hszRouteEta(routeUID, name, sor);
-      } else if (isTxgR(routeUID)) {
-        res = await tcgoRouteEta(routeUID, name, sor);
-      } else if (isTnnR(routeUID)) {
-        res = await tnbusRouteEta(routeUID, name, sor);
-      } else if (isKhhR(routeUID)) {
-        res = await twhRouteEta(routeUID, name, sor);
-      } else if (isKinR(routeUID)) {
-        res = await kinbusRouteEta(routeUID, name, sor, items.map(r => r.stopUID));
+      if (k && nm) {
+        const key = `sor|${k.path}|${nm}`, old = await IDB.get(key).catch(() => null);
+        IDB.set(key, { t: Date.now(), d: [...((old && old.d) || []).filter(x => x.RouteUID !== uid), ...rows], src: "kv" }).catch(() => {});
       }
     }
-    if (isNwtR(routeUID) && (!res || !Array.isArray(res.list) || !res.list.length)) {
-      try { res = await odGet(`/od/eta?route=${routeUID}&nwt=1`); } catch (e) {}
+  }
+
+  const now = Date.now();
+  const isAuto = !!opt.auto || AUTO > 0;
+  const isFresh = !!opt.fresh;
+
+  await Promise.all([...byRoute.entries()].map(async ([routeUID, { name, items }]) => {
+    let res = null;
+    const entry = nearOfficialCache.get(routeUID);
+    // 審查修正：定時更新（AUTO）也只在快取超過 30 秒時才重打；原本 AUTO 一律用快取，時間會一直停在第一次抓到的值
+    if (!isFresh && entry && (now - entry.t < NEAR_OFFICIAL_TTL)) {
+      res = entry.res;
+    } else {
+      res = await fetchOfficialRoute(routeUID, name, items, null, isFresh).catch(() => null);
+      nearOfficialCache.set(routeUID, { t: now, res });
     }
+
     if (res && Array.isArray(res.list)) {
       for (const r of items) {
-        const hits = res.list.filter(t => t.RouteUID === r.routeUID && t.StopUID === r.stopUID && (t.Direction === 1 ? 1 : 0) === r.dirNum);   // 客運多條子路線同站：取最快到的那班
+        const sUid = stopOf(r);
+        const rDir = dirOf(r);
+        const hits = res.list.filter(t => t.RouteUID === routeUID && t.StopUID === sUid && (t.Direction === 1 ? 1 : 0) === rDir);
         const hit = hits.sort((a, b) => (typeof a.EstimateTime === "number" ? a.EstimateTime : 1e9) - (typeof b.EstimateTime === "number" ? b.EstimateTime : 1e9))[0];
         if (hit) {
-          r.sec = typeof hit.EstimateTime === "number" ? hit.EstimateTime : null;
-          r.status = hit.StopStatus ?? 0;
-          r.next = hit.NextBusTime || null;
-          r.src = res.src || "ebus";
-          if (r.sec !== null || r.next || (r.status !== 0 && r.status != null)) r.noLive = false;
+          applyOfficialHit(r, hit, res.src);
         }
       }
     }
   }));
+}
+
+async function fillOfficialEta(rows, opt = {}) {
+  if (!rows || !Array.isArray(rows) || !rows.length) return rows;
+  const noLiveRows = rows.filter(r => r && (r.noLive || (r.EstimateTime == null && r.sec == null)) && uidOf(r));
+  if (!noLiveRows.length) return rows;
+  await refreshNwtRoutes(noLiveRows, {
+    max: NEAR_OFFICIAL_MAX,
+    near: true,
+    auto: opt.auto,
+    fresh: opt.fresh,
+    lat: opt.lat,
+    lon: opt.lon,
+    nearSt: opt.nearSt,
+    stopDist: opt.stopDist
+  });
+  return rows;
 }
 
 // ---------- 工具 ----------
@@ -1638,7 +1774,7 @@ async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
 
 // ---------- 附近：公車 + YouBike + 收藏 ----------
 const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
-async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false, onEarly = null }) {
+async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false, onEarly = null, auto = false }) {
   // v2.26.0：only＝'bus'／'bike'／'rail' 只更新那一部分（公車、YouBike、軌道分頁的下拉更新），其他部分不呼叫
   const doBus = !only || only === "bus", doBike = !only || only === "bike", doRail = !only || only === "rail";
   const SKIP = Promise.reject(new Error("skip")); SKIP.catch(() => {});
@@ -1649,7 +1785,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
-  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh) : SKIP;
+  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh, { auto: !!auto }) : SKIP;
   const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
   const busP = !doBus ? SKIP : (async () => {
     const [eta, od, thb] = await Promise.all([
@@ -1775,6 +1911,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
         route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum,
         stopUID: uid || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null,
         noLive: !!it.noLive, noRoutes: !!it.noRoutes,
+        src: it.src || null,
       };
       rawMap.set(key, { name, uid, pos, r });
     }
@@ -7121,7 +7258,8 @@ const dataApi0 = async (action, p = {}) => {
     case "locate": return locate();
     case "placeIndex": return placeIndex(p || {});
     case "stopAt": return stopAt(p || {});
-    case "refreshNwtRoutes": return refreshNwtRoutes(p.routes || []);
+    case "refreshNwtRoutes": return refreshNwtRoutes(p.routes || [], p.opt || {});
+    case "fillOfficialEta": return fillOfficialEta(p.rows || [], p.opt || {});
     case "bikeAt": return bikeAt(p || {});
     case "railSearch": return railSearch(p || {});
     case "busDest": return busDest(p || {});
