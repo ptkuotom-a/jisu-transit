@@ -1149,6 +1149,11 @@ const nearOfficialCache = new Map();
 const uidOf = r => (r && (r.RouteUID || r.routeUID)) || "";
 const nameOf = r => (r && ((r.RouteName && r.RouteName.Zh_tw) || r.route || r.name)) || "";
 const dirOf = r => (r && r.Direction != null) ? (r.Direction === 1 ? 1 : 0) : ((r && r.dirNum === 1) ? 1 : 0);
+// v2.49.25：pda5284 的到站沒有 Direction。雙北的站牌 UID 本身就分去、回程，所以沒有 Direction 時只用 StopUID 對；
+// 其他縣市（例如公路客運的站牌去回程共用）沒有 Direction 時照舊當成 0，避免填到另一個方向的時間
+const etaDirOk = (t, dirNum, routeUID) => t.Direction != null
+  ? (t.Direction === 1 ? 1 : 0) === (dirNum === 1 ? 1 : 0)
+  : ((isTpeR(routeUID) || isNwtR(routeUID)) ? true : (dirNum === 1 ? 1 : 0) === 0);
 const stopOf = r => (r && (r.StopUID || r.stopUID)) || "";
 
 function applyOfficialHit(r, hit, src) {
@@ -1413,7 +1418,7 @@ async function refreshNwtRoutes(routes, opt = {}) {
       for (const r of items) {
         const sUid = stopOf(r);
         const rDir = dirOf(r);
-        const hits = res.list.filter(t => t.RouteUID === routeUID && t.StopUID === sUid && (t.Direction === 1 ? 1 : 0) === rDir);
+        const hits = res.list.filter(t => t.RouteUID === routeUID && t.StopUID === sUid && etaDirOk(t, rDir, routeUID));
         const hit = hits.sort((a, b) => (typeof a.EstimateTime === "number" ? a.EstimateTime : 1e9) - (typeof b.EstimateTime === "number" ? b.EstimateTime : 1e9))[0];
         if (hit) {
           applyOfficialHit(r, hit, res.src);
@@ -2653,7 +2658,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   if (!cand.length) cand = sor.filter(r => (r.Direction === 1 ? 1 : 0) === dirNum);
   if (!cand.length) cand = sor;
   // 官網來源：優先用和官網站牌對得最多的子路線（例如新竹市 2 路主線 20 站，不要被 21 站的繞駛支線蓋掉），一樣多才比站數
-  const etaU = new Set(odR ? etas.filter(t => t.RouteUID === routeUID && (t.Direction === 1 ? 1 : 0) === dirNum && t.StopUID).map(t => t.StopUID) : []);
+  const etaU = new Set(odR ? etas.filter(t => t.RouteUID === routeUID && etaDirOk(t, dirNum, routeUID) && t.StopUID).map(t => t.StopUID) : []);
   const hitN = r => etaU.size ? (r.Stops || []).filter(x => etaU.has(x.StopUID)).length : 0;
   cand.sort((a, b) => hitN(b) - hitN(a) || (b.Stops || []).length - (a.Stops || []).length);
   const stops = ((cand[0] && cand[0].Stops) || []).slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0));
@@ -2661,7 +2666,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
 
   const em = {};
   for (const t of etas) {
-    if (t.RouteUID !== routeUID || (t.Direction === 1 ? 1 : 0) !== dirNum || !t.StopUID) continue;
+    if (t.RouteUID !== routeUID || !etaDirOk(t, dirNum, routeUID) || !t.StopUID) continue;
     const sec = typeof t.EstimateTime === "number" ? t.EstimateTime : null;
     const c = em[t.StopUID];
     if (!c || (sec !== null && (c.sec === null || sec < c.sec))) em[t.StopUID] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
@@ -2678,7 +2683,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     const ord = new Map(stops.map((s, i) => [s.StopUID, i]));
     const best = new Map();
     for (const e of etas) {
-      if (e.RouteUID !== routeUID || (e.Direction === 1 ? 1 : 0) !== dirNum || !e.StopUID || !e.PlateNumb) continue;
+      if (e.RouteUID !== routeUID || !etaDirOk(e, dirNum, routeUID) || !e.StopUID || !e.PlateNumb) continue;
       const sec = typeof e.EstimateTime === "number" ? e.EstimateTime : 1e9, q = ord.has(e.StopUID) ? ord.get(e.StopUID) : 1e6, b = best.get(e.PlateNumb);
       if (!b || sec < b.sec || (sec === b.sec && q < b.q)) best.set(e.PlateNumb, { uid: e.StopUID, sec, q, sub: e.SubRouteUID });
     }
@@ -7203,7 +7208,7 @@ function planBusNext(leg) {   // 這條公車在上車站的下一班（即時�
     const b = await planBusMatch(leg); if (!b) return null;
     const etas = await routeEtas(b);
     const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
-    const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && (t.Direction === 1 ? 1 : 0) === b.dirNum).sort((x, y) => rank(x) - rank(y))[0];
+    const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && etaDirOk(t, b.dirNum, b.routeUID)).sort((x, y) => rank(x) - rank(y))[0];
     if (!e) return null;
     if (e.StopStatus === 0 && typeof e.EstimateTime === "number") return { at: Date.now() + e.EstimateTime * 1000, live: true };
     if ((e.StopStatus ?? 0) === 1 && e.NextBusTime) { const t = Date.parse(e.NextBusTime); return t ? { at: t, live: false } : null; }
@@ -7523,7 +7528,7 @@ async function planLive({ legs }) {
           const etas = await routeEtas(b);
           // 同一站可能有好幾條支線（例如 1815A～G），挑最有用的那筆：有預估秒數的最近一班 > 有下一班時間的 > 其他
           const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
-          const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && (t.Direction === 1 ? 1 : 0) === b.dirNum).sort((x, y) => rank(x) - rank(y))[0];
+          const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && etaDirOk(t, b.dirNum, b.routeUID)).sort((x, y) => rank(x) - rank(y))[0];
           if (e) o.bus = { sec: typeof e.EstimateTime === "number" ? e.EstimateTime : null, status: e.StopStatus ?? 0, next: e.NextBusTime || null };
         }
         out[i] = o; return;
