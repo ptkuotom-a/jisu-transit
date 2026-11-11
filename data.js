@@ -38,7 +38,10 @@ const isRate = e => !!(e && (e.rate || String(e.message || e).includes(RATE_MSG)
 // 計時涵蓋到讀完內容（r.json() 卡住也會中斷）；讀完後才觸發的 abort 不影響結果
 function fetchT(u, ms, opt) {
   const ac = new AbortController(), tm = setTimeout(() => ac.abort(), ms);
-  return fetch(u, { ...(opt || {}), signal: ac.signal }).catch(e => { clearTimeout(tm); throw e; });
+  const bp = typeof window !== "undefined" && window.BOOT_PERF && window.BOOT_PERF.realData == null ? window.BOOT_PERF : null;   // v2.49.24 開機計時：只記路徑（不記查詢字串）
+  const t0 = bp ? performance.now() : 0;
+  const rec = ok => { if (bp && bp.requests.length < 40) { let path = ""; try { path = new URL(String(u), location.href).pathname; } catch (e) {} bp.requests.push({ url: path, dur: Math.round(performance.now() - t0), ok }); } };
+  return fetch(u, { ...(opt || {}), signal: ac.signal }).then(r => { rec(r.ok); return r; }, e => { clearTimeout(tm); rec(false); throw e; });
 }
 // v2.49.0 JT-20261030-02：每 10 秒定時更新（auto）期間 AUTO>0（新站補抓 railHeal/exitHeal/busHeal/placeHeal 也略過）：
 // ① tdx() 一律不連網：有上一次同網址的結果就沿用（畫面資料不變），沒有就丟出 notdx 錯誤（各頁原本的「讀取失敗沿用舊資料」接手）
@@ -197,7 +200,8 @@ const isCitybusR = uid => CITYBUS.has((uid || "").slice(0, 3));
 const NEAR_OK = new Set(["TPE", "NWT", "THB"]);
 const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
 async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {}) {
-  const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${Math.min(r + 200, 1000)}`);
+  const qStop = geoKey ? +geoKey.split(",")[2] : Math.min(r + 100, 1000);
+  const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${qStop}`);
   let c = await IDB.get("geo|" + gKey).catch(() => null);
   let covZero = false;
   if (!c || oldCloud(c)) {
@@ -209,7 +213,15 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     }
   }
 
-  const thbData = await odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${Math.min(r + 200, 1000)}`, fresh ? 0 : 6 * 3600000).catch(() => null);
+  // Unified radius for /od/thbstn and parallel query with /od/eta
+  const [thbData, od] = await Promise.all([
+    odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null),
+    Promise.race([
+      odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
+      new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
+    ]).catch(() => null)
+  ]);
+
   const hw = thbData && Array.isArray(thbData.list) ? thbData.list : [];
   const cityStops = c && Array.isArray(c.d) ? c.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
   const nearSt = [...cityStops, ...hw].filter(s => {
@@ -217,18 +229,23 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     return p && p.PositionLat != null && haversine(+lat, +lon, p.PositionLat, p.PositionLon) <= r + 30;
   });
 
-  const od = await Promise.race([
-    odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
-    new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
-  ]).catch(() => null);
+  const stopDistMap = new Map();
+  for (const s of nearSt) {
+    const p = s.StopPosition;
+    if (p && p.PositionLat != null) {
+      stopDistMap.set(s.StopUID, haversine(+lat, +lon, p.PositionLat, p.PositionLon));
+    }
+  }
 
   const liveOk = !!(od && Array.isArray(od.list));
   const okNwt = !!(od && od.nwtOk);
   const okThb = !!(od && (od.thbOk || !(od.thbN > 0)));
   const isCovered = uid => isTpeR(uid) || (okNwt && isNwtR(uid)) || (okThb && isThbR(uid));
-  const coveredRows = liveOk ? od.list.filter(e => isCovered(e.RouteUID)) : [];
+  const rawOdRows = (od && Array.isArray(od.list))
+    ? od.list.filter(e => isCovered(e.RouteUID)).map(e => ({ ...e, src: e.src || od.src || "od-eta" }))
+    : [];
 
-  const coveredStopUIDs = new Set(coveredRows.map(e => e.StopUID).filter(Boolean));
+  const coveredStopUIDs = new Set(rawOdRows.map(e => e.StopUID).filter(Boolean));
   const uncoveredStops = nearSt.filter(s => {
     const pfx = (s.StopUID || "").slice(0, 3);
     if (!liveOk) return true;
@@ -309,21 +326,96 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     }
   }
 
-  const rows = [...coveredRows, ...noLiveRows];
-  rows.liveOk = liveOk;
+  const allRows = [...rawOdRows, ...noLiveRows];
+  allRows.sort((a, b) => (stopDistMap.get(a.StopUID) ?? Infinity) - (stopDistMap.get(b.StopUID) ?? Infinity));
+
+  const hasThb = allRows.some(r => isThbStop(r) || (r.StopUID && r.StopUID.startsWith("THB")));
+  const canLoadMap = typeof window === "undefined" || window.__firstFrameRendered || opt.loadThbMap;
+  if (hasThb && canLoadMap) {
+    await loadPdaThbMap().catch(() => {});
+  }
+
+  const isAuto = !!(opt && opt.auto) || AUTO > 0;
+  const pdaTtl = isAuto ? 20000 : (fresh ? 0 : 20000);
+  const stopDynaCandidates = [];
+
+  for (const r of allRows) {
+    if (stopDynaCandidates.length >= NEAR_STOPDYNA_MAX) break;
+    const pfx = (r.StopUID || "").slice(0, 3);
+    if (pfx === "TPE") {
+      const id = r.StopUID.slice(3);
+      if (/^\d{1,8}$/.test(id)) {
+        stopDynaCandidates.push({ city: "TPE", id, row: r });
+      }
+    } else if (pfx === "NWT") {
+      const id = r.StopUID.slice(3);
+      if (/^\d{1,8}$/.test(id)) {
+        stopDynaCandidates.push({ city: "NWT", id, row: r });
+      }
+    } else if (pfx === "THB") {
+      if (pdaThbMapData && pdaThbMapData.stops && (r.SubRouteUID || r.sub)) {
+        const sub = r.SubRouteUID || r.sub;
+        const dir = r.Direction === 1 ? 1 : 0;
+        const key = `${sub}|${dir}|${r.StopUID}`;
+        const id = pdaThbMapData.stops[key];
+        if (id && /^\d{1,8}$/.test(String(id))) {
+          stopDynaCandidates.push({ city: "THB", id: String(id), row: r, key });
+        }
+      }
+    }
+  }
+
+  if (stopDynaCandidates.length > 0) {
+    const byCity = { TPE: [], NWT: [], THB: [] };
+    for (const c of stopDynaCandidates) byCity[c.city].push(c);
+
+    const pdaResults = await Promise.all(
+      ["TPE", "NWT", "THB"].map(async city => {
+        const cands = byCity[city];
+        if (!cands || !cands.length) return [];
+        const ids = [...new Set(cands.map(c => c.id))];
+        const res = await pdaStopEta(city, ids, pdaTtl).catch(() => null);
+        return (res && Array.isArray(res.list)) ? res.list.map(it => ({ ...it, city })) : [];
+      })
+    );
+
+    const pdaHitMap = new Map();
+    for (const it of pdaResults.flat()) {
+      pdaHitMap.set(`${it.city}|${it.id}`, it);
+    }
+
+    for (const cand of stopDynaCandidates) {
+      const hit = pdaHitMap.get(`${cand.city}|${cand.id}`);
+      if (hit && pdaRouteOk(cand.city, cand.row.RouteUID, hit) && (hit.EstimateTime != null || hit.StopStatus != null || hit.NextBusTime != null)) {
+        const r = cand.row;
+        r.src = "pda-stop";
+        r.EstimateTime = hit.EstimateTime;
+        r.sec = hit.EstimateTime;
+        r.StopStatus = hit.StopStatus;
+        r.status = hit.StopStatus;
+        r.NextBusTime = hit.NextBusTime;
+        r.next = hit.NextBusTime;
+        if (hit.PlateNumb) r.PlateNumb = hit.PlateNumb;
+        r.noLive = false;
+      }
+    }
+  }
+
+  allRows.liveOk = liveOk || stopDynaCandidates.some(c => c.row.src === "pda-stop");
   if (covZero) {
-    rows.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
-  } else if (!liveOk) {
-    rows.noLiveWhy = (!nearSt.length && !coveredRows.length)
+    allRows.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
+  } else if (!allRows.liveOk) {
+    allRows.noLiveWhy = (!nearSt.length && !allRows.length)
       ? "雲端站牌清單和即時資料都讀不到，請稍後下拉更新"
       : "雲端即時資料讀不到";
   } else if (noLiveRows.length) {
-    rows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
+    allRows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
   } else {
-    rows.noLiveWhy = null;
+    allRows.noLiveWhy = null;
   }
-  await fillOfficialEta(rows, { lat, lon, nearSt, fresh, auto: (opt && opt.auto) || AUTO > 0 }).catch(() => {});
-  return rows;
+
+  await fillOfficialEta(allRows, { lat, lon, nearSt, fresh, auto: (opt && opt.auto) || AUTO > 0 }).catch(() => {});
+  return allRows;
 }
 // v2.37.0：自動更新（打開 app、停留 2 秒）時，新北路線也用新北開放資料，不問 TDX；下拉／重新整理（fresh）照舊。
 // 只有這一格存過站牌清單時才走這條（看得出附近有沒有基隆、公路客運等其他站牌）；讀不到就回 null 照舊。
@@ -345,6 +437,66 @@ function cloudStops(geoKey) {
   })();
   cloudJobs.set(geoKey, job); job.then(v => { if (!v) cloudJobs.delete(geoKey); }, () => cloudJobs.delete(geoKey));
   return job;
+}
+const NEAR_STOPDYNA_MAX = 40;
+// Opus：雙北的 StopDyna 回的路線編號要和這一列的路線一致（雲端 RouteUID＝前綴＋pda 路線編號）；公路客運用對照表，不比
+const pdaRouteOk = (city, routeUID, hit) => city === "THB" || !hit || !hit.pdaRoute || !routeUID || String(routeUID).slice(3) === String(hit.pdaRoute);
+let pdaThbMapData = null;
+let pdaThbMapPromise = null;
+
+async function loadPdaThbMap() {
+  if (pdaThbMapData) return pdaThbMapData;
+  if (!pdaThbMapPromise) {
+    pdaThbMapPromise = (async () => {
+      try {
+        const res = await fetch("./data/pda-thb-map.json");
+        if (!res.ok) return null;
+        pdaThbMapData = await res.json();
+        return pdaThbMapData;
+      } catch (e) {
+        return null;
+      } finally {
+        pdaThbMapPromise = null;
+      }
+    })();
+  }
+  return pdaThbMapPromise;
+}
+
+async function pdaStopEta(city, stopIds, ttl = 20000) {
+  if (!stopIds || !stopIds.length) return { src: "pda-stop", list: [] };
+  const c = (city || "").toUpperCase();
+  if (c !== "TPE" && c !== "NWT" && c !== "THB") return { src: "pda-stop", list: [] };
+  const validIds = [...new Set(stopIds.map(x => String(x).trim()))].filter(x => /^\d{1,8}$/.test(x));
+  if (!validIds.length) return { src: "pda-stop", list: [] };
+
+  const batches = [];
+  for (let i = 0; i < validIds.length; i += 8) {
+    batches.push(validIds.slice(i, i + 8));
+  }
+
+  const results = await Promise.all(batches.map(async batch => {
+    try {
+      const j = await odMemoGet(`/pda/stops?c=${c}&ids=${batch.join(",")}`, ttl);
+      return (j && Array.isArray(j.list)) ? j.list : [];
+    } catch (e) {
+      return [];
+    }
+  }));
+  return { src: "pda-stop", list: results.flat() };
+}
+
+async function pdaRouteEta(routeUID, ttl = 20000) {
+  const p = (routeUID || "").slice(0, 3);
+  if (p !== "TPE" && p !== "NWT") return null;
+  const rid = (routeUID || "").slice(3);
+  if (!/^\d{1,8}$/.test(rid)) return null;
+  try {
+    const j = await odMemoGet(`/pda/route?c=${p}&rid=${rid}`, ttl);
+    return j && Array.isArray(j.list) && j.list.length ? j : null;
+  } catch (e) {
+    return null;
+  }
 }
 // 單一路線的預估到站（＋公車位置）：TPE 用開放資料；NWT 先用 ebus 再用開放資料；讀不到或對不到就回 null，呼叫端照舊用 TDX
 async function odRouteEta(routeUID, near, routeName, ttl = 15000) {
@@ -980,6 +1132,12 @@ async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站�
     const official = await kinbusRouteEta(b.routeUID, b.route, sor);
     if (official) return official.list;
   }
+  if (isTpeR(b.routeUID) || isNwtR(b.routeUID)) {
+    const pda = await pdaRouteEta(b.routeUID, 20000);
+    if (pda && pda.list) return pda.list;
+    const j = await odRouteEta(b.routeUID, false, b.route);
+    return j && j.list ? j.list : [];
+  }
   const j = await odRouteEta(b.routeUID, false, b.route); if (j) return j.list;
   return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}?%24filter=${enc(`RouteUID eq '${b.routeUID}'`)}&%24top=600&%24format=JSON`);   // v2.46.3：用 RouteUID 過濾（高雄等路線名稱當路徑會回空）
 }
@@ -1019,17 +1177,22 @@ function applyOfficialHit(r, hit, src) {
 async function fetchOfficialRoute(routeUID, name, items = [], sor = null, fresh = false) {
   const ttl = fresh ? 0 : 15000;
   let res = null;
-  if (isTpeR(routeUID)) {
-    res = await odRouteEta(routeUID, true, name, ttl);
-    if (res) res.src = res.src || "od";
-  } else if (isNwtR(routeUID)) {
-    if (name) {
-      try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, ttl, 17000); } catch (e) {}
+  if (isTpeR(routeUID) || isNwtR(routeUID)) {
+    res = await pdaRouteEta(routeUID, fresh ? 0 : 20000);
+    if (res) {
+      res.src = res.src || "pda";
+    } else if (isTpeR(routeUID)) {
+      res = await odRouteEta(routeUID, true, name, ttl);
+      if (res) res.src = res.src || "od";
+    } else if (isNwtR(routeUID)) {
+      if (name) {
+        try { res = await odMemoGet(`/ebus?route=${routeUID}&name=${encodeURIComponent(name)}`, ttl, 17000); } catch (e) {}
+      }
+      if (!res || !Array.isArray(res.list) || !res.list.length) {
+        try { res = await odGet(`/od/eta?route=${routeUID}&nwt=1`); } catch (e) {}
+      }
+      if (res) res.src = res.src || "ebus";
     }
-    if (!res || !Array.isArray(res.list) || !res.list.length) {
-      try { res = await odGet(`/od/eta?route=${routeUID}&nwt=1`); } catch (e) {}
-    }
-    if (res) res.src = res.src || "ebus";
   } else if (isTaoR(routeUID)) {
     res = await taoRouteEta(routeUID, ttl);
     if (res) res.src = res.src || "tyebus";
@@ -1044,7 +1207,10 @@ async function fetchOfficialRoute(routeUID, name, items = [], sor = null, fresh 
     if (isThbR(routeUID)) {
       const dirNum = items[0] ? dirOf(items[0]) : 0;
       const rows = (sor || []).filter(x => x.RouteUID === routeUID && (items.length === 0 || items.some(r => (x.Direction === 1 ? 1 : 0) === dirOf(r) && (x.Stops || []).some(s => s.StopUID === stopOf(r)))));
-      const subs = thbSubs(routeUID, dirNum, rows.length ? rows : (sor || []));
+      let subs = thbSubs(routeUID, dirNum, rows.length ? rows : (sor || []));
+      if (!subs.length && items.length) {
+        subs = [...new Set(items.map(r => r.SubRouteUID || r.sub).filter(Boolean))];
+      }
       if (subs.length) {
         try { res = await odMemoGet(`/thb?sub=${subs.join(",")}&route=${routeUID}`, ttl); } catch (e) {}
       }
@@ -1150,6 +1316,87 @@ async function refreshNwtRoutes(routes, opt = {}) {
   const now = Date.now();
   const isAuto = !!opt.auto || AUTO > 0;
   const isFresh = !!opt.fresh;
+
+  // 雙北站牌到站優先來源：pda5284 StopDyna
+  const pdaItemsByCity = { TPE: [], NWT: [], THB: [] };
+  const pdaItemMap = new Map();
+
+  for (const r of list) {
+    const u = uidOf(r);
+    const s = stopOf(r);
+    const d = dirOf(r);
+    if (isTpeR(u) || (s && s.startsWith("TPE"))) {
+      const id = s ? s.slice(3) : "";
+      if (/^\d{1,8}$/.test(id)) {
+        pdaItemsByCity.TPE.push(id);
+        if (!pdaItemMap.has(`TPE|${id}`)) pdaItemMap.set(`TPE|${id}`, []);
+        pdaItemMap.get(`TPE|${id}`).push(r);
+      }
+    } else if (isNwtR(u) || (s && s.startsWith("NWT"))) {
+      const id = s ? s.slice(3) : "";
+      if (/^\d{1,8}$/.test(id)) {
+        pdaItemsByCity.NWT.push(id);
+        if (!pdaItemMap.has(`NWT|${id}`)) pdaItemMap.set(`NWT|${id}`, []);
+        pdaItemMap.get(`NWT|${id}`).push(r);
+      }
+    } else if (isThbR(u) || (s && s.startsWith("THB"))) {
+      if (pdaThbMapData && pdaThbMapData.stops) {
+        const sub = r.SubRouteUID || (r.sub) || "";
+        const key = `${sub}|${d === 1 ? 1 : 0}|${s}`;
+        const id = pdaThbMapData.stops[key];
+        if (id && /^\d{1,8}$/.test(String(id))) {
+          pdaItemsByCity.THB.push(String(id));
+          if (!pdaItemMap.has(`THB|${id}`)) pdaItemMap.set(`THB|${id}`, []);
+          pdaItemMap.get(`THB|${id}`).push(r);
+        }
+      }
+    }
+  }
+
+  const pdaHandled = new Set();
+  const totalPda = pdaItemsByCity.TPE.length + pdaItemsByCity.NWT.length + pdaItemsByCity.THB.length;
+  if (totalPda > 0) {
+    const ttl = isFresh ? 0 : 20000;
+    const pdaResults = await Promise.all(
+      ["TPE", "NWT", "THB"].map(async city => {
+        const ids = [...new Set(pdaItemsByCity[city])];
+        if (!ids.length) return [];
+        const res = await pdaStopEta(city, ids, ttl).catch(() => null);
+        return (res && Array.isArray(res.list)) ? res.list.map(it => ({ ...it, city })) : [];
+      })
+    );
+
+    for (const item of pdaResults.flat()) {
+      const rows = pdaItemMap.get(`${item.city}|${item.id}`) || [];
+      for (const r of rows) {
+        if (!pdaRouteOk(item.city, uidOf(r), item)) continue;
+        r.src = "pda-stop";
+        if (item.EstimateTime != null || item.StopStatus != null || item.NextBusTime != null) {
+          r.EstimateTime = item.EstimateTime;
+          r.sec = item.EstimateTime;
+          r.StopStatus = item.StopStatus;
+          r.status = item.StopStatus;
+          r.NextBusTime = item.NextBusTime;
+          r.next = item.NextBusTime;
+          if (item.PlateNumb) r.PlateNumb = item.PlateNumb;
+          r.noLive = false;
+        } else {
+          r.EstimateTime = null;
+          r.sec = null;
+          r.status = null;
+          r.StopStatus = null;
+          r.noLive = true;
+        }
+        pdaHandled.add(r);
+      }
+    }
+  }
+
+  // 對於已由 StopDyna 取得之項目，不需再打路線官方來源
+  for (const [routeUID, val] of byRoute) {
+    val.items = val.items.filter(r => !pdaHandled.has(r));
+    if (!val.items.length) byRoute.delete(routeUID);
+  }
 
   await Promise.all([...byRoute.entries()].map(async ([routeUID, { name, items }]) => {
     let res = null;
@@ -1580,17 +1827,143 @@ function getPos(high, timeout) {   // v2.37.2：iOS 有時不理 timeout、永�
       { enableHighAccuracy: high, timeout, maximumAge: high ? 10000 : 30000 });
   });
 }
-async function locate() {
-  if (!navigator.geolocation) { if (lastLoc) return lastLoc; throw new Error("這個瀏覽器不支援定位"); }
+let locBootDone = false;   // Opus：快速定位（上次位置、低精度）只用在開 app 後的第一次；之後的定時、手動更新照 v2.49.22 等精確定位，走路時位置才不會停住
+async function locateSlow() {
   let p;
-  try { p = await getPos(true, 7000); }                 // 先用 GPS 精確定位
+  try { p = await getPos(true, 7000); }
   catch (e) {
     if (e && e.code === 1) { if (lastLoc) return lastLoc; throw new Error("沒有定位權限：到 iPhone 設定 › 隱私權與安全性 › 定位服務 › Safari 網站，改成「使用 App 期間」並開啟「精確位置」"); }
-    try { p = await getPos(false, 10000); }              // 室內收不到 GPS 時退回快速定位
+    try { p = await getPos(false, 10000); }
     catch (e2) { if (lastLoc) return lastLoc; throw new Error("無法取得定位，請稍後再試"); }
   }
   lastLoc = { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: Math.round(p.coords.accuracy || 0), t: p.timestamp || Date.now() };
+  try { localStorage.setItem("jisu_last_loc", JSON.stringify(lastLoc)); } catch (e) {}
   return lastLoc;
+}
+async function locate(fresh = false) {
+  if (!navigator.geolocation) { if (lastLoc) return lastLoc; throw new Error("這個瀏覽器不支援定位"); }
+  if (locBootDone) return locateSlow();
+  locBootDone = true;
+
+  // 1. 先看 localStorage 裡上次的位置（2 分鐘內直接用）
+  if (!fresh) {
+    try {
+      const raw = localStorage.getItem("jisu_last_loc");
+      if (raw) {
+        const saved = JSON.parse(raw);
+        const isStaleMock = typeof window !== "undefined" && window.mockLoc &&
+          (Math.abs(saved.latitude - window.mockLoc.latitude) > 0.001 || Math.abs(saved.longitude - window.mockLoc.longitude) > 0.001);
+        if (!isStaleMock && saved && saved.t && Date.now() - saved.t <= 120000 && Number.isFinite(saved.latitude) && Number.isFinite(saved.longitude)) {
+          lastLoc = saved;
+          if (typeof window !== "undefined" && window.BOOT_PERF) {
+            window.BOOT_PERF.locType = "cache";
+          }
+          return lastLoc;
+        }
+      }
+    } catch (e) {}
+  }
+
+  const tStart = performance.now();
+
+  // 2. 低精度定位（enableHighAccuracy:false、maximumAge:120000、逾時約 1.5 秒）
+  const lowPromise = new Promise((res, rej) => {
+    let done = false;
+    const tm = setTimeout(() => { if (!done) { done = true; rej(new Error("low-loc-timeout")); } }, 1500);
+    navigator.geolocation.getCurrentPosition(
+      p => {
+        if (!done) {
+          done = true;
+          clearTimeout(tm);
+          const dur = performance.now() - tStart;
+          if (typeof window !== "undefined" && window.BOOT_PERF) window.BOOT_PERF.locLow = Math.round(dur);
+          res({
+            latitude: p.coords.latitude,
+            longitude: p.coords.longitude,
+            accuracy: Math.round(p.coords.accuracy || 0),
+            t: p.timestamp || Date.now()
+          });
+        }
+      },
+      e => {
+        if (!done) {
+          done = true;
+          clearTimeout(tm);
+          rej(e);
+        }
+      },
+      { enableHighAccuracy: false, timeout: 1500, maximumAge: 120000 }
+    );
+  });
+
+  // 3. 高精度定位同時進行，逾時縮短到約 3 秒
+  const highPromise = new Promise((res, rej) => {
+    let done = false;
+    const tm = setTimeout(() => { if (!done) { done = true; rej(new Error("high-loc-timeout")); } }, 3000);
+    navigator.geolocation.getCurrentPosition(
+      p => {
+        if (!done) {
+          done = true;
+          clearTimeout(tm);
+          const dur = performance.now() - tStart;
+          if (typeof window !== "undefined" && window.BOOT_PERF) window.BOOT_PERF.locHigh = Math.round(dur);
+          res({
+            latitude: p.coords.latitude,
+            longitude: p.coords.longitude,
+            accuracy: Math.round(p.coords.accuracy || 0),
+            t: p.timestamp || Date.now()
+          });
+        }
+      },
+      e => {
+        if (!done) {
+          done = true;
+          clearTimeout(tm);
+          rej(e);
+        }
+      },
+      { enableHighAccuracy: true, timeout: 3000, maximumAge: 10000 }
+    );
+  });
+
+  // 高精度定位拿到了如果離剛剛查的位置超過 100 公尺（換了格子），再查一次附近
+  let usedLoc = null;   // Opus：和這次真的拿去查附近的位置比，不和更早的 lastLoc 比
+  highPromise.then(highLoc => {
+    if (highLoc && Number.isFinite(highLoc.latitude) && Number.isFinite(highLoc.longitude)) {
+      try { localStorage.setItem("jisu_last_loc", JSON.stringify(highLoc)); } catch (e) {}
+      if (usedLoc && usedLoc !== highLoc) {
+        const moved = haversine(usedLoc.latitude, usedLoc.longitude, highLoc.latitude, highLoc.longitude);
+        if (moved > 100) {
+          lastLoc = highLoc;
+          if (typeof window !== "undefined" && typeof window.refresh === "function") {
+            window.refresh();
+          }
+        }
+      }
+      lastLoc = highLoc;
+    }
+  }).catch(() => {});
+
+  try {
+    const loc = await Promise.race([lowPromise, highPromise]);
+    lastLoc = usedLoc = loc;
+    try { localStorage.setItem("jisu_last_loc", JSON.stringify(lastLoc)); } catch (e) {}
+    return lastLoc;
+  } catch (e1) {
+    if (e1 && e1.code === 1) {
+      if (lastLoc) return lastLoc;
+      throw new Error("沒有定位權限：到 iPhone 設定 › 隱私權與安全性 › 定位服務 › Safari 網站，改成「使用 App 期間」並開啟「精確位置」");
+    }
+    try {
+      const loc = await highPromise;
+      lastLoc = loc;
+      try { localStorage.setItem("jisu_last_loc", JSON.stringify(lastLoc)); } catch (e) {}
+      return lastLoc;
+    } catch (e2) {
+      if (lastLoc) return lastLoc;
+      throw new Error("無法取得定位，請稍後再試");
+    }
+  }
 }
 // v2.33.0：路線規劃的「目前位置」（首頁附近資料的定位照舊用 locate()）：2分鐘內、誤差100公尺以內的位置直接用；
 // 沒有就先試快速定位（可用2分鐘內的系統定位），夠準就用；不夠準或失敗才照 locate() 等 GPS 精確定位
@@ -1748,6 +2121,7 @@ const IDB = (() => {
   };
 })();
 IDB.open();
+if (typeof window !== "undefined") window.IDB = IDB;
 const stopPack = s => [s.StopUID || "", (s.StopName && s.StopName.Zh_tw) || "", s.StopPosition ? s.StopPosition.PositionLat : null, s.StopPosition ? s.StopPosition.PositionLon : null, s.StationID || "", s.Bearing || ""];
 const stopUnpack = a => ({ StopUID: a[0] || null, StopName: { Zh_tw: a[1] }, StopPosition: a[2] == null ? null : { PositionLat: a[2], PositionLon: a[3] }, StationID: a[4] || null, Bearing: a[5] || null });
 const bikePack = s => [s.StationUID, (s.StationName && s.StationName.Zh_tw) || "", (s.StationAddress && s.StationAddress.Zh_tw) || "", s.BikesCapacity ?? null, s.ServiceType ?? null, s.StationPosition ? s.StationPosition.PositionLat : null, s.StationPosition ? s.StationPosition.PositionLon : null];
@@ -1779,7 +2153,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const doBus = !only || only === "bus", doBike = !only || only === "bike", doRail = !only || only === "rail";
   const SKIP = Promise.reject(new Error("skip")); SKIP.catch(() => {});
   if (!only || only !== "rail") odWarm(only === "bike" ? "ybTPE,ybNWT" : only === "bus" ? (fresh ? "eta" : "eta,nwt") : (fresh ? "eta,ybTPE,ybNWT" : null));   // v2.36.3：定位的同時請 Worker 先抓開放資料
-  const loc = await locate();
+  const loc = await locate(fresh);
   // 查詢座標取到小數第3位（約100公尺格子），半徑多加100公尺補足，之後再用實際位置過濾 → 同一格的請求可共用快取
   const lat = loc.latitude.toFixed(3), lon = loc.longitude.toFixed(3);
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
@@ -1925,7 +2299,9 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       if (cached) sor[uid] = cached;
       else wantSor.push(uid);
     }
-    if (wantSor.length) {
+    const isFirstBoot = typeof window !== "undefined" && !window.__firstFrameRendered;
+
+    if (!isFirstBoot && wantSor.length) {
       const got = await cloudSor(wantSor).catch(() => ({}));
       for (const [uid, rows] of Object.entries(got)) { sor[uid] = rows; sorMem.set("uid|" + uid, rows); }
     }
@@ -1960,13 +2336,39 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
       if (row.r.routeUID && row.uid) need.push({ routeUID: row.r.routeUID, route: row.r.route, dirNum: row.r.dirNum, stopUID: row.uid, lat: row.pos ? row.pos.lat : null, lon: row.pos ? row.pos.lon : null });
     }
     let heads = {}, destHeads = {}, destMap = {};
-    const [hR, dR] = await Promise.all([
-      need.length ? loadTravelHead(need).catch(() => ({})) : {},
-      loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
-    ]);
-    heads = (hR && hR.heads) || hR || {};
-    destHeads = (hR && hR.dests) || {};
-    destMap = dR || {};
+    if (!isFirstBoot) {
+      const [hR, dR] = await Promise.all([
+        need.length ? loadTravelHead(need).catch(() => ({})) : {},
+        loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
+      ]);
+      heads = (hR && hR.heads) || hR || {};
+      destHeads = (hR && hR.dests) || {};
+      destMap = dR || {};
+    } else {
+      setTimeout(async () => {
+        try {
+          if (wantSor.length) {
+            const got = await cloudSor(wantSor).catch(() => ({}));
+            for (const [uid, rows] of Object.entries(got)) { sor[uid] = rows; sorMem.set("uid|" + uid, rows); }
+          }
+          const [hR, dR] = await Promise.all([
+            need.length ? loadTravelHead(need).catch(() => ({})) : {},
+            loadRouteDest("main", raw.map(row => row.r.routeUID)).catch(() => ({})),
+          ]);
+          const newDestMap = dR || {};
+          if (typeof window !== "undefined" && window.S && window.S.data && window.S.data.busStops) {
+            for (const card of window.S.data.busStops) {
+              for (const route of card.routes || []) {
+                if (newDestMap[route.routeUID]) {
+                  route.dest = destOf(route.routeUID, route.dirNum, newDestMap);
+                }
+              }
+            }
+            if (typeof window.render === "function") window.render();
+          }
+        } catch (e) {}
+      }, 0);
+    }
     const list = [], cardsOf = {};
     for (const [name, ps] of Object.entries(polesOf)) {
       const poles = [...ps.values()];
@@ -2219,11 +2621,22 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     return d;
   };
   let sor = sc ? sc.d : await sorCloud().then(d => d || []);
-  const odR = isTaoR(routeUID) ? await taoRouteEta(routeUID) : isThbR(routeUID) ? await thbRouteEta(routeUID, dirNum, sor) : isCitybusR(routeUID) ? await citybusRouteEta(routeUID, route, sor) : isHszR(routeUID) ? await hszRouteEta(routeUID, route, sor) : isTxgR(routeUID) ? await tcgoRouteEta(routeUID, route, sor) : isTnnR(routeUID) ? await tnbusRouteEta(routeUID, route, sor) : isKhhR(routeUID) ? await twhRouteEta(routeUID, route, sor) : isKinR(routeUID) ? await kinbusRouteEta(routeUID, route, sor) : await odRouteEta(routeUID, true, route);
-  const [etas, near] = await Promise.all([
-    odR ? odR.list : rvTdx(routeUID, u("EstimatedTimeOfArrival")),
-    odR ? (Array.isArray(odR.near) ? odR.near : []) : rvTdx(routeUID, u("RealTimeNearStop")).catch(() => []),
-  ]);
+  let odR = null;
+  const isNorth = isTpeR(routeUID) || isNwtR(routeUID);
+  if (isNorth) {
+    odR = await pdaRouteEta(routeUID, 20000);
+    if (!odR) {
+      odR = await odRouteEta(routeUID, true, route);
+    }
+  } else {
+    odR = isTaoR(routeUID) ? await taoRouteEta(routeUID) : isThbR(routeUID) ? await thbRouteEta(routeUID, dirNum, sor) : isCitybusR(routeUID) ? await citybusRouteEta(routeUID, route, sor) : isHszR(routeUID) ? await hszRouteEta(routeUID, route, sor) : isTxgR(routeUID) ? await tcgoRouteEta(routeUID, route, sor) : isTnnR(routeUID) ? await tnbusRouteEta(routeUID, route, sor) : isKhhR(routeUID) ? await twhRouteEta(routeUID, route, sor) : isKinR(routeUID) ? await kinbusRouteEta(routeUID, route, sor) : await odRouteEta(routeUID, true, route);
+  }
+  const [etas, near] = isNorth
+    ? [odR ? (odR.list || []) : [], odR ? (Array.isArray(odR.near) ? odR.near : []) : []]
+    : await Promise.all([
+        odR ? odR.list : rvTdx(routeUID, u("EstimatedTimeOfArrival")),
+        odR ? (Array.isArray(odR.near) ? odR.near : []) : rvTdx(routeUID, u("RealTimeNearStop")).catch(() => []),
+      ]);
   try { reportSor(routeUID, sor, etas); } catch (e) {}
   if (sc) {
     let have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
@@ -2254,10 +2667,11 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     if (!c || (sec !== null && (c.sec === null || sec < c.sec))) em[t.StopUID] = { sec, status: t.StopStatus ?? 0, next: t.NextBusTime || null };
   }
   const busAt = {}, busSub = {};
+  const routeStopSet = new Set(stops.map(s => s.StopUID));
   for (const b of near) {
     if (b.RouteUID && b.RouteUID !== routeUID) continue;
-    if ((b.Direction === 1 ? 1 : 0) !== dirNum) continue;
-    if (b.StopUID) busAt[b.StopUID] = b.PlateNumb || true;
+    if (b.Direction != null && (b.Direction === 1 ? 1 : 0) !== dirNum) continue;
+    if (b.StopUID && routeStopSet.has(b.StopUID)) busAt[b.StopUID] = b.PlateNumb || true;
   }
   // 官網來源沒有車輛位置：每個車牌只標在它最快會到的那一站（同秒數取站序最前），不要整排都畫公車
   if (!near.length) {
@@ -2279,9 +2693,10 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     dest: oneWayDest({ 0: destOf(routeUID, 0, destMap), 1: destOf(routeUID, 1, destMap) }, dirs, dirNum, stops),
     stops: stops.map(s => {
       const nm = (s.StopName && s.StopName.Zh_tw) || "?";
-      const e = em[s.StopUID] || { sec: null, status: null };
+      const e = em[s.StopUID] || { sec: null, status: null, noLive: isNorth ? !odR : !etas.length };
       return {
         seq: s.StopSequence, name: nm, uid: s.StopUID, ...e,
+        noLive: e.noLive ?? (isNorth ? !odR : !etas.length),
         bus: !!busAt[s.StopUID], plate: typeof busAt[s.StopUID] === "string" ? busAt[s.StopUID] : null, sub: busSub[s.StopUID] || null,
         here: (stopUID && s.StopUID === stopUID) || (!!stopName && nm === stopName),
       };
@@ -5585,7 +6000,7 @@ async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
   for (const it of eta) {
     if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
     const dirNum = it.Direction === 1 ? 1 : 0, sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
-    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null, noLive: !!it.noLive, noRoutes: !!it.noRoutes };
+    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null, noLive: !!it.noLive, noRoutes: !!it.noRoutes, src: it.src || "pda-stop" };
     const k = `${x.routeUID}|${dirNum}|${x.stopUID || ""}`, old = routes[k];
     if (!old || (sec !== null && (old.sec === null || sec < old.sec))) routes[k] = x;
   }
@@ -7190,6 +7605,7 @@ window.dataApi = async (action, p = {}) => {
 const dataApi0 = async (action, p = {}) => {
   switch (action) {
     case "nearby": return nearby(p);
+    case "busNearEta": return busNearEta(p.lat, p.lon, p.r, p.profile || "main", p.tdxUrl, p.geoKey, p.fresh, p.opt || p);
     case "route": return routeView(p);
     case "schedule": return busSchedule(p || {});
     case "schStatus": return authedGet("/bus/sch/meta");
@@ -7258,6 +7674,8 @@ const dataApi0 = async (action, p = {}) => {
     case "locate": return locate();
     case "placeIndex": return placeIndex(p || {});
     case "stopAt": return stopAt(p || {});
+    case "pdaStopEta": return pdaStopEta(p && p.city, p && (p.ids || p.stopIds), p && p.ttl);
+    case "loadPdaThbMap": return loadPdaThbMap();
     case "refreshNwtRoutes": return refreshNwtRoutes(p.routes || [], p.opt || {});
     case "fillOfficialEta": return fillOfficialEta(p.rows || [], p.opt || {});
     case "bikeAt": return bikeAt(p || {});

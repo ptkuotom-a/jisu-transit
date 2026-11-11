@@ -730,7 +730,7 @@ function pupd(at, err) { const t = updTxt(at, err); return t ? `<div class="pupd
 function renderStatus() {
   const st = $('#status'), pe = !S.error && S.partErr[TAB_PART[S.tab]];
   st.className = 'live' + (S.error || pe ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  st.innerHTML = '<i></i>' + (S.snapshotTag ? esc(S.snapshotTag) : S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -739,6 +739,9 @@ function render() {
   renderChrome();
   const v = viewOf(S.tab);
   $('#main').innerHTML = v();
+  if (S.snapshotTag) {
+    $('#main').insertAdjacentHTML('afterbegin', `<div class="snapshot-banner" style="margin:10px 16px 4px;padding:8px 14px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:10px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;"><span style="font-size:15px;">⏱</span><span>${esc(S.snapshotTag)}</span></div>`);
+  }
   mountMap();
   COMPASS.sync();
   if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
@@ -1588,6 +1591,22 @@ function vSettings() {
   <div class="sgf">iPhone 需 iOS 16.4 以上，並從主畫面圖示開啟。${perm === 'denied' ? '已拒絕的話，到 iPhone 設定 › 通知 › 極速通勤 開啟。' : ''}<span class="kmsg" id="pushMsg"></span></div>
   ${!DEMO && S.auth ? `<div class="sgh">捷徑</div><div class="sg"><button class="row" data-act="openSiri"><span class="t">Siri 捷徑<small>說「嘿 Siri，最近車站」，推播最近車站的下一班</small></span><span class="chev">${I.chev}</span></button></div>` : ''}
   ${vAccount()}
+  ${(() => {
+    let bp = null;
+    try { bp = JSON.parse(localStorage.getItem('jisu_boot_perf') || 'null'); } catch (e) {}
+    return `<div class="sgh">開機計時</div>
+  <div class="sg">
+    <div class="row"><span class="t">定位（低精度）</span><span class="v">${bp?.locLow != null ? bp.locLow + ' ms' : '—'}</span></div>
+    <div class="row"><span class="t">定位（高精度）</span><span class="v">${bp?.locHigh != null ? bp.locHigh + ' ms' : '—'}</span></div>
+    <div class="row"><span class="t">首次出現畫面</span><span class="v">${bp?.firstRender ? ((bp.firstRender.type === 'snapshot' ? '快照 ' : '真資料 ') + bp.firstRender.dur + ' ms') : '—'}</span></div>
+    <div class="row"><span class="t">真資料出現</span><span class="v">${bp?.realData != null ? bp.realData + ' ms' : '—'}</span></div>
+    <details class="sgd"><summary class="row"><span class="t">請求耗時清單</span><span class="chev">${I.chev}</span></summary>
+      <div class="set" style="padding: 8px 12px; font-size: 13px;">
+        ${(bp?.requests || []).map(r => `<div style="display:flex;justify-content:space-between;padding:4px 0;"><span style="color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;">${esc(r.url)}</span><span style="font-weight:600;">${r.dur} ms</span></div>`).join('') || '<div style="color:#888;">無請求記錄</div>'}
+      </div>
+    </details>
+  </div>`;
+  })()}
   <div class="sgh">關於</div>
   <div class="sg">
     <div class="row"><span class="t">版本</span><span class="v">${esc(S.version || '—')}</span></div>
@@ -3792,13 +3811,25 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
     return () => k.forEach(x => { S[x] = at[x]; }); };
   try {
     // v2.36.3：YouBike 比較慢時先顯示公車、軌道（onEarly），YouBike 好了再補上；沿用上一次的 YouBike 直到新的回來
-    const onEarly = part ? null : e => { if (tok !== S.refTok) return; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
+    const onEarly = part ? null : e => { if (tok !== S.refTok) return; if (S.snapshotTag) S.snapshotTag = null; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
       const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
     const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, auto:!!auto, onEarly });
     if (tok !== S.refTok) return;   // 被手動更新取代
     const now = Date.now();
-    if (!part) { const back = keepOld(d); S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; back(); }
+    if (!part) {
+      S.snapshotTag = null;
+      const back = keepOld(d); S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; back();
+      IDB.set(DEMO ? 'home|last|demo' : 'home|last', { t: now, loc: { lat: d.lat, lon: d.lon }, data: d }).catch(() => {});   // Opus：示範模式的快照分開存，不會在真實模式出現
+      if (window.BOOT_PERF && window.BOOT_PERF.realData == null) {   // Opus：只記開機那一次，之後的定時更新不覆蓋
+        if (!window.__firstFrameRendered) {
+          window.__firstFrameRendered = true;
+          window.BOOT_PERF.firstRender = { type: 'real', dur: Math.round(performance.now() - (window.__bootT0 || 0)) };
+        }
+        window.BOOT_PERF.realData = Math.round(performance.now() - (window.__bootT0 || 0));
+        try { localStorage.setItem('jisu_boot_perf', JSON.stringify(window.BOOT_PERF)); } catch (e) {}
+      }
+    }
     else {
       const D = S.data; D.lat = d.lat; D.lon = d.lon; D.accuracy = d.accuracy; S.partErr[part] = null;
       if (part === 'bus') { D.busStops = d.busStops; D.busError = null; D.favs = { ...D.favs, bus:d.favs.bus }; S.busAt = now; }
@@ -4492,8 +4523,26 @@ async function stationLink(ref) {
   catch (e) { toast('車站資料讀取失敗：' + e.message); }
 }
 async function boot() {
+  window.__bootT0 = performance.now();
+  window.BOOT_PERF = { locLow: null, locHigh: null, locType: null, requests: [], firstRender: null, realData: null };
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
-  render();
+
+  // v2.49.24: 開啟時先嘗試讀取首頁快照 (IndexedDB home|last，30分鐘內)
+  try {
+    const snap = await IDB.get(DEMO ? 'home|last|demo' : 'home|last').catch(() => null);
+    const now = Date.now();
+    if (snap && snap.t && (now - snap.t <= 30 * 60 * 1000) && snap.data) {
+      const mins = Math.max(1, Math.round((now - snap.t) / 60000));
+      S.data = snap.data;
+      S.snapshotTag = `${mins} 分鐘前的資料`;
+      render();
+      window.__firstFrameRendered = true;
+      window.BOOT_PERF.firstRender = { type: 'snapshot', dur: Math.round(performance.now() - window.__bootT0) };
+      try { localStorage.setItem('jisu_boot_perf', JSON.stringify(window.BOOT_PERF)); } catch (e) {}
+    }
+  } catch (e) {}
+
+  if (!S.data) render();
   try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); for (const k of ['railFarTra','railFarThsr']) if (S.settings[k] == null) S.settings[k] = S.settings.railFar === 0 ? 0 : 1; S.settings.auto = 10;   // v2.29.0：舊的單一開關拆成台鐵、高鐵兩個
   if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
