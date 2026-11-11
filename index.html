@@ -730,7 +730,8 @@ function pupd(at, err) { const t = updTxt(at, err); return t ? `<div class="pupd
 function renderStatus() {
   const st = $('#status'), pe = !S.error && S.partErr[TAB_PART[S.tab]];
   st.className = 'live' + (S.error || pe ? ' err' : '');
-  st.innerHTML = '<i></i>' + (S.snapshotTag ? esc(S.snapshotTag) : S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  const snapTxt = S.snapshotAt ? (Math.max(1, Math.round((Date.now() - S.snapshotAt) / 60000)) + ' 分鐘前的資料') : S.snapshotTag;
+  st.innerHTML = '<i></i>' + (S.snapshotTag ? esc(snapTxt) : S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
@@ -739,9 +740,6 @@ function render() {
   renderChrome();
   const v = viewOf(S.tab);
   $('#main').innerHTML = v();
-  if (S.snapshotTag) {
-    $('#main').insertAdjacentHTML('afterbegin', `<div class="snapshot-banner" style="margin:10px 16px 4px;padding:8px 14px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:10px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;"><span style="font-size:15px;">⏱</span><span>${esc(S.snapshotTag)}</span></div>`);
-  }
   mountMap();
   COMPASS.sync();
   if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
@@ -3811,14 +3809,14 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
     return () => k.forEach(x => { S[x] = at[x]; }); };
   try {
     // v2.36.3：YouBike 比較慢時先顯示公車、軌道（onEarly），YouBike 好了再補上；沿用上一次的 YouBike 直到新的回來
-    const onEarly = part ? null : e => { if (tok !== S.refTok) return; if (S.snapshotTag) S.snapshotTag = null; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
+    const onEarly = part ? null : e => { if (tok !== S.refTok) return; S.snapshotTag = null; S.snapshotAt = null; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
       const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
     const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, auto:!!auto, onEarly });
     if (tok !== S.refTok) return;   // 被手動更新取代
     const now = Date.now();
     if (!part) {
-      S.snapshotTag = null;
+      S.snapshotTag = null; S.snapshotAt = null;
       const back = keepOld(d); S.data = d; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.bikeAt = S.railNearAt = now; back();
       IDB.set(DEMO ? 'home|last|demo' : 'home|last', { t: now, loc: { lat: d.lat, lon: d.lon }, data: d }).catch(() => {});   // Opus：示範模式的快照分開存，不會在真實模式出現
       if (window.BOOT_PERF && window.BOOT_PERF.realData == null) {   // Opus：只記開機那一次，之後的定時更新不覆蓋
@@ -3831,12 +3829,13 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
       }
     }
     else {
+      S.snapshotTag = null; S.snapshotAt = null;
       const D = S.data; D.lat = d.lat; D.lon = d.lon; D.accuracy = d.accuracy; S.partErr[part] = null;
       if (part === 'bus') { D.busStops = d.busStops; D.busError = null; D.favs = { ...D.favs, bus:d.favs.bus }; S.busAt = now; }
       if (part === 'bike') { D.bikes = d.bikes; D.bikeError = null; D.favs = { ...D.favs, bike:d.favs.bike }; S.bikeAt = now; }
       if (part === 'rail') { D.rail = d.rail; D.railError = null; S.railNearAt = now; }
     }
-  } catch (e) { if (tok !== S.refTok) return; if (part) S.partErr[part] = e.message; else S.error = e.message; }
+  } catch (e) { if (tok !== S.refTok) return; if (part) S.partErr[part] = e.message; else { S.snapshotTag = null; S.snapshotAt = null; S.error = e.message; } }
   S.loading = false; S.loadingAuto = false;
   if (S.tab === 'settings') { renderStatus(); return; }
   if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = viewOf(S.tab)(); renderStatus(); }
@@ -4534,7 +4533,14 @@ async function boot() {
     if (snap && snap.t && (now - snap.t <= 30 * 60 * 1000) && snap.data) {
       const mins = Math.max(1, Math.round((now - snap.t) / 60000));
       S.data = snap.data;
+      S.snapshotAt = snap.t;
       S.snapshotTag = `${mins} 分鐘前的資料`;
+      if (!window.__snapTimer) {
+        window.__snapTimer = setInterval(() => {
+          if (!S.snapshotTag) { clearInterval(window.__snapTimer); window.__snapTimer = null; return; }
+          renderStatus();
+        }, 30000);
+      }
       render();
       window.__firstFrameRendered = true;
       window.BOOT_PERF.firstRender = { type: 'snapshot', dur: Math.round(performance.now() - window.__bootT0) };
@@ -4574,12 +4580,27 @@ function toast(msg) {
 }
 if ('serviceWorker' in navigator && !DEMO) {
   const hadController = !!navigator.serviceWorker.controller;
+  let updateReady = false;
   navigator.serviceWorker.register('sw.js', { updateViaCache:'none' }).then(reg => {
     reg.update().catch(() => {});
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { sessionStorage.removeItem('jisu_reloaded'); reg.update().catch(() => {}); } });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        sessionStorage.removeItem('jisu_reloaded');
+        reg.update().catch(() => {});
+      } else if (document.visibilityState === 'hidden' && updateReady) {
+        doReload();
+      }
+    });
     addEventListener('pageshow', e => { if (e.persisted) reg.update().catch(() => {}); });
   }).catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) doReload(); else askVersion(); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) {
+      updateReady = true;
+      if (document.visibilityState === 'hidden') doReload();
+    } else {
+      askVersion();
+    }
+  });
   navigator.serviceWorker.addEventListener('message', e => {
     if (e.data && e.data.type === 'openStation' && e.data.station) { stationLink(e.data.station); return; }
     const v = e.data && e.data.version; if (!v) return;

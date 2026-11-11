@@ -1,6 +1,6 @@
-// 極速通勤 Service Worker：介面檔一律先走網路（略過 HTTP 快取），離線才用快取；即時資料不攔截
-// build 2.47.2b
-const VERSION = "jisu-v2.49.25";
+// 極速通勤 Service Worker：快取優先（同源 GET 有快取直回，換版靠 VERSION）；即時資料不攔截
+// build 2.49.26
+const VERSION = "jisu-v2.49.26";
 const SHELL = [
   "./", "./index.html", "./data.js", "./busdirect.js", "./config.js", "./manifest.webmanifest",
   "./data/pda-thb-map.json",
@@ -27,40 +27,31 @@ self.addEventListener("message", e => {
 self.addEventListener("fetch", e => {
   const req = e.request, url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== location.origin) return; // TDX 等外部請求不攔截
+  if (url.pathname.endsWith("/sw.js")) return; // sw.js 本身不攔截
+
   const nav = req.mode === "navigate";
   const targetReq = nav ? "./index.html" : req;
 
-  // v2.49.24 開機加速：網路超過 2.5 秒沒回應就先用快取（網路之後回來仍更新快取）
+  // v2.49.26：快取優先（同源 GET 快取有就直接回，不等網路；快取沒有才走網路並存進快取）
   e.respondWith((async () => {
-    let timer;
-    let putDone = Promise.resolve();
-    const netPromise = fetch(targetReq, { cache: "no-store" }).then(res => {
-      if (res.ok) {
-        const copy = res.clone();
-        putDone = caches.open(VERSION).then(c => c.put(targetReq, copy)).catch(() => {});
-      }
-      return res;
-    });
-    e.waitUntil(netPromise.then(() => putDone, () => {}));   // Opus：先回快取後，網路回來仍會寫進快取
-
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("SW_TIMEOUT")), 2500);
-    });
+    const cached = nav
+      ? (await caches.match("./index.html"))
+      : (await caches.match(targetReq, { ignoreSearch: true }));
+    if (cached) return cached;
 
     try {
-      const res = await Promise.race([netPromise, timeoutPromise]);
-      clearTimeout(timer);
+      const res = await fetch(targetReq, { cache: "no-store" });
+      if (res.ok) {
+        const copy = res.clone();
+        e.waitUntil(caches.open(VERSION).then(c => c.put(targetReq, copy)).catch(() => {}));   // Opus：等快取寫完，SW 才不會先被停掉
+      }
       return res;
     } catch (err) {
-      clearTimeout(timer);
-      const cached = await caches.match(targetReq, { ignoreSearch: true });
-      if (cached) return cached;
       if (nav) {
         const indexCached = await caches.match("./index.html");
         if (indexCached) return indexCached;
       }
-      // 快取也沒有，等網路返回（或拋錯）
-      return await netPromise;
+      throw err;
     }
   })());
 });
