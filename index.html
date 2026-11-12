@@ -630,6 +630,7 @@ const distTxt = m => m == null ? '—' : m < 1000 ? `${m}公尺` : `${(m/1000).t
 const hhmm = s => { const d = new Date(s); return isNaN(d) ? '' : String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); };
 function eta(r) {
   if (!r) return { t:'—', k:'off' };
+  if (r.loading || r.sec === -1) return { t:'…', k:'off' };
   if (r.noLive && r.sec == null && !r.next && (r.status === 0 || r.status == null)) return { t:'暫無免 TDX 的即時資料', k:'off' };
   if (r.status === 0 && r.sec != null) {
     if (r.sec < 60) return { t:'進站中', k:'hot' };
@@ -727,15 +728,30 @@ function tabAt() { return { bus:S.busAt, bike:S.bikeAt, rail:S.railNearAt }[S.ta
 function refreshTab(manual) { const part = S.data && !S.error ? TAB_PART[S.tab] || null : null; return refresh(part, manual); }
 const updTxt = (at, err) => err ? '更新失敗' : at ? `${hhmm(at)}更新` : '';
 function pupd(at, err) { const t = updTxt(at, err); return t ? `<div class="pupd${err ? ' err' : ''}"><i></i>${t}</div>` : ''; }
+function getSnapshotText(snapAt) {
+  if (!snapAt) return '';
+  const now = Date.now();
+  const mins = Math.max(1, Math.round((now - snapAt) / 60000));
+  if (now - snapAt <= 30 * 60 * 1000) {
+    return `${mins} 分鐘前的資料`;
+  }
+  if (mins < 120) {
+    return `舊資料・${mins} 分鐘前`;
+  }
+  const hrs = Math.max(1, Math.round(mins / 60));
+  return `舊資料・${hrs} 小時前`;
+}
 function renderStatus() {
   const st = $('#status'), pe = !S.error && S.partErr[TAB_PART[S.tab]];
   st.className = 'live' + (S.error || pe ? ' err' : '');
-  const snapTxt = S.snapshotAt ? (Math.max(1, Math.round((Date.now() - S.snapshotAt) / 60000)) + ' 分鐘前的資料') : S.snapshotTag;
-  st.innerHTML = '<i></i>' + (S.snapshotTag ? esc(snapTxt) : S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? '定位中…' : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
+  const snapTxt = S.snapshotAt ? getSnapshotText(S.snapshotAt) : S.snapshotTag;
+  const loadingTxt = (typeof window !== 'undefined' && window.__jisuLocating) ? '定位中…' : '讀取中…';
+  st.innerHTML = '<i></i>' + (S.snapshotTag ? esc(snapTxt) : S.error === 'NO_PROXY' ? '尚未設定資料來源' : S.loading && !S.data ? loadingTxt : S.tab === 'bike' && S.data && S.data.bikePending && !S.data.bikes.length ? '讀取中…' : updTxt(tabAt(), S.error || pe)) + (DEMO ? '<span class="demo">示範資料</span>' : '');
   const b = $('#refreshBtn');
   b.className = 'refresh' + (S.loading ? ' spin' : '');
   b.innerHTML = I.refresh + '<span>重新整理</span>';
 }
+window.renderStatus = renderStatus;
 function render() {
   renderChrome();
   const v = viewOf(S.tab);
@@ -1224,10 +1240,11 @@ const sideTag = s => {
   return `<span class="side-sub">${opp ? '對面・' : ''}${ar ? `<b>${ar}</b>` : ''}${esc(s.dirTxt || '')}</span>`;
 };
 function stopCard(s) {
-  const routes = [...new Set(s.routes.map(r => r.route))].join('、');
+  const routes = [...new Set((s.routes || []).map(r => r.route).filter(Boolean))].join('、');
+  const desc = routes || (s.loading || s.busPending ? '…' : '');
   return `<button class="card" data-act="stop" data-i="${reg(s)}">
     <span class="badge">${I.busFill}</span>
-    <span class="body"><div class="title">${esc(s.name)}${sideTag(s)}</div><div class="desc">${esc(routes)}</div></span>
+    <span class="body"><div class="title">${esc(s.name)}${sideTag(s)}</div><div class="desc">${esc(desc)}</div></span>
     <span class="pill">${distTxt(s.dist)}</span><span class="chev">${I.chev}</span></button>`;
 }
 function bikeCard(b) {
@@ -1532,7 +1549,9 @@ function stopBlock(s, limit) {
   const shown = limit ? rs.slice(0, limit) : rs;
   const body = rs.length
     ? shown.map(r => `<button class="rrow" data-act="route" data-i="${reg({ ...r, stopName:s.name })}"><span class="rno">${esc(r.route)}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`).join('')
-    : `<div class="rrow"><span class="rno" style="font-size:13px;color:var(--c-sub);grid-column:1/-1">暫無免 TDX 的即時資料</span></div>`;
+    : (s.loading || s.busPending || (!s.routes.length && !s.noLive && !s.noRoutes))
+      ? `<div class="rrow"><span class="rno" style="font-size:13px;color:var(--c-sub);grid-column:1/-1">…</span></div>`
+      : `<div class="rrow"><span class="rno" style="font-size:13px;color:var(--c-sub);grid-column:1/-1">暫無免 TDX 的即時資料</span></div>`;
   return `${stopTag(s)}<div class="stop-h">${busStopHeading(s)}</div>
     ${body}
     ${limit && rs.length > limit ? `<button class="more" data-act="stop" data-i="${reg(s)}">顯示全部${rs.length}條路線</button>` : ''}</div>`;
@@ -3796,6 +3815,9 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => { if (e.target.id === 'pickQ' && e.key === 'Enter') e.target.blur(); });
 
 /* ---------- data ---------- */
+// Opus：背景定位離查詢位置超過 100 公尺時由 data.js 呼叫；正在載入就排到這次載入結束再查（其他被擋下的更新照舊直接略過）
+function refreshRelocate() { if (S.loading) { S.pendingRelocate = true; return; } refresh(); }
+window.refreshRelocate = refreshRelocate;
 async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail' 只更新那一份（該分頁的下拉更新）；不給＝全部（打開 app、首頁）
   if (S.loading && !(manual && S.loadingAuto)) return;   // v2.49.1：手動更新（下拉、重新整理按鈕）優先，正在跑的定時更新結果作廢
   if (!S.data) part = null;
@@ -3812,7 +3834,34 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
     const onEarly = part ? null : e => { if (tok !== S.refTok) return; S.snapshotTag = null; S.snapshotAt = null; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
       const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
-    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, auto:!!auto, onEarly });
+    // v2.49.27: 第一屏不等 /pda/stops，/od/eta 回來後先畫卡片
+    const onBusEarly = (auto || (part && part !== 'bus')) ? null : e => {   // Opus：定時更新不走提早階段（照 v2.49.26）
+      if (tok !== S.refTok) return;
+      // Opus：只有站名的階段，畫面上已經有公車卡片（快照或上一次結果）時不蓋掉，避免已有的到站時間變成「…」
+      if (e.stage === 'stops' && S.data && S.data.busStops && S.data.busStops.length) return;
+      S.snapshotTag = null; S.snapshotAt = null;
+      if (part === 'bus') {
+        if (S.data) {
+          S.data.busStops = e.busStops;
+          S.data.busError = null;
+          S.data.favs = { ...S.data.favs, bus: e.favs.bus };
+        }
+      } else {
+        const prev = S.data;
+        if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) {
+          e.bikes = prev.bikes;
+          e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} };
+        }
+        const back = keepOld(e);
+        S.data = e;
+        S.error = null;
+        S.partErr = {};
+        back();
+      }
+      if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render();
+      else renderStatus();
+    };
+    const d = await api('nearby', { settings:S.settings, favs:S.favs, only:part || null, fresh:!!manual, auto:!!auto, onEarly, onBusEarly });
     if (tok !== S.refTok) return;   // 被手動更新取代
     const now = Date.now();
     if (!part) {
@@ -3835,8 +3884,19 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
       if (part === 'bike') { D.bikes = d.bikes; D.bikeError = null; D.favs = { ...D.favs, bike:d.favs.bike }; S.bikeAt = now; }
       if (part === 'rail') { D.rail = d.rail; D.railError = null; S.railNearAt = now; }
     }
-  } catch (e) { if (tok !== S.refTok) return; if (part) S.partErr[part] = e.message; else { S.snapshotTag = null; S.snapshotAt = null; S.error = e.message; } }
-  S.loading = false; S.loadingAuto = false;
+  } catch (e) {
+    if (tok !== S.refTok) return;
+    if (part) S.partErr[part] = e.message;
+    else { S.snapshotTag = null; S.snapshotAt = null; S.error = e.message; }
+  } finally {
+    if (tok === S.refTok) {
+      S.loading = false; S.loadingAuto = false;
+      if (S.pendingRelocate) {
+        S.pendingRelocate = false;
+        setTimeout(() => refresh(), 0);
+      }
+    }
+  }
   if (S.tab === 'settings') { renderStatus(); return; }
   if (!document.activeElement || document.activeElement.id !== 'q') render(); else { $('#main').innerHTML = viewOf(S.tab)(); renderStatus(); }
 }
@@ -4526,15 +4586,32 @@ async function boot() {
   window.BOOT_PERF = { locLow: null, locHigh: null, locType: null, requests: [], firstRender: null, realData: null };
   localStorage.removeItem('jisu_tt_admin');   // 舊的管理密碼（v2.12.1起改用管理者帳號）
 
-  // v2.49.24: 開啟時先嘗試讀取首頁快照 (IndexedDB home|last，30分鐘內)
+  // v2.49.27: 開啟時先嘗試讀取首頁快照 (IndexedDB home|last，放寬30分鐘上限)
   try {
     const snap = await IDB.get(DEMO ? 'home|last|demo' : 'home|last').catch(() => null);
     const now = Date.now();
-    if (snap && snap.t && (now - snap.t <= 30 * 60 * 1000) && snap.data) {
-      const mins = Math.max(1, Math.round((now - snap.t) / 60000));
+    if (snap && snap.t && snap.data) {
+      const isStale = (now - snap.t > 30 * 60 * 1000);
+      if (isStale) {
+        if (snap.data.busStops && Array.isArray(snap.data.busStops)) {
+          for (const card of snap.data.busStops) {
+            for (const r of card.routes || []) {
+              r.sec = null;
+              r.status = null;
+              r.next = null;
+            }
+          }
+        }
+        if (snap.data.favs && snap.data.favs.bus) {
+          for (const k of Object.keys(snap.data.favs.bus)) {
+            const f = snap.data.favs.bus[k];
+            if (f) { f.sec = null; f.status = null; f.next = null; }
+          }
+        }
+      }
       S.data = snap.data;
       S.snapshotAt = snap.t;
-      S.snapshotTag = `${mins} 分鐘前的資料`;
+      S.snapshotTag = getSnapshotText(snap.t);
       if (!window.__snapTimer) {
         window.__snapTimer = setInterval(() => {
           if (!S.snapshotTag) { clearInterval(window.__snapTimer); window.__snapTimer = null; return; }

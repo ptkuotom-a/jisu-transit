@@ -202,25 +202,39 @@ const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
 async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {}) {
   const qStop = geoKey ? +geoKey.split(",")[2] : Math.min(r + 100, 1000);
   const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${qStop}`);
-  let c = await IDB.get("geo|" + gKey).catch(() => null);
-  let covZero = false;
-  if (!c || oldCloud(c)) {
-    const cs = await cloudStops(gKey).catch(() => null);
-    if (cs && cs.cov === 0) {
-      if (!c) covZero = true;
-    } else if (cs) {
-      c = cs;
-    }
-  }
 
-  // Unified radius for /od/thbstn and parallel query with /od/eta
-  const [thbData, od] = await Promise.all([
-    odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null),
-    Promise.race([
-      odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
-      new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
-    ]).catch(() => null)
-  ]);
+  // v2.49.27: /od/stops、/od/thbstn、/od/eta 同時發出
+  const stopsP = cloudStops(gKey).catch(() => null);
+  const thbP = odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null);
+  const etaP = Promise.race([
+    odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
+    new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
+  ]).catch(() => null);
+
+  // v2.49.27 補充：站牌清單一回來立刻發出 Stage 1 站名卡片（不等 /od/eta）
+  stopsP.then(async cs => {
+    let c = cs;
+    if (!c) c = await IDB.get("geo|" + gKey).catch(() => null);
+    if (!c || !Array.isArray(c.d)) return;
+    const cityStops = c.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s));
+    const stage1Near = cityStops.filter(s => {
+      const p = s.StopPosition;
+      return p && p.PositionLat != null && haversine(+lat, +lon, p.PositionLat, p.PositionLon) <= r + 30;
+    });
+    if (stage1Near.length && typeof opt.onStopsEarly === "function") {
+      try { opt.onStopsEarly(stage1Near); } catch (e) {}
+    }
+  }).catch(() => {});
+
+  const [cs, thbData, od] = await Promise.all([stopsP, thbP, etaP]);
+  let covZero = false;
+  let c = cs;
+  if (cs && cs.cov === 0) {
+    covZero = true;
+  }
+  if (!c) {
+    c = await IDB.get("geo|" + gKey).catch(() => null);
+  }
 
   const hw = thbData && Array.isArray(thbData.list) ? thbData.list : [];
   const cityStops = c && Array.isArray(c.d) ? c.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
@@ -328,6 +342,24 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
 
   const allRows = [...rawOdRows, ...noLiveRows];
   allRows.sort((a, b) => (stopDistMap.get(a.StopUID) ?? Infinity) - (stopDistMap.get(b.StopUID) ?? Infinity));
+
+  allRows.liveOk = liveOk;
+  if (covZero) {
+    allRows.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
+  } else if (!allRows.liveOk) {
+    allRows.noLiveWhy = (!nearSt.length && !allRows.length)
+      ? "雲端站牌清單和即時資料都讀不到，請稍後下拉更新"
+      : "雲端即時資料讀不到";
+  } else if (noLiveRows.length) {
+    allRows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
+  } else {
+    allRows.noLiveWhy = null;
+  }
+
+  // v2.49.27: 第一屏不等 /pda/stops，/od/eta 回來後先將卡片交給畫面
+  if (typeof opt.onEarlyRows === "function") {
+    try { opt.onEarlyRows(allRows, nearSt); } catch (e) {}
+  }
 
   const hasThb = allRows.some(r => isThbStop(r) || (r.StopUID && r.StopUID.startsWith("THB")));
   const canLoadMap = typeof window === "undefined" || window.__firstFrameRendered || opt.loadThbMap;
@@ -1825,6 +1857,7 @@ const clampR = r => Math.max(100, Math.min(1000, Number(r) || 300));
 
 // ---------- 定位 ----------
 let lastLoc = null;
+let pendingRelocLoc = null;
 function getPos(high, timeout) {   // v2.37.2：iOS 有時不理 timeout、永遠不回應 → 自己加一道計時，逾時當作失敗
   return new Promise((res, rej) => {
     const tm = setTimeout(() => rej({ code: 3, message: "timeout" }), timeout + 1500);
@@ -1834,6 +1867,11 @@ function getPos(high, timeout) {   // v2.37.2：iOS 有時不理 timeout、永�
 }
 let locBootDone = false;   // Opus：快速定位（上次位置、低精度）只用在開 app 後的第一次；之後的定時、手動更新照 v2.49.22 等精確定位，走路時位置才不會停住
 async function locateSlow() {
+  if (pendingRelocLoc) {
+    const loc = pendingRelocLoc;
+    pendingRelocLoc = null;
+    return loc;
+  }
   let p;
   try { p = await getPos(true, 7000); }
   catch (e) {
@@ -1847,23 +1885,25 @@ async function locateSlow() {
 }
 async function locate(fresh = false) {
   if (!navigator.geolocation) { if (lastLoc) return lastLoc; throw new Error("這個瀏覽器不支援定位"); }
+  if (pendingRelocLoc) {
+    const loc = pendingRelocLoc;
+    pendingRelocLoc = null;
+    return loc;
+  }
   if (locBootDone) return locateSlow();
   locBootDone = true;
 
-  // 1. 先看 localStorage 裡上次的位置（2 分鐘內直接用）
+  // 1. 先看 localStorage 裡上次的位置（v2.49.27：開 App 第一次直接用，不限 2 分鐘）
+  let saved = null;
   if (!fresh) {
     try {
       const raw = localStorage.getItem("jisu_last_loc");
       if (raw) {
-        const saved = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
         const isStaleMock = typeof window !== "undefined" && window.mockLoc &&
-          (Math.abs(saved.latitude - window.mockLoc.latitude) > 0.001 || Math.abs(saved.longitude - window.mockLoc.longitude) > 0.001);
-        if (!isStaleMock && saved && saved.t && Date.now() - saved.t <= 120000 && Number.isFinite(saved.latitude) && Number.isFinite(saved.longitude)) {
-          lastLoc = saved;
-          if (typeof window !== "undefined" && window.BOOT_PERF) {
-            window.BOOT_PERF.locType = "cache";
-          }
-          return lastLoc;
+          (Math.abs(parsed.latitude - window.mockLoc.latitude) > 0.001 || Math.abs(parsed.longitude - window.mockLoc.longitude) > 0.001);
+        if (!isStaleMock && parsed && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
+          saved = parsed;
         }
       }
     } catch (e) {}
@@ -1931,40 +1971,81 @@ async function locate(fresh = false) {
     );
   });
 
-  // 高精度定位拿到了如果離剛剛查的位置超過 100 公尺（換了格子），再查一次附近
-  let usedLoc = null;   // Opus：和這次真的拿去查附近的位置比，不和更早的 lastLoc 比
-  highPromise.then(highLoc => {
-    if (highLoc && Number.isFinite(highLoc.latitude) && Number.isFinite(highLoc.longitude)) {
-      try { localStorage.setItem("jisu_last_loc", JSON.stringify(highLoc)); } catch (e) {}
-      if (usedLoc && usedLoc !== highLoc) {
-        const moved = haversine(usedLoc.latitude, usedLoc.longitude, highLoc.latitude, highLoc.longitude);
-        if (moved > 100) {
-          lastLoc = highLoc;
-          if (typeof window !== "undefined" && typeof window.refresh === "function") {
-            window.refresh();
-          }
+  // 背景定位：新位置離剛剛查的位置超過 100 公尺才重查一次附近
+  let usedLoc = saved || null;
+  const onBgLoc = newLoc => {
+    if (!newLoc || !Number.isFinite(newLoc.latitude) || !Number.isFinite(newLoc.longitude)) return;
+    try { localStorage.setItem("jisu_last_loc", JSON.stringify(newLoc)); } catch (e) {}
+    if (usedLoc && usedLoc !== newLoc) {
+      const moved = haversine(usedLoc.latitude, usedLoc.longitude, newLoc.latitude, newLoc.longitude);
+      if (moved > 100) {
+        usedLoc = newLoc;
+        lastLoc = newLoc;
+        pendingRelocLoc = newLoc;
+        if (typeof window !== "undefined") {
+          if (typeof window.refreshRelocate === "function") window.refreshRelocate();   // Opus：載入中會排隊，不會被吃掉
+          else if (typeof window.refresh === "function") window.refresh();
         }
       }
-      lastLoc = highLoc;
     }
-  }).catch(() => {});
+    lastLoc = newLoc;
+  };
+
+  highPromise.then(onBgLoc, () => lowPromise.then(onBgLoc)).catch(() => {});
+  lowPromise.then(onBgLoc).catch(() => {});
+
+  if (saved) {
+    lastLoc = usedLoc = saved;
+    if (typeof window !== "undefined" && window.BOOT_PERF) {
+      window.BOOT_PERF.locType = "cache";
+    }
+    if (typeof window !== "undefined") {
+      window.__jisuLocating = false;
+      window.__jisuLocTime = performance.now();
+    }
+    return lastLoc;
+  }
+
+  // 沒有存過位置時：等定位
+  if (typeof window !== "undefined") {
+    window.__jisuLocating = true;
+    if (typeof window.renderStatus === "function") window.renderStatus();
+  }
 
   try {
     const loc = await Promise.race([lowPromise, highPromise]);
     lastLoc = usedLoc = loc;
+    if (typeof window !== "undefined") {
+      window.__jisuLocating = false;
+      window.__jisuLocTime = performance.now();
+      if (typeof window.renderStatus === "function") window.renderStatus();
+    }
     try { localStorage.setItem("jisu_last_loc", JSON.stringify(lastLoc)); } catch (e) {}
     return lastLoc;
   } catch (e1) {
     if (e1 && e1.code === 1) {
+      if (typeof window !== "undefined") {
+        window.__jisuLocating = false;
+        if (typeof window.renderStatus === "function") window.renderStatus();
+      }
       if (lastLoc) return lastLoc;
       throw new Error("沒有定位權限：到 iPhone 設定 › 隱私權與安全性 › 定位服務 › Safari 網站，改成「使用 App 期間」並開啟「精確位置」");
     }
     try {
       const loc = await highPromise;
-      lastLoc = loc;
+      lastLoc = usedLoc = loc;
+      if (typeof window !== "undefined") {
+        window.__jisuLocating = false;
+        window.__jisuLocTime = performance.now();
+        if (typeof window.renderStatus === "function") window.renderStatus();
+      }
       try { localStorage.setItem("jisu_last_loc", JSON.stringify(lastLoc)); } catch (e) {}
       return lastLoc;
     } catch (e2) {
+      if (typeof window !== "undefined") {
+        window.__jisuLocating = false;
+        if (typeof window.renderStatus === "function") window.renderStatus();
+      }
       if (lastLoc) return lastLoc;
       throw new Error("無法取得定位，請稍後再試");
     }
@@ -2153,7 +2234,7 @@ async function geoList(kind, key, url, profile, pack, unpack, liveUIDs) {
 
 // ---------- 附近：公車 + YouBike + 收藏 ----------
 const BEAR_TXT = { N: "向北", S: "向南", E: "向東", W: "向西", NE: "向東北", NW: "向西北", SE: "向東南", SW: "向西南" };
-async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false, onEarly = null, auto = false }) {
+async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null, fresh = false, onEarly = null, onBusEarly = null, auto = false }) {
   // v2.26.0：only＝'bus'／'bike'／'rail' 只更新那一部分（公車、YouBike、軌道分頁的下拉更新），其他部分不呼叫
   const doBus = !only || only === "bus", doBike = !only || only === "bike", doRail = !only || only === "rail";
   const SKIP = Promise.reject(new Error("skip")); SKIP.catch(() => {});
@@ -2164,23 +2245,103 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const busR = clampR(settings.busR || 300), bikeR = clampR(settings.bikeR || 500);
   const qBus = Math.min(busR + 100, 1000), qStop = Math.min(busR + 200, 1000), qBike = Math.min(bikeR + 100, 1000);
 
-  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh, { auto: !!auto }) : SKIP;
+  // v2.36.3：收藏的公車、YouBike 分開查，YouBike 慢不拖住公車
+  const favBusP = doBus && (favs.bus || []).length ? liveFavs({ bus: favs.bus, bike: [] }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
+  const favBikeP = doBike && (favs.bike || []).length ? liveFavs({ bus: [], bike: favs.bike }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
+  const railP = !doRail ? SKIP : Promise.all([loadRailStations(), loadRailExits().catch(() => ({}))])
+    .then(([st, ex]) => nearestRail(st, loc.latitude, loc.longitude,
+      { walkKm: settings.railWalk || 1.5, systems: settings.railSys || null, far: { TRA: (settings.railFarTra ?? settings.railFar ?? 1) !== 0, THSR: (settings.railFarThsr ?? settings.railFar ?? 1) !== 0 } }, ex));
+
+  // v2.49.27 補充：站名不等 /od/eta，三階段更新畫面
+  // Opus：提早階段只拿已經完成的收藏、軌道結果，沒完成就先不等（最後的完整結果照舊會有）
+  const doneV = new Map();
+  for (const p of [favBusP, railP]) p.then(v => doneV.set(p, v), () => {});
+  const settledOr = async (p, dflt) => (doneV.has(p) ? doneV.get(p) : dflt);
+  let stage1Emitted = false;
+  const handleStopsEarly = async (stage1Near) => {
+    if (!onBusEarly) return;
+    if (stage1Emitted) return;
+    stage1Emitted = true;
+    try {
+      const sorted = [...stage1Near].sort((a, b) => {
+        const da = haversine(loc.latitude, loc.longitude, a.StopPosition.PositionLat, a.StopPosition.PositionLon);
+        const db = haversine(loc.latitude, loc.longitude, b.StopPosition.PositionLat, b.StopPosition.PositionLon);
+        return da - db;
+      });
+      const seen = new Set();
+      const stage1BusStops = [];
+      for (const s of sorted) {
+        const name = (s.StopName && s.StopName.Zh_tw) || "未知站牌";
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const d = haversine(loc.latitude, loc.longitude, s.StopPosition.PositionLat, s.StopPosition.PositionLon);
+        stage1BusStops.push({
+          name,
+          dist: Math.round(d),
+          lat: s.StopPosition.PositionLat,
+          lon: s.StopPosition.PositionLon,
+          sid: s.StationID || null,
+          bear: s.Bearing || null,
+          routes: [],
+          loading: true,
+          busPending: true
+        });
+        if (stage1BusStops.length >= 6) break;
+      }
+      const earlyFavBus = await settledOr(favBusP, { bus: {}, bike: {} });   // Opus：收藏、軌道還沒好就先不等
+      const earlyRail = await settledOr(railP, []);
+      const earlyObj = {
+        lat: loc.latitude, lon: loc.longitude, accuracy: loc.accuracy || null,
+        busStops: stage1BusStops, bikes: [], bikePending: true,
+        only, rail: Array.isArray(earlyRail) ? earlyRail : [],
+        railError: null, busError: null,
+        noLiveWhy: null,
+        liveOk: true,
+        stage: "stops",
+        favs: { bus: (earlyFavBus && earlyFavBus.bus) || {}, bike: {} }
+      };
+      if (onBusEarly) onBusEarly(earlyObj);   // Opus：不退到 onEarly（定時更新不給 onBusEarly，就不走提早階段）
+    } catch (e) {}
+  };
+
+  const handleEarlyBus = async (earlyRows, earlyStops) => {
+    if (!onBusEarly) return;
+    try {
+      const earlyBusR = { status: "fulfilled", value: [earlyRows, earlyStops] };
+      const earlyBusStops = await busGroup(earlyBusR);
+      const earlyFavBus = await settledOr(favBusP, { bus: {}, bike: {} });   // Opus：收藏、軌道還沒好就先不等
+      const earlyRail = await settledOr(railP, []);
+      const earlyObj = {
+        lat: loc.latitude, lon: loc.longitude, accuracy: loc.accuracy || null,
+        busStops: earlyBusStops, bikes: [], bikePending: true,
+        only, rail: Array.isArray(earlyRail) ? earlyRail : [],
+        railError: null, busError: null,
+        noLiveWhy: earlyRows.noLiveWhy || null,
+        liveOk: earlyRows.liveOk,
+        stage: "eta",
+        favs: { bus: (earlyFavBus && earlyFavBus.bus) || {}, bike: {} }
+      };
+      if (onBusEarly) onBusEarly(earlyObj);   // Opus：不退到 onEarly（定時更新不給 onBusEarly，就不走提早階段）
+    } catch (e) {}
+  };
+
+  const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh, { auto: !!auto, onStopsEarly: handleStopsEarly, onEarlyRows: handleEarlyBus }) : SKIP;
   const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
   const busP = !doBus ? SKIP : (async () => {
-    const [eta, od, thb] = await Promise.all([
+    const [eta, cs, thb] = await Promise.all([
       etaP,
-      odGet(`/od/stops?lat=${lat}&lon=${lon}&r=${qStop}`).catch(() => null),
+      cloudStops(`s|${lat},${lon},${qStop}`).catch(() => null),
       odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
-    let city = od && od.cov === 1 && Array.isArray(od.d) ? od.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
+    let city = cs && Array.isArray(cs.d) ? cs.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
     if (!city.length) {
       const cached = await IDB.get("geo|" + `s|${lat},${lon},${qStop}`).catch(() => null);
       if (cached && Array.isArray(cached.d)) city = cached.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s));
-      else if (od && od.cov === 0 && eta) {
+      else if (cs && cs.cov === 0 && eta) {
         eta.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
       }
     }
-    if (od && od.cov === 1) {
+    if (cs && (cs.cov === 1 || cs.src === "od")) {
       const have = new Set(city.map(s => s.StopUID)), miss = new Map();
       for (const e of eta || []) if (e.StopUID && !isThbStop(e) && !have.has(e.StopUID)) miss.set(e.StopUID, [e.RouteUID || "", e.StopUID, (e.StopName && e.StopName.Zh_tw) || ""]);
       if (miss.size) {
@@ -2233,12 +2394,6 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
     } catch (e) {}
     return [list, live];
   })();
-  // v2.36.3：收藏的公車、YouBike 分開查，YouBike 慢不拖住公車
-  const favBusP = doBus && (favs.bus || []).length ? liveFavs({ bus: favs.bus, bike: [] }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
-  const favBikeP = doBike && (favs.bike || []).length ? liveFavs({ bus: [], bike: favs.bike }, fresh).catch(() => ({ bus: {}, bike: {} })) : Promise.resolve({ bus: {}, bike: {} });
-  const railP = !doRail ? SKIP : Promise.all([loadRailStations(), loadRailExits().catch(() => ({}))])
-    .then(([st, ex]) => nearestRail(st, loc.latitude, loc.longitude,
-      { walkKm: settings.railWalk || 1.5, systems: settings.railSys || null, far: { TRA: (settings.railFarTra ?? settings.railFar ?? 1) !== 0, THSR: (settings.railFarThsr ?? settings.railFar ?? 1) !== 0 } }, ex));
 
   const settle = p => p.then(value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason }));
   const bikeS = settle(bikeP);
