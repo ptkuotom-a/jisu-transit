@@ -3598,6 +3598,145 @@ function bdRun(msg) {
     w.postMessage({ ...msg, id });
   });
 }
+const bsorMem = new Map();
+async function bsorReadResp(r) {
+  const ct = (r.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("application/json")) return await r.json().catch(() => null);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (buf[0] === 31 && buf[1] === 139) {
+    return JSON.parse(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text());
+  }
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+function bsorDecode(shards) {
+  const byRoute = {}, stops = {};
+  let oneStop = 0;
+  for (const S of shards) {
+    if (!S || !Array.isArray(S.r)) continue;
+    const names = S.n || [], pos = S.p || [];
+    for (const row of S.r) {
+      if (!Array.isArray(row) || row.length < 7) continue;
+      const [uid, rName, subUID, subName, dir, stopUids, posIdxs] = row;
+      if (!uid || !Array.isArray(stopUids)) continue;
+      if (stopUids.length < 2) {
+        if (stopUids.length === 1) oneStop++;
+        continue;
+      }
+      const Stops = [];
+      for (let k = 0; k < stopUids.length; k++) {
+        const suid = stopUids[k];
+        const p = pos[posIdxs[k]] || [0, 0, 0];
+        const sname = names[p[0]] || "";
+        const lat = p[1] / 1e4, lon = p[2] / 1e4;
+        if (lat && lon && !stops[suid]) stops[suid] = [lat, lon, sname];
+        Stops.push({ StopUID: suid, StopName: { Zh_tw: sname }, P: [lat, lon] });
+      }
+      if (!byRoute[uid]) byRoute[uid] = [];
+      byRoute[uid].push({
+        RouteUID: uid,
+        RouteName: { Zh_tw: rName || "" },
+        SubRouteUID: subUID || "",
+        SubRouteName: { Zh_tw: subName || "" },
+        Direction: dir,
+        Stops
+      });
+    }
+  }
+  return { byRoute, stops, oneStop };
+}
+async function bsorCity(city, signal) {
+  const now = Date.now();
+  const mem = bsorMem.get(city);
+  if (mem && now >= mem.checkedAt && now - mem.checkedAt < 600000 && mem.byRoute) {
+    return { ...mem, cached: true, netCalls: 0 };
+  }
+  const c = await IDB.get("bsor|" + city).catch(() => null);
+  if (c && c.checkedAt && now >= c.checkedAt && now - c.checkedAt < 600000 && c.byRoute) {
+    bsorMem.set(city, c);
+    return { ...c, cached: true, netCalls: 0 };
+  }
+  const proxy = getProxy(), sess = getSession();
+  if (!proxy || !sess) return null;
+  if (signal && signal.aborted) throw new Error("已取消");
+  let r0;
+  try {
+    r0 = await fetchT(proxy + "/bus/sor/part?c=" + enc(city) + "&k=0", BD_SHARD_MS, { headers: { "x-session": sess.token } });
+  } catch { return null; }
+  if (!r0.ok) return null;
+  const s0 = await bsorReadResp(r0).catch(() => null);
+  if (!s0 || !Array.isArray(s0.r)) return null;
+  const hdrT = r0.headers.get("x-sor-t") || String(s0.t || 0);
+  const hdrN = Number(r0.headers.get("x-sor-n")) || 16;
+  if (c && String(c.t) === String(hdrT) && c.byRoute) {
+    const upd = { ...c, checkedAt: Date.now() };
+    bsorMem.set(city, upd);
+    await IDB.set("bsor|" + city, upd).catch(() => {});
+    return { ...upd, cached: true, netCalls: 1 };
+  }
+  const shards = new Array(hdrN);
+  shards[0] = s0;
+  for (let start = 1; start < hdrN; start += 4) {
+    if (signal && signal.aborted) throw new Error("已取消");
+    const batch = [];
+    for (let k = start; k < Math.min(start + 4, hdrN); k++) {
+      batch.push((async idx => {
+        const rk = await fetchT(proxy + "/bus/sor/part?c=" + enc(city) + "&k=" + idx, BD_SHARD_MS, { headers: { "x-session": sess.token } });
+        if (!rk.ok) throw new Error("bsor_" + rk.status);
+        const sk = await bsorReadResp(rk);
+        if (!sk || !Array.isArray(sk.r)) throw new Error("bsor_bad");
+        shards[idx] = sk;
+      })(k));
+    }
+    try { await Promise.all(batch); } catch { return null; }
+  }
+  const decoded = bsorDecode(shards);
+  const entry = { city, t: Number(hdrT) || s0.t || 0, n: hdrN, checkedAt: Date.now(), ...decoded };
+  bsorMem.set(city, entry);
+  await IDB.set("bsor|" + city, entry).catch(() => {});
+  return { ...entry, cached: false, netCalls: hdrN };
+}
+async function walkTable(o, d, oStops, dStops) {
+  // Opus：Worker 每秒最多往外 1 次，兩次同時送第二次一定被擋（busy）。
+  // 點數夠（≤25）就合成一次 OSRM table：sources＝[起點, 各下車站]、destinations＝[各上車站, 終點]；不夠才分兩次、間隔 1.1 秒
+  const out = { o: {}, d: {}, oDist: {}, dDist: {}, calls: 0 };
+  const r4 = n => Number(n).toFixed(4);
+  const oList = (oStops || []).slice(0, 24), dList = (dStops || []).slice(0, 24);
+  const num = v => typeof v === "number" && Number.isFinite(v);
+  const get = q => authedGet(q, 6000);
+  if (oList.length && dList.length && oList.length + dList.length + 2 <= 25) {
+    const P = [[+o.lat, +o.lon], ...oList.map(x => [x.lat, x.lon]), ...dList.map(x => [x.lat, x.lon]), [+d.lat, +d.lon]];
+    const oi = oList.map((_, i) => 1 + i), di = dList.map((_, i) => 1 + oList.length + i), dEnd = P.length - 1;
+    const src = [0, ...di], dst = [...oi, dEnd];
+    out.calls++;
+    const res = await get(`/walk?mode=foot&q=table&pts=${P.map(([a, b]) => `${r4(a)},${r4(b)}`).join(";")}&src=${src.join(",")}&dst=${dst.join(",")}`).catch(() => null);
+    if (res && res.ok && Array.isArray(res.durations)) {
+      const D = res.durations, M = res.distances || [];
+      oList.forEach((x, k) => { const v = D[0] && D[0][k], m = M[0] && M[0][k]; if (num(v)) out.o[x.uid] = v; if (num(m)) out.oDist[x.uid] = m; });
+      dList.forEach((x, k) => { const row = 1 + k, col = oList.length, v = D[row] && D[row][col], m = M[row] && M[row][col]; if (num(v)) out.d[x.uid] = v; if (num(m)) out.dDist[x.uid] = m; });
+    }
+    return out;
+  }
+  if (oList.length) {
+    const pts = [[+o.lat, +o.lon], ...oList.map(x => [x.lat, x.lon])].map(([a, b]) => `${r4(a)},${r4(b)}`).join(";");
+    out.calls++;
+    const res = await get(`/walk?mode=foot&q=table&pts=${pts}&src=0&dst=${oList.map((_, i) => i + 1).join(",")}`).catch(() => null);
+    if (res && res.ok && Array.isArray(res.durations) && Array.isArray(res.durations[0])) oList.forEach((x, k) => { const v = res.durations[0][k], m = res.distances && res.distances[0] && res.distances[0][k]; if (num(v)) out.o[x.uid] = v; if (num(m)) out.oDist[x.uid] = m; });
+  }
+  if (dList.length) {
+    if (out.calls) await new Promise(r => setTimeout(r, 1100));
+    const pts = [...dList.map(x => [x.lat, x.lon]), [+d.lat, +d.lon]].map(([a, b]) => `${r4(a)},${r4(b)}`).join(";");
+    out.calls++;
+    const res = await get(`/walk?mode=foot&q=table&pts=${pts}&src=${dList.map((_, i) => i).join(",")}&dst=${dList.length}`).catch(() => null);
+    if (res && res.ok && Array.isArray(res.durations)) dList.forEach((x, k) => { const v = res.durations[k] && res.durations[k][0], m = res.distances && res.distances[k] && res.distances[k][0]; if (num(v)) out.d[x.uid] = v; if (num(m)) out.dDist[x.uid] = m; });
+  }
+  return out;
+}
+async function walkRoute({ mode = "foot", pts = [] }) {
+  if (!Array.isArray(pts) || pts.length < 2) throw new Error("座標點不足");
+  const r4 = n => Number(n).toFixed(4);
+  const ptsStr = pts.map(([a, b]) => `${r4(a)},${r4(b)}`).join(";");
+  return await authedGet(`/walk?mode=${enc(mode)}&q=route&pts=${ptsStr}`, 8000);   // Opus：/walk 要登入
+}
 async function busDirectPlan({ o, d, when, time, opts, signal }) {
   if (!o || !d || o.lat == null || d.lat == null) throw new Error("請先選好起點和終點");
   const P = bdOpts(opts);
@@ -3605,8 +3744,22 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
   const metaAll = await authedGet("/bus/sch/meta");
   const cities = [], miss = [];
   for (const c of BD_CITIES) { const x = await bdCity(c, metaAll, signal); if (x.recs) cities.push(x); else miss.push(x.why); }
-  const recs = cities.flatMap(x => x.recs), stops = {};
-  for (const x of cities) { const l = await cloudCityStops(x.city).catch(() => null); if (!l) miss.push(x.city + "的雲端站牌座標讀不到"); for (const s of l || []) { const p = s.StopPosition; if (p && p.PositionLat) stops[s.StopUID] = [p.PositionLat, p.PositionLon]; } }
+  const recs = cities.flatMap(x => x.recs), stops = {}, sorMap = {}, bsorMeta = [];
+  let bsorLoaded = false, sorOneStop = 0;
+  for (const x of cities) {
+    const b = await bsorCity(x.city, signal).catch(() => null);
+    if (b && b.byRoute) {
+      bsorLoaded = true;
+      sorOneStop += b.oneStop || 0;
+      bsorMeta.push({ city: x.city, t: b.t, cached: !!b.cached, oneStop: b.oneStop || 0, netCalls: b.netCalls || 0 });
+      for (const [uid, pos] of Object.entries(b.stops || {})) if (!stops[uid]) stops[uid] = [pos[0], pos[1]];
+      for (const [ruid, list] of Object.entries(b.byRoute)) sorMap[ruid] = (sorMap[ruid] || []).concat(list);
+    } else {
+      const l = await cloudCityStops(x.city).catch(() => null);
+      if (!l) miss.push(x.city + "的雲端站牌座標讀不到");
+      for (const s of l || []) { const p = s.StopPosition; if (p && p.PositionLat) stops[s.StopUID] = [p.PositionLat, p.PositionLon]; }
+    }
+  }
   if (signal && signal.aborted) throw new Error("已取消");
   const hol = await ttLoad("HOLIDAY").catch(() => null), holidays = Object.keys((hol && hol.dates) || {}).map(x => x.replace(/-/g, ""));
 
@@ -3625,93 +3778,135 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
     if (dd_ <= R) nearD.set(uid, dd_);
   }
 
-  // 2. 候選路線挑選（最多 12 條）
-  const candMap = new Map(); // key: RouteUID + "|" + Direction -> { routeUID, dir, sub, walkO, rec }
-  // (a) 班表紀錄 st
+  // 2. 候選路線挑選（優先使用 r.st 與雲端 bsor 站序，嚴格比對 RouteUID + Direction + SubRouteUID，最多 12 條）
+  const candMap = new Map();
+  const considerStops = (r, stopList) => {
+    if (!Array.isArray(stopList) || stopList.length < 2) return;
+    let firstOIdx = Infinity, minO = Infinity, boardStopUID = null;
+    const oUids = [], dUids = [];
+    for (let idx = 0; idx < stopList.length; idx++) {
+      const suid = typeof stopList[idx] === "string" ? stopList[idx] : (Array.isArray(stopList[idx]) ? stopList[idx][0] : stopList[idx].StopUID);
+      if (nearO.has(suid)) {
+        if (idx < firstOIdx) firstOIdx = idx;
+        oUids.push(suid);
+        const distO = nearO.get(suid);
+        if (distO < minO) { minO = distO; boardStopUID = suid; }
+      }
+      if (nearD.has(suid) && idx > firstOIdx) {
+        dUids.push(suid);
+      }
+    }
+    if (boardStopUID && dUids.length) {
+      const k = r.u + "|" + r.d;
+      const cur = candMap.get(k);
+      if (!cur || minO < cur.walkO) {
+        candMap.set(k, { routeUID: r.u, dir: r.d, sub: r.s || r.sn || "", walkO: minO, boardStopUID, oUids, dUids, rec: r });
+      }
+    }
+  };
   for (const r of recs) {
     if (r.st && r.st.length >= 2) {
-      let minO = Infinity, minD = Infinity;
-      for (const s of r.st) {
-        if (nearO.has(s[0])) minO = Math.min(minO, nearO.get(s[0]));
-        if (nearD.has(s[0])) minD = Math.min(minD, nearD.get(s[0]));
-      }
-      if (minO < Infinity && minD < Infinity) {
-        const k = r.u + "|" + r.d;
-        if (!candMap.has(k) || minO < candMap.get(k).walkO) {
-          candMap.set(k, { routeUID: r.u, dir: r.d, sub: r.s || r.sn || "", walkO: minO, rec: r });
-        }
-      }
+      considerStops(r, r.st);
+      continue;
+    }
+    const list = sorMap[r.u];
+    if (list && list.length) {
+      const match = list.find(x => Number(x.Direction) === Number(r.d) && (!r.s || String(x.SubRouteUID) === String(r.s)) && x.Stops && x.Stops.length >= 2);
+      if (match) considerStops(r, match.Stops);
     }
   }
 
-  // (b) 雲端 /od/eta?lat=&lon=&r=&nwt=1（開放資料，不打 TDX，起點、終點各一次）
-  const [etaO, etaD] = await Promise.all([
-    odGet(`/od/eta?lat=${+o.lat}&lon=${+o.lon}&r=${R}&nwt=1`).catch(() => null),
-    odGet(`/od/eta?lat=${+d.lat}&lon=${+d.lon}&r=${R}&nwt=1`).catch(() => null)
-  ]);
-
-  if (etaO && etaO.list && etaD && etaD.list) {
-    const oRoutes = new Map();
-    for (const it of etaO.list) {
-      if (it && it.RouteUID) {
-        const dir = it.Direction ?? 0;
-        const k = it.RouteUID + "|" + dir;
-        const wDist = nearO.get(it.StopUID) ?? (it.PositionLat ? hav(+o.lat, +o.lon, it.PositionLat, it.PositionLon) : R);
-        if (!oRoutes.has(k) || wDist < oRoutes.get(k)) oRoutes.set(k, wDist);
-      }
-    }
-    const dRoutes = new Set();
-    for (const it of etaD.list) {
-      if (it && it.RouteUID) {
-        const dir = it.Direction ?? 0;
-        dRoutes.add(it.RouteUID + "|" + dir);
-      }
-    }
-    for (const [k, walkO] of oRoutes.entries()) {
-      if (dRoutes.has(k)) {
-        const [u, dirStr] = k.split("|");
-        const dir = +dirStr;
-        const r = recs.find(x => x.u === u && Number(x.d) === dir);
-        if (r) {
-          if (!candMap.has(k) || walkO < candMap.get(k).walkO) {
-            candMap.set(k, { routeUID: u, dir, sub: r.s || r.sn || "", walkO, rec: r });
-          }
-        }
-      }
-    }
-  } else {
-    miss.push("開放資料即時/站牌查詢失敗，僅能依班表站序篩選候選路線");
-  }
-
+  // Opus：工單「拿掉終點那次 /od/eta、候選不再靠 /od/eta」：雲端站序讀不到時只用班表 st 找候選，不再打 /od/eta 找路線
+  if (!bsorLoaded) miss.push("雲端站序讀不到，只用班表站序找候選路線");
   // 依起點步行距離排序，最多 12 條
   let candidates = Array.from(candMap.values()).sort((a, b) => a.walkO - b.walkO).slice(0, BD_MAX_CANDIDATES);
 
-  // 3. 候選路線用 cloudSor 取站序，確認起點站在終點站之前
-  const candUids = [...new Set(candidates.map(c => c.routeUID))];
-  const sorMap = candUids.length ? await cloudSor(candUids).catch(() => ({})) : {};
-
-  candidates = candidates.filter(cand => {
-    if (cand.rec && cand.rec.st && cand.rec.st.length >= 2) {
-      let hasO = false, valid = false;
-      for (const s of cand.rec.st) {
-        if (nearO.has(s[0])) hasO = true;
-        if (nearD.has(s[0]) && hasO) { valid = true; break; }
+  // 3. 若無 bsor 才退回 cloudSor（正常路徑零 /bus/sor/route 請求）
+  if (!bsorLoaded && candidates.length) {
+    const candUids = [...new Set(candidates.map(c => c.routeUID))];
+    const extraSor = await cloudSor(candUids).catch(() => ({}));
+    Object.assign(sorMap, extraSor);
+    candidates = candidates.filter(cand => {
+      if (cand.rec && cand.rec.st && cand.rec.st.length >= 2) {
+        let hasO = false;
+        for (const s of cand.rec.st) {
+          if (nearO.has(s[0])) { hasO = true; cand.oUids = cand.oUids || []; if (!cand.oUids.includes(s[0])) cand.oUids.push(s[0]); }
+          if (nearD.has(s[0]) && hasO) { cand.dUids = cand.dUids || []; if (!cand.dUids.includes(s[0])) cand.dUids.push(s[0]); }
+        }
+        return !!(cand.dUids && cand.dUids.length);
       }
-      if (valid) return true;
+      const sorList = sorMap[cand.routeUID] || [];
+      const sorEntry = sorList.find(x => Number(x.Direction) === Number(cand.dir) && (!cand.sub || String(x.SubRouteUID) === String(cand.sub)));
+      if (sorEntry && sorEntry.Stops && sorEntry.Stops.length >= 2) {
+        let hasO = false;
+        for (const s of sorEntry.Stops) {
+          if (nearO.has(s.StopUID)) { hasO = true; cand.oUids = cand.oUids || []; if (!cand.oUids.includes(s.StopUID)) cand.oUids.push(s.StopUID); }
+          if (nearD.has(s.StopUID) && hasO) { cand.dUids = cand.dUids || []; if (!cand.dUids.includes(s.StopUID)) cand.dUids.push(s.StopUID); }
+        }
+        return !!(cand.dUids && cand.dUids.length);
+      }
+      return false;
+    });
+  }
+
+  // 4. 即時到站校正（僅限指定出發／現在出發且在未來 60 分鐘內；指定抵達或超過 60 分鐘零請求）
+  const nowMs = Date.now();
+  const queryMs = BusDirect.parseTpe(t);
+  const useLive = (w === "dep") && Number.isFinite(queryMs) && (queryMs - nowMs >= -60000) && (queryMs - nowMs <= 60 * 60000);
+  const liveMap = {};
+  if (useLive && candidates.length) {
+    const tpeCands = candidates.filter(c => String(c.routeUID).startsWith("TPE"));
+    const otherCands = candidates.filter(c => !String(c.routeUID).startsWith("TPE"));
+    const liveJobs = [];
+    if (tpeCands.length) {
+      liveJobs.push(odGet(`/od/eta?lat=${+o.lat}&lon=${+o.lon}&r=${R}`).then(etaO => {
+        for (const it of (etaO && etaO.list) || []) {
+          if (it && it.RouteUID && typeof it.EstimateTime === "number" && Number.isFinite(it.EstimateTime) && it.EstimateTime >= 0 && (it.StopStatus == null || it.StopStatus === 0)) {
+            const dir = it.Direction ?? 0;
+            liveMap[it.RouteUID + "|" + dir + "|" + it.StopUID] = it.EstimateTime;   // Opus：只記上車站本身，不用同路線別站的時間
+          }
+        }
+      }).catch(() => {}));
     }
-    const sorList = sorMap[cand.routeUID] || [];
-    const sorEntry = sorList.find(x => Number(x.Direction) === Number(cand.dir) && (!cand.sub || String(x.SubRouteUID) === String(cand.sub)));
-    if (sorEntry && sorEntry.Stops && sorEntry.Stops.length >= 2) {
-      let hasO = false;
-      for (const s of sorEntry.Stops) {
-        if (nearO.has(s.StopUID)) hasO = true;
-        if (nearD.has(s.StopUID) && hasO) return true;
+    if (otherCands.length) {
+      const stopIds = [...new Set(otherCands.map(c => c.boardStopUID).filter(Boolean))].slice(0, 20);   // Opus：Worker 上限 20
+      if (stopIds.length) {
+        liveJobs.push((async () => {
+          const bgRes = await authedGet(`/busgo/live?ids=${enc(stopIds.join(","))}`, 5000).catch(() => null);   // Opus：/busgo/live 要登入
+          if (bgRes && bgRes.ok && bgRes.live) {
+            for (const c of otherCands) {
+              const sec = bgRes.live[c.routeUID + "_" + c.dir];
+              if (typeof sec === "number" && Number.isFinite(sec) && sec >= 0) {
+                liveMap[c.routeUID + "|" + c.dir + "|" + c.boardStopUID] = sec;
+              }
+            }
+          }
+          const unresolved = otherCands.filter(c => liveMap[c.routeUID + "|" + c.dir + "|" + c.boardStopUID] == null).slice(0, 3);
+          await Promise.all(unresolved.map(async c => {
+            const off = await fetchOfficialRoute(c.routeUID, c.rec && c.rec.n, [], sorMap[c.routeUID] || null).catch(() => null);
+            const list = (off && off.list) || [];
+            const hit = list.find(x => x.StopUID === c.boardStopUID && (x.Direction == null || (x.Direction === 1 ? 1 : 0) === Number(c.dir)) && typeof x.EstimateTime === "number" && x.EstimateTime >= 0);   // Opus：只認上車站本身
+            if (hit) liveMap[c.routeUID + "|" + c.dir + "|" + c.boardStopUID] = hit.EstimateTime;
+          }));
+        })());
       }
     }
-    return false;
-  });
+    await Promise.all(liveJobs);
+  }
 
-  // 4. 站間資料只讀候選路線（IndexedDB 有就不打網路，同一包只讀/下載一次）
+  // 5. OSRM 步行時間矩陣（最多 2 次 /walk?q=table&mode=foot：起點→上車站、下車站→終點）
+  const oStopObjs = [], dStopObjs = [], seenO = new Set(), seenD = new Set();
+  for (const c of candidates) {
+    for (const uid of c.oUids || [c.boardStopUID]) {
+      if (uid && stops[uid] && !seenO.has(uid)) { seenO.add(uid); oStopObjs.push({ uid, lat: stops[uid][0], lon: stops[uid][1] }); }
+    }
+    for (const uid of c.dUids || []) {
+      if (uid && stops[uid] && !seenD.has(uid)) { seenD.add(uid); dStopObjs.push({ uid, lat: stops[uid][0], lon: stops[uid][1] }); }
+    }
+  }
+  const wt = await walkTable(o, d, oStopObjs, dStopObjs);
+
+  // 6. 站間資料只讀候選路線（IndexedDB 有就不打網路，同一包只讀/下載一次）
   const s2sDocs = {};
   let s2sLocalPacks = 0, s2sNetPacks = 0, s2sBytes = 0, s2sNetBytes = 0;
   const seenPacks = new Set();
@@ -3738,7 +3933,7 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
     } catch (e) {}
   }
 
-  // 5. 執行直達計算
+  // 7. 執行直達計算
   const out = await bdRun({
     records: recs,
     stops,
@@ -3749,12 +3944,19 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
     opts: { ...P, holidays },
     s2s: s2sDocs,
     sor: sorMap,
-    cand: candidates
+    cand: candidates,
+    walkTable: wt,
+    live: useLive ? liveMap : null,
+    nowMs,
+    sorOneStop
   });
 
   out.notes = [...(out.notes || []), ...miss, ...(hol ? [] : ["國定假日曆讀不到，無法排除國定假日"])];
   out.meta = {
     cities: cities.map(x => ({ city: x.city, t: x.t, cached: !!x.cached })),
+    bsor: bsorMeta,
+    walkCalls: wt.calls,
+    useLive,
     opts: P,
     query: { when: w, time: t },
     candCount: candidates.length,
@@ -6561,11 +6763,11 @@ async function busDest(p) {
 // ---------- 登入（帳號存在 Worker；裝置只存 session token，登出前不必再登入） ----------
 // ---------- 路線規劃（v2.13.0）：TDX MaaS routing（經 Worker /plan）＋ OpenStreetMap 地點搜尋（經 Worker /geo） ----------
 // MaaS 回傳的路段沒有任何代碼（RouteUID／StationID），所以用「名稱＋座標」對回 App 自己的車站清單與公車路線清單，才能顯示即時到站、點進車站頁／路線頁
-async function authedGet(path) {
+async function authedGet(path, ms = 30000) {
   const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
   const s = getSession();
   let r, j = null;
-  try { r = await fetchT(nt(proxy + path), 30000, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }   // 30 秒：含路線規劃、大型清單下載
+  try { r = await fetchT(nt(proxy + path), ms, { headers: s ? { "x-session": s.token } : {} }); j = await r.json().catch(() => null); }   // 30 秒：含路線規劃、大型清單下載
   catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
   if (!r.ok) { const m = j && (j.message || j.Message); throw new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); }
   return j;
@@ -8104,6 +8306,7 @@ const dataApi0 = async (action, p = {}) => {
     case "s2sBatchSkipCur": return s2sBatchSkipCur();
     case "s2sBatchReset": return s2sBatchReset();
     case "s2sDocGet": return s2sDocGet(p || {});
+    case "walkTable": return walkTable(p.o, p.d, p.oStops, p.dStops);   // Opus：測試分兩次 table 的間隔用
     case "s2sRouteGet": return s2sRouteGet(p || {});
     case "s2sSampleGet": return s2sSampleGet();
     case "s2sSampleClear": return s2sSampleClear();
@@ -8152,6 +8355,7 @@ const dataApi0 = async (action, p = {}) => {
     case "busHeal": return busHeal(p.uids, p.cities);
     case "planRoutes": return planRoutes(p);
     case "busDirect": return busDirectPlan(p || {});
+    case "walkRoute": return walkRoute(p || {});
     case "locatePlan": return locatePlan();
     case "planLive": return planLive(p);
     case "rpBusNear": return rpBusNear(p || {});

@@ -3413,10 +3413,13 @@ function bdHtml(P) {
   if (B.status === 'not-covered') h += `<div class="note">資料未涵蓋：${esc(B.reason || '')}</div>`;
   else if (B.status === 'no-route') h += `<div class="note">資料內無路線：${esc(B.reason || '')}</div>`;
   else if (B.status !== 'ok') h += `<div class="note">${esc(B.message || B.reason || '無法計算')}</div>`;
-  for (const r of B.routes || []) {
+  for (let idx = 0; idx < (B.routes || []).length; idx++) {
+    const r = B.routes[idx];
     const day = r.startIso.slice(0, 10) !== qd ? `${bdMd(r.startIso)} ` : '';
     let srcTag = '表定', waitDesc = '';
-    if (r.headway) {
+    if (r.confidence === 'live') {
+      srcTag = `即時・${r.liveMin != null ? r.liveMin : Math.max(0, Math.ceil((r.liveSec || 0) / 60))} 分到站`;   // Opus：照工單「即時・N 分到站」
+    } else if (r.headway) {
       const n = r.headway.n || Math.round((r.headway.min + r.headway.max) / 2);
       srcTag = `估算・約每 ${n} 分一班`;
       if (r.wait != null) waitDesc = `等車約 ${r.wait} 分；`;
@@ -3429,11 +3432,35 @@ function bdHtml(P) {
     } else if (r.confidence === 'timetable') {
       srcTag = '表定';
     }
+    const hasOsrm = (r.walkO && r.walkO.src === 'osrm') || (r.walkD && r.walkD.src === 'osrm');
+    // Opus：上車、下車兩段各自標來源（可能一段 OSRM、一段直線估算）
+    const wSrc = w => (w && w.src === 'osrm') ? 'OSRM 實際路網' : '直線估算';
+    const walkDesc = `步行：上車段${wSrc(r.walkO)}、下車段${wSrc(r.walkD)}` + (hasOsrm ? '' : '（直線距離×係數的試行估算）');
+    const det = P.bdDet && P.bdDet[idx];
+    let detHtml = '';
+    if (det && det.open) {
+      if (det.loading) {
+        detHtml = `<div class="sub" style="margin-top:6px">讀取詳細步行路段中…</div>`;
+      } else {
+        const oTxt = det.o && det.o.ok ? `${Math.round(det.o.distance)} 公尺・約 ${Math.ceil(det.o.duration / 60)} 分${det.o.roads && det.o.roads.length ? '・經 ' + esc(det.o.roads.join(' → ')) : ''}` : `約 ${r.walkO.min} 分（直線估算）`;
+        const dTxt = det.d && det.d.ok ? `${Math.round(det.d.distance)} 公尺・約 ${Math.ceil(det.d.duration / 60)} 分${det.d.roads && det.d.roads.length ? '・經 ' + esc(det.d.roads.join(' → ')) : ''}` : `約 ${r.walkD.min} 分（直線估算）`;
+        detHtml = `<div class="sub" style="margin-top:6px;line-height:1.5">上車步行（${esc(r.from.name)}）：${oTxt}<br>下車步行（${esc(r.to.name)}）：${dTxt}</div>`;
+      }
+    }
     h += `<div class="note" style="margin-top:8px"><b>${day}${bdHm(r.startIso)}–${r.endIso.slice(0, 10) !== r.startIso.slice(0, 10) ? bdMd(r.endIso) + ' ' : ''}${bdHm(r.endIso)}</b>・${esc(r.name)}${r.sub && r.sub !== r.name ? `（${esc(r.sub)}）` : ''} <span class="bdsrc" style="display:inline-block;margin-left:4px;padding:1px 8px;border-radius:8px;font-size:12px;font-weight:600;white-space:nowrap;background:rgba(200,240,60,.14);color:var(--lime)">【${esc(srcTag)}】</span><br>`
-      + `步行約${r.walkO.min}分到${esc(r.from.name)} ${r.wait != null ? `（等車約 ${r.wait} 分）` : ''}${bdHm(r.from.time)}上車 → ${esc(r.to.name)} ${bdHm(r.to.time)}下車（${r.ride}分）→ 步行約${r.walkD.min}分<br><span style="color:var(--dim)">${esc(srcTag)}；${waitDesc}步行是直線距離×係數的試行估算</span></div>`;
+      + `步行約${r.walkO.min}分到${esc(r.from.name)} ${r.wait != null ? `（等車約 ${r.wait} 分）` : ''}${bdHm(r.from.time)}上車 → ${esc(r.to.name)} ${bdHm(r.to.time)}下車（${r.ride}分）→ 步行約${r.walkD.min}分<br><span style="color:var(--dim)">${esc(srcTag)}；${waitDesc}${walkDesc}</span>`
+      + `<div style="margin-top:6px"><button class="btn sec2" style="padding:4px 10px;font-size:12px" data-act="bdDetail" data-v="${idx}">${det && det.open ? '收合步行路線' : '展開步行路線'}</button></div>${detHtml}</div>`;
+  }
+  h += `<div style="margin-top:8px"><button class="btn sec2" data-act="bdBike" ${P.bdBikeBusy ? 'disabled' : ''}>${P.bdBikeBusy ? '計算騎車路線中…' : '整趟騎車比較'}</button></div>`;
+  if (P.bdBike) {
+    if (P.bdBike.ok) {
+      h += `<div class="note" style="margin-top:6px"><b>整趟自行車（OSRM）</b>：約 ${Math.ceil(P.bdBike.duration / 60)} 分・${Math.round(P.bdBike.distance)} 公尺${P.bdBike.roads && P.bdBike.roads.length ? `<br><span style="color:var(--dim)">路線：${esc(P.bdBike.roads.join(' → '))}</span>` : ''}</div>`;
+    } else {
+      h += `<div class="note" style="margin-top:6px">自行車路線暫時無法計算（${esc(P.bdBike.err || '失敗')}）</div>`;
+    }
   }
   const meta = B.meta || {};
-  h += `<div class="sub" style="margin-top:8px">試行範圍：涵蓋一般日之表定時刻路線、起點發車路線（站間時間估算）及班距路線（半個班距估算），無站間時間時依序使用班表或直線距離推估。特殊日、國定假日的班次這版先不算（上方 Google／TDX 規劃不變）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}</div>`;
+  h += `<div class="sub" style="margin-top:8px">試行範圍：時間來源依序為即時到站（現在或 60 分鐘內出發；臺北用市府開放資料，其他縣市用公車GO，再不行用官網）→ 逐站表定 → 推估（站間時間、半個班距、班表或直線距離）；候選路線用雲端站序，沒有站序的路線不列。步行時間用 OSRM 實際路網，讀不到時用直線估算。特殊日、國定假日的班次這版先不算（上方 Google／TDX 規劃不變）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}<br>路線資料 © OpenStreetMap 貢獻者・<a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">修正地圖</a></div>`;
   return h;
 }
 async function bdGo() {
@@ -3441,13 +3468,38 @@ async function bdGo() {
   const opt = {}; document.querySelectorAll('[data-bdopt]').forEach(el => { if (el.value.trim() !== '') opt[el.dataset.bdopt] = el.value.trim(); });
   P.bdOpt = opt;
   const tok = P.bdTok = (P.bdTok || 0) + 1, key = JSON.stringify([P.o, P.d, P.when, P.time]);
-  P.bdBusy = true; P.bd = null; renderPage();
+  P.bdBusy = true; P.bd = null; P.bdDet = {}; P.bdBike = null; P.bdBikeBusy = false; renderPage();
   let res;
   try { res = await api('busDirect', { o:P.o, d:P.d, when:P.when, time: P.when === 'now' ? null : (P.time || null), opts: opt }); }
   catch (e) { res = { err: e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message }; }
   if (tok !== P.bdTok) return;
   P.bdBusy = false;
   P.bd = key === JSON.stringify([P.o, P.d, P.when, P.time]) ? res : null;   // 算的途中起訖／時間改了：結果作廢
+  if (S.page === 'plan') renderPage();
+}
+async function bdDetail(idx) {
+  const P = S.plan, r = P && P.bd && P.bd.routes && P.bd.routes[idx];
+  if (!r) return;
+  P.bdDet = P.bdDet || {};
+  const cur = P.bdDet[idx];
+  if (cur && (cur.o || cur.d)) { cur.open = !cur.open; renderPage(); return; }
+  P.bdDet[idx] = { open: true, loading: true }; renderPage();
+  const [oRes, dRes] = await Promise.all([
+    r.from && r.from.pos && P.o ? api('walkRoute', { mode: 'foot', pts: [[P.o.lat, P.o.lon], r.from.pos] }).catch(e => ({ ok: false, err: e.message })) : Promise.resolve(null),
+    r.to && r.to.pos && P.d ? api('walkRoute', { mode: 'foot', pts: [r.to.pos, [P.d.lat, P.d.lon]] }).catch(e => ({ ok: false, err: e.message })) : Promise.resolve(null)
+  ]);
+  P.bdDet[idx] = { open: true, loading: false, o: oRes, d: dRes };
+  if (S.page === 'plan') renderPage();
+}
+async function bdBike() {
+  const P = S.plan; if (!P || !P.o || !P.d || P.bdBikeBusy) return;
+  if (P.bdBike && P.bdBike.ok && P.bdBike.key === JSON.stringify([P.o, P.d])) return;
+  P.bdBikeBusy = true; renderPage();
+  let res;
+  try { res = await api('walkRoute', { mode: 'bike', pts: [[P.o.lat, P.o.lon], [P.d.lat, P.d.lon]] }); }
+  catch (e) { res = { ok: false, err: e.message }; }
+  P.bdBikeBusy = false;
+  P.bdBike = { ...res, key: JSON.stringify([P.o, P.d]) };
   if (S.page === 'plan') renderPage();
 }
 // v2.33.0：第一段公車的即時查詢在背景做完（最多2次，和以前一樣）：換上新清單（可能改變排序）；在別頁時先存著，回到列表才換
@@ -3940,6 +3992,8 @@ document.addEventListener('click', e => {
     case 'planMode': S.plan.modes[el.dataset.v] = S.plan.modes[el.dataset.v] ? 0 : 1; planSavePref(); planChanged(); break;
     case 'planGo': planGo(); break;
     case 'bdGo': bdGo(); break;
+    case 'bdDetail': bdDetail(+el.dataset.v); break;
+    case 'bdBike': bdBike(); break;
     case 's2sCity': S.s2s.c = el.dataset.v; S.s2s.meta = null; S.s2s.pend = null; S.s2s.res = null; S.s2s.msg = ''; renderPage(); break;
     case 's2sNext': s2sNext(); break;
     case 's2sGo': s2sGo(); break;

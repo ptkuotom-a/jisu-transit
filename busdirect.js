@@ -39,7 +39,7 @@
   const wday = mid => new Date(mid + TPE).getUTCDay(); // 0＝日
 
   function plan(input) {
-    const { records, stops, o, d, when, time, opts, s2s, sor, cand } = input || {};
+    const { records, stops, o, d, when, time, opts, s2s, sor, cand, walkTable, live, nowMs, sorOneStop } = input || {};
     const P = opts || {};
     const bad = m => ({ status: "bad-params", message: m, routes: [] });
 
@@ -74,6 +74,7 @@
       special: 0,
       missingTime: 0,
       noCoord: 0,
+      sorOneStop: sorOneStop || 0,
       holidaySkipped: [],
       tripsChecked: 0
     };
@@ -119,7 +120,9 @@
       let sorEntry = null;
       if (sor) {
         const sorList = sor[r.u] || sor[r.n] || [];
-        sorEntry = sorList.find(x => Number(x.Direction) === Number(r.d) && (!r.s || String(x.SubRouteUID) === String(r.s))) || null;
+        const rawMatch = sorList.find(x => Number(x.Direction) === Number(r.d) && (!r.s || String(x.SubRouteUID) === String(r.s))) || null;
+        if (rawMatch && rawMatch.Stops && rawMatch.Stops.length === 1 && sorOneStop == null) st.sorOneStop++;
+        sorEntry = (rawMatch && rawMatch.Stops && rawMatch.Stops.length >= 2) ? rawMatch : null;
       }
 
       if (!S || S.length < 2) {
@@ -129,7 +132,7 @@
             s.StopName ? (s.StopName.Zh_tw || s.StopName) : s.StopUID,
             s.P
           ]);
-        } else if (s2s) {
+        } else if (!sor && s2s) {
           const doc = s2s[r.u] || s2s[r.n];
           if (doc && Array.isArray(doc.d)) {
             const dx = doc.d.find(x => Number(x.Direction) === Number(r.d) && (!r.s || String(x.SubRouteUID) === String(r.s)));
@@ -214,6 +217,71 @@
         return null;
       }
 
+      function walkInfoO(uid) {
+        const rawDist = NO.get(uid);
+        const oSec = walkTable && walkTable.o && typeof walkTable.o[uid] === "number" && Number.isFinite(walkTable.o[uid]) ? walkTable.o[uid] : null;
+        const oDist = walkTable && walkTable.oDist && typeof walkTable.oDist[uid] === "number" && Number.isFinite(walkTable.oDist[uid]) ? walkTable.oDist[uid] : rawDist;
+        return oSec != null
+          ? { m: Math.round(oDist), min: Math.ceil(oSec / 60), src: "osrm", sec: Math.round(oSec) }
+          : { m: Math.round(rawDist), min: wm(rawDist), src: "line" };
+      }
+      function walkInfoD(uid) {
+        const rawDist = ND.get(uid);
+        const dSec = walkTable && walkTable.d && typeof walkTable.d[uid] === "number" && Number.isFinite(walkTable.d[uid]) ? walkTable.d[uid] : null;
+        const dDist = walkTable && walkTable.dDist && typeof walkTable.dDist[uid] === "number" && Number.isFinite(walkTable.dDist[uid]) ? walkTable.dDist[uid] : rawDist;
+        return dSec != null
+          ? { m: Math.round(dDist), min: Math.ceil(dSec / 60), src: "osrm", sec: Math.round(dSec) }
+          : { m: Math.round(rawDist), min: wm(rawDist), src: "line" };
+      }
+
+      // --- 模式 0：即時到站 (live) ---
+      if (when === "dep" && live) {
+        const baseNowMs = Number.isFinite(nowMs) ? nowMs : t;
+        for (const i of iO) for (const j of iD) {
+          if (j <= i) continue;
+          const uidO = S[i][0];
+          const liveSec = live[r.u + "|" + r.d + "|" + uidO];   // Opus：只用這個上車站的即時，對不上站就退到下一順位
+          if (typeof liveSec !== "number" || !Number.isFinite(liveSec) || liveSec < 0) continue;
+          const depMs = baseNowMs + liveSec * 1000;
+          let tRide = null;
+          if (r.tr && r.tr.length) {
+            for (const tr of r.tr) {
+              const pat = (r.p || [])[tr[2]] || [];
+              if (pat[i] != null && pat[j] != null && pat[i] >= 0 && pat[j] > pat[i]) {
+                tRide = { seconds: (pat[j] - pat[i]) * 60, source: "timetable" };
+                break;
+              }
+            }
+          }
+          if (!tRide) tRide = getTravelTime(uidO, S[j][0], depMs);
+          if (!tRide) { st.noS2s++; continue; }
+          const arrMs = depMs + tRide.seconds * 1000;
+          const wO = walkInfoO(uidO), wD = walkInfoD(S[j][0]);
+          // Opus：走到上車站之前公車就到了＝趕不上，這筆即時不用（退到表定或推估）；出發時刻 t 之前也不能出門
+          if (depMs - wO.min * 60000 < t) { st.liveMissed = (st.liveMissed || 0) + 1; continue; }
+          const start = depMs - wO.min * 60000;
+          const end = arrMs + wD.min * 60000;
+          const key = r.u + "|" + r.s + "|" + r.d + "|live";
+          const c = {
+            src: "own-bus", confidence: "live", estimated: false,
+            liveSec: Math.round(liveSec), liveMin: Math.max(0, Math.ceil(liveSec / 60)),
+            routeUID: r.u, name: r.n, sub: r.sn || (sorEntry && sorEntry.SubRouteUID) || "", dir: r.d,
+            from: { uid: uidO, name: S[i][1], time: isoTpe(depMs), seq: i, pos: stops[uidO] },
+            to: { uid: S[j][0], name: S[j][1], time: isoTpe(arrMs), seq: j, pos: stops[S[j][0]] },
+            walkO: wO, walkD: wD,
+            start, end, startIso: isoTpe(start), endIso: isoTpe(end),
+            ride: Math.round(tRide.seconds / 60),
+            rideSeconds: tRide.seconds,
+            rideSrc: tRide.source,
+            serviceDate: ymd(baseNowMs)
+          };
+          const o2 = best.get(key);
+          if (!o2 || c.end < o2.end || (c.end === o2.end && c.walkO.m + c.walkD.m < o2.walkO.m + o2.walkD.m)) {
+            best.set(key, c);
+          }
+        }
+      }
+
       // --- 模式 1：有時刻表 (tr) ---
       if (r.tr && r.tr.length) {
         for (const [k, tr] of r.tr.entries()) {
@@ -227,7 +295,8 @@
             for (const i of iO) for (const j of iD) {
               if (j <= i) continue;
               const a = pat[i], b = pat[j];
-              const wo = wm(NO.get(S[i][0])), wd = wm(ND.get(S[j][0]));
+              const wO = walkInfoO(S[i][0]), wD = walkInfoD(S[j][0]);
+              const wo = wO.min, wd = wD.min;
 
               if (a != null && b != null && a >= 0 && b >= 0) {
                 // (1) 逐站時刻表班次
@@ -241,10 +310,10 @@
                 const c = {
                   src: "own-bus", confidence: "timetable", estimated: false,
                   routeUID: r.u, name: r.n, sub: r.sn || "", dir: r.d,
-                  from: { uid: S[i][0], name: S[i][1], time: isoTpe(dep), seq: i },
-                  to: { uid: S[j][0], name: S[j][1], time: isoTpe(arr), seq: j },
-                  walkO: { m: Math.round(NO.get(S[i][0])), min: wo },
-                  walkD: { m: Math.round(ND.get(S[j][0])), min: wd },
+                  from: { uid: S[i][0], name: S[i][1], time: isoTpe(dep), seq: i, pos: stops[S[i][0]] },
+                  to: { uid: S[j][0], name: S[j][1], time: isoTpe(arr), seq: j, pos: stops[S[j][0]] },
+                  walkO: wO,
+                  walkD: wD,
                   start, end, startIso: isoTpe(start), endIso: isoTpe(end),
                   ride: Math.round((arr - dep) / 60000), rideSrc: "timetable",
                   serviceDate: ymd(mid)
@@ -283,10 +352,10 @@
                 const c = {
                   src: "own-bus", confidence: conf, estimated: true,
                   routeUID: r.u, name: r.n, sub: r.sn || (sorEntry && sorEntry.SubRouteUID) || "", dir: r.d,
-                  from: { uid: S[i][0], name: S[i][1], time: isoTpe(depMs), seq: i },
-                  to: { uid: S[j][0], name: S[j][1], time: isoTpe(arrMs), seq: j },
-                  walkO: { m: Math.round(NO.get(S[i][0])), min: wo },
-                  walkD: { m: Math.round(ND.get(S[j][0])), min: wd },
+                  from: { uid: S[i][0], name: S[i][1], time: isoTpe(depMs), seq: i, pos: stops[S[i][0]] },
+                  to: { uid: S[j][0], name: S[j][1], time: isoTpe(arrMs), seq: j, pos: stops[S[j][0]] },
+                  walkO: wO,
+                  walkD: wD,
                   start, end, startIso: isoTpe(start), endIso: isoTpe(end),
                   ride: Math.round(tRide.seconds / 60),
                   rideSrc: { offset: offsetSrc, ride: tRide.source },
@@ -331,7 +400,8 @@
 
             for (const i of iO) for (const j of iD) {
               if (j <= i) continue;
-              const wo = wm(NO.get(S[i][0])), wd = wm(ND.get(S[j][0]));
+              const wO = walkInfoO(S[i][0]), wD = walkInfoD(S[j][0]);
+              const wo = wO.min, wd = wD.min;
 
               // 起點服務時段
               const originStartMs = mid + startMin * 60000;
@@ -396,10 +466,10 @@
               const c = {
                 src: "own-bus", confidence: conf, estimated: true,
                 routeUID: r.u, name: r.n, sub: r.sn || (sorEntry && sorEntry.SubRouteUID) || "", dir: r.d,
-                from: { uid: S[i][0], name: S[i][1], time: isoTpe(boardMs), seq: i },
-                to: { uid: S[j][0], name: S[j][1], time: isoTpe(arrMs), seq: j },
-                walkO: { m: Math.round(NO.get(S[i][0])), min: wo },
-                walkD: { m: Math.round(ND.get(S[j][0])), min: wd },
+                from: { uid: S[i][0], name: S[i][1], time: isoTpe(boardMs), seq: i, pos: stops[S[i][0]] },
+                to: { uid: S[j][0], name: S[j][1], time: isoTpe(arrMs), seq: j, pos: stops[S[j][0]] },
+                walkO: wO,
+                walkD: wD,
                 start: startMs, end: endMs, startIso: isoTpe(startMs), endIso: isoTpe(endMs),
                 ride: Math.round(tRide.seconds / 60),
                 rideSeconds: tRide.seconds,
@@ -427,26 +497,28 @@
       }
     }
 
-    let routes = [...best.values()];
-    routes.sort(when === "dep"
+    const tierOf = r => r.confidence === "live" ? 3 : (r.confidence === "timetable" && !r.estimated ? 2 : 1);
+    const cmpTime = when === "dep"
       ? (a, b) => a.end - b.end || a.start - b.start
-      : (a, b) => b.start - a.start || a.end - b.end);
-
-    // 同一路線同方向只留最好的一班
-    const seen = new Set();
-    routes = routes.filter(r => {
+      : (a, b) => b.start - a.start || a.end - b.end;
+    // 同一路線同方向只留最好的一班：即時 > 表定 > 估算，同級比時間
+    const perRoute = new Map();
+    for (const r of best.values()) {
       const k = r.routeUID + "|" + r.sub + "|" + r.dir;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    }).slice(0, max);
+      const cur = perRoute.get(k);
+      if (!cur) { perRoute.set(k, r); continue; }
+      const dt = tierOf(r) - tierOf(cur);
+      if (dt > 0 || (dt === 0 && cmpTime(r, cur) < 0)) perRoute.set(k, r);
+    }
+    const routes = [...perRoute.values()].sort(cmpTime).slice(0, max);
 
     if (st.freqOnly && freqPolicy === "exclude") notes.push(st.freqOnly + " 條只有班距的路線未列（列法尚未定案）");
     if (st.freqNoHeadway) notes.push(st.freqNoHeadway + " 筆班距缺少班距數值，未列");
     if (st.special) notes.push(st.special + " 班有特殊日規則的班次未列（規則尚未支援）");
     if (st.missingTime) notes.push("有 " + st.missingTime + " 個上下車站組合缺表定時刻，未列");
     if (st.noS2s) notes.push("有 " + st.noS2s + " 次估算缺少站間資料，改用班表或直線距離推估");
-    if (st.noStops) notes.push(st.noStops + " 條路線查無站序資訊，未列");
+    if (st.liveMissed) notes.push(st.liveMissed + " 筆即時到站的公車在步行到站前就會到，改列下一班的表定或推估");   // Opus
+    if (st.noStops) notes.push(st.noStops + " 條無站序（查無站序資訊，未列）");
 
     return { status: routes.length ? "ok" : "no-route", reason: routes.length ? null : "已收錄的時刻表內沒有符合條件的直達班次", routes, stats: st, notes };
   }
