@@ -2203,6 +2203,17 @@ const IDB = (() => {
       const db = await open(); if (!db) return;
       try { const t = db.transaction(["kv", "meta"], "readwrite"); t.objectStore("kv").delete(k); t.objectStore("meta").delete(k); await done(t); } catch (e) {}
     },
+    async keys(prefix = "") {
+      const db = await open();
+      if (!db) return [...mem.keys()].filter(k => typeof k === "string" && k.startsWith(prefix));
+      try {
+        const t = db.transaction(["kv"], "readonly");
+        const allKeys = await rq(t.objectStore("kv").getAllKeys());
+        return allKeys.filter(k => typeof k === "string" && k.startsWith(prefix));
+      } catch (e) {
+        return [...mem.keys()].filter(k => typeof k === "string" && k.startsWith(prefix));
+      }
+    },
     open,
   };
 })();
@@ -3735,17 +3746,152 @@ async function s2sBatchRun({ shouldPause, onTick } = {}) {
 }
 // ---------- JT-20261108-03：站間時間「雲端唯讀」資料層入口（規劃用；只讀雲端，不打 TDX；來源有效期只供參考，不拒讀）----------
 const s2sMem = new Map();
-async function s2sRouteGet({ c, route }) {
-  const k = c + "|" + route; if (s2sMem.has(k)) return s2sMem.get(k);
-  const proxy = getProxy(), s = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!s) throw new Error("請重新登入");
-  let r; try { r = await fetchT(proxy + "/bus/s2s/route?c=" + enc(c || "") + "&route=" + enc(route || ""), 30000, { headers: { "x-session": s.token } }); } catch (e) { throw new Error("連不到伺服器，請確認網路"); }
-  if (r.status === 404) return null;   // 雲端還沒有：不臨時打 TDX
-  if (!r.ok) { const j = await r.json().catch(() => null); throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status)); }
-  const doc = JSON.parse(await new Response(new Blob([await r.arrayBuffer()]).stream().pipeThrough(new DecompressionStream("gzip"))).text());
-  const segs = [];   // 只列真正行駛段（排除 307 那種起點標記：Sequence 1、沒有 FromStopID 與 RunTime）
-  for (const x of doc.d || []) for (const t of x.TravelTimes || []) if (t && t.FromStopID != null && typeof t.RunTime === "number") segs.push({ sub: x.SubRouteUID, dir: x.Direction, seq: t.Sequence, from: t.FromStopID, to: t.ToStopID, sec: t.RunTime, start: t.StartTime, end: t.EndTime, tag: t.ServiceTag });
+
+async function s2sMetaFetch(proxy, s, c) {
+  let r;
+  try {
+    r = await fetchT(proxy + "/bus/s2s/meta?c=" + enc(c || ""), 30000, { headers: { "x-session": s.token } });
+  } catch (e) {
+    throw new Error("連不到伺服器，請確認網路");
+  }
+  if (!r.ok) {
+    const j = await r.json().catch(() => null);
+    throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+  }
+  const meta = await r.json();
+  const record = { t: Date.now(), meta };
+  await IDB.set("s2sm|" + c, record).catch(() => {});
+
+  // 清單更新後，本機有、但新清單已經沒有任何路線引用的 s2sp|{c}|*，要刪掉
+  try {
+    const activeP = new Set();
+    if (meta && meta.r) {
+      for (const item of Object.values(meta.r)) {
+        if (item && item.p) activeP.add(item.p);
+      }
+    }
+    const localKeys = await IDB.keys("s2sp|" + c + "|");
+    for (const lk of localKeys) {
+      const parts = lk.split("|");
+      const partId = parts[2];
+      if (partId && !activeP.has(partId)) {
+        await IDB.del(lk).catch(() => {});
+      }
+    }
+  } catch (e) {}
+
+  return meta;
+}
+
+async function s2sRouteGet(o) {
+  // Opus：解壓後 doc.ver 要等於清單的 ver（上傳時的 sha256 前 16 碼）；不符就丟掉本機那份、重抓一次
+  try { return await s2sRouteGet1(o, false); }
+  catch (e) { if (e && e.s2sBad) return s2sRouteGet1(o, true); throw e; }
+}
+async function s2sRouteGet1({ c, route }, retry) {
+  const k = c + "|" + route;
+  if (s2sMem.has(k)) return s2sMem.get(k);
+
+  const proxy = getProxy(), s = getSession();
+  if (!proxy) throw new Error("NO_PROXY");
+  if (!s) throw new Error("請重新登入");
+
+  // 1. 清單：IndexedDB s2sm|{c}（存 meta 回應和抓取時間）。超過 10 分鐘，或找不到這條路線時，才重抓 /bus/s2s/meta。
+  let cached = await IDB.get("s2sm|" + c).catch(() => null);
+  let meta = (cached && cached.meta && (Date.now() - (cached.t || 0) < 600000)) ? cached.meta : null;
+
+  // 如果找不到這條路線（或者快取過期），重新抓取 meta
+  if (!meta || (!meta.r?.[route] && !meta.none?.[route] && !meta.rej?.[route])) {
+    try { meta = await s2sMetaFetch(proxy, s, c); }
+    catch (err) { if (cached && cached.meta) meta = cached.meta; else throw err; }   // Opus：連不上時用本機舊清單（離線也能算）
+  }
+
+  // 查無或拒收
+  if (meta) {
+    if (meta.none && meta.none[route]) return null;
+    if (meta.rej && meta.rej[route]) return null;
+  }
+
+  const e = meta && meta.r && meta.r[route];
+  if (!e) return null; // 路線不在清單中
+
+  let gzBytes = null;
+
+  if (e.p) {
+    // 2. 新格式（有 p）：IndexedDB s2sp|{c}|{p} 有就用，沒有就打 /bus/s2s/part 整包存進去。再用 o、n 切出這條路線的 gzip、解壓。
+    const packKey = "s2sp|" + c + "|" + e.p;
+    let packBuf = retry ? null : await IDB.get(packKey).catch(() => null);
+    if (!packBuf) {
+      let r;
+      try {
+        r = await fetchT(proxy + "/bus/s2s/part?c=" + enc(c || "") + "&p=" + enc(e.p), 30000, { headers: { "x-session": s.token } });
+      } catch (err) {
+        throw new Error("連不到伺服器，請確認網路");
+      }
+      if (r.status === 404) return null;
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+      }
+      packBuf = await r.arrayBuffer();
+      await IDB.set(packKey, packBuf).catch(() => {});
+    }
+    // 切片
+    gzBytes = packBuf.slice(e.o, e.o + e.n);
+  } else {
+    // 3. 舊格式（沒有 p）：沿用 /bus/s2s/route 單條讀取，結果（gzip bytes）存進 IndexedDB s2sr|{c}|{route}|{ver}。下次同 ver 直接用本機。
+    const routeKey = "s2sr|" + c + "|" + route + "|" + (e.ver || "");
+    gzBytes = retry ? null : await IDB.get(routeKey).catch(() => null);
+    if (!gzBytes) {
+      // Opus：同一條路線舊 ver 的本機單條資料刪掉
+      try { for (const lk of await IDB.keys("s2sr|" + c + "|" + route + "|")) if (lk !== routeKey) await IDB.del(lk).catch(() => {}); } catch (err) {}
+      let r;
+      try {
+        r = await fetchT(proxy + "/bus/s2s/route?c=" + enc(c || "") + "&route=" + enc(route || ""), 30000, { headers: { "x-session": s.token } });
+      } catch (err) {
+        throw new Error("連不到伺服器，請確認網路");
+      }
+      if (r.status === 404) return null;
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("錯誤 " + r.status));
+      }
+      gzBytes = await r.arrayBuffer();
+      await IDB.set(routeKey, gzBytes).catch(() => {});
+    }
+  }
+
+  if (!gzBytes) return null;
+
+  // 解壓
+  let doc = null;
+  try { doc = JSON.parse(await new Response(new Blob([gzBytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text()); } catch (err) {}
+  if (!doc || (e.ver && doc.ver !== e.ver) || (e.p && gzBytes.byteLength !== e.n)) {
+    await IDB.del(e.p ? "s2sp|" + c + "|" + e.p : "s2sr|" + c + "|" + route + "|" + (e.ver || "")).catch(() => {});
+    if (!retry) { const bad = new Error("站間時間資料核對不符"); bad.s2sBad = true; throw bad; }
+    throw new Error("站間時間資料核對不符");
+  }
+  const segs = [];
+  for (const x of doc.d || []) {
+    for (const t of x.TravelTimes || []) {
+      if (t && t.FromStopID != null && typeof t.RunTime === "number") {
+        segs.push({
+          sub: x.SubRouteUID,
+          dir: x.Direction,
+          seq: t.Sequence,
+          from: t.FromStopID,
+          to: t.ToStopID,
+          sec: t.RunTime,
+          start: t.StartTime,
+          end: t.EndTime,
+          tag: t.ServiceTag
+        });
+      }
+    }
+  }
   const out = { c, route, ver: doc.ver, srcEff: doc.eff || null, srcExp: doc.exp || null, segs };
-  s2sMem.set(k, out); return out;
+  s2sMem.set(k, out);
+  return out;
 }
 // ---------- JT-20261108-04：站間時間「本機暫存（先下載到本機、再上傳雲端）」----------
 // 1. 本機存放：IndexedDB「jisu-s2s-local」，綁定管理者 session，每條路線一筆：

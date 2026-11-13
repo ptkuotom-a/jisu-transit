@@ -1,6 +1,6 @@
 // 極速通勤 Service Worker：快取優先（同源 GET 有快取直回，換版靠 VERSION）；即時資料不攔截
-// build 2.49.26
-const VERSION = "jisu-v2.49.27";
+// build 2.49.28
+const VERSION = "jisu-v2.49.28";
 const SHELL = [
   "./", "./index.html", "./data.js", "./busdirect.js", "./config.js", "./manifest.webmanifest",
   "./data/pda-thb-map.json",
