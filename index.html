@@ -3415,11 +3415,25 @@ function bdHtml(P) {
   else if (B.status !== 'ok') h += `<div class="note">${esc(B.message || B.reason || '無法計算')}</div>`;
   for (const r of B.routes || []) {
     const day = r.startIso.slice(0, 10) !== qd ? `${bdMd(r.startIso)} ` : '';
-    h += `<div class="note" style="margin-top:8px"><b>${day}${bdHm(r.startIso)}–${r.endIso.slice(0, 10) !== r.startIso.slice(0, 10) ? bdMd(r.endIso) + ' ' : ''}${bdHm(r.endIso)}</b>・${esc(r.name)}${r.sub && r.sub !== r.name ? `（${esc(r.sub)}）` : ''}<br>`
-      + `步行約${r.walkO.min}分到${esc(r.from.name)} ${bdHm(r.from.time)}上車 → ${esc(r.to.name)} ${bdHm(r.to.time)}下車（${r.ride}分）→ 步行約${r.walkD.min}分<br><span style="color:var(--dim)">表定時刻（未含即時）；步行是直線距離×係數的試行估算</span></div>`;
+    let srcTag = '表定', waitDesc = '';
+    if (r.headway) {
+      const n = r.headway.n || Math.round((r.headway.min + r.headway.max) / 2);
+      srcTag = `估算・約每 ${n} 分一班`;
+      if (r.wait != null) waitDesc = `等車約 ${r.wait} 分；`;
+    } else if (r.confidence === 's2s') {
+      srcTag = '估算・站間時間';
+    } else if (r.confidence === 'schedule') {
+      srcTag = '估算・班表';
+    } else if (r.confidence === 'distance') {
+      srcTag = '估算・直線距離';
+    } else if (r.confidence === 'timetable') {
+      srcTag = '表定';
+    }
+    h += `<div class="note" style="margin-top:8px"><b>${day}${bdHm(r.startIso)}–${r.endIso.slice(0, 10) !== r.startIso.slice(0, 10) ? bdMd(r.endIso) + ' ' : ''}${bdHm(r.endIso)}</b>・${esc(r.name)}${r.sub && r.sub !== r.name ? `（${esc(r.sub)}）` : ''} <span class="bdsrc" style="display:inline-block;margin-left:4px;padding:1px 8px;border-radius:8px;font-size:12px;font-weight:600;white-space:nowrap;background:rgba(200,240,60,.14);color:var(--lime)">【${esc(srcTag)}】</span><br>`
+      + `步行約${r.walkO.min}分到${esc(r.from.name)} ${r.wait != null ? `（等車約 ${r.wait} 分）` : ''}${bdHm(r.from.time)}上車 → ${esc(r.to.name)} ${bdHm(r.to.time)}下車（${r.ride}分）→ 步行約${r.walkD.min}分<br><span style="color:var(--dim)">${esc(srcTag)}；${waitDesc}步行是直線距離×係數的試行估算</span></div>`;
   }
   const meta = B.meta || {};
-  h += `<div class="sub" style="margin-top:8px">試行範圍：只算一般日、上下車站都有表定時刻的直達班次；只有班距、特殊日、國定假日的班次這版先不算（不是正式政策）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}</div>`;
+  h += `<div class="sub" style="margin-top:8px">試行範圍：涵蓋一般日之表定時刻路線、起點發車路線（站間時間估算）及班距路線（半個班距估算），無站間時間時依序使用班表或直線距離推估。特殊日、國定假日的班次這版先不算（上方 Google／TDX 規劃不變）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}</div>`;
   return h;
 }
 async function bdGo() {

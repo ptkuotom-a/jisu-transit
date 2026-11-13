@@ -3550,11 +3550,13 @@ const dowSplit = out => DOW.map((d, i) => { const ix = (i + 6) % 7;   // 旗標�
 // 不呼叫 TDX MaaS／Google，不觸發站序重建；雲端沒有就回「未涵蓋」，不退回外部引擎。
 // 試行縣市（雙北）只是建議；BD_TRIAL 的步行數值是「試行估算值」，不是正式政策，畫面可調整。
 const BD_CITIES = ["Taipei", "NewTaipei"];
+const BD_MAX_CANDIDATES = 12;
 const BD_TRIAL = { walkRadiusM: 500, walkMpm: 70, walkFactor: 1.3 };   // 試行估算值（未定案）
 const BD_LIM = { walkRadiusM: [50, 1500], walkMpm: [30, 150], walkFactor: [1, 3], earlyLimitMin: [1, 1440] };
 const BD_SHARD_MS = 30000, BD_CALC_MS = 20000, BD_MAX_BYTES = 40 * 1024 * 1024;   // 40MB＝Worker 上傳上限（schPut）
 function bdOpts(u) {
-  const o = { ...BD_TRIAL, freqPolicy: "exclude", maxResults: 6 };
+  const o = { ...BD_TRIAL, freqPolicy: "halfHeadway", maxResults: 6 };
+  if (u && u.freqPolicy) o.freqPolicy = u.freqPolicy;
   for (const [k, [lo, hi]] of Object.entries(BD_LIM)) if (u && u[k] != null && u[k] !== "") { const v = +u[k]; if (!(isFinite(v) && v >= lo && v <= hi)) throw new Error(`${k} 要在 ${lo}～${hi} 之間`); o[k] = v; }
   return o;
 }
@@ -3607,9 +3609,164 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
   for (const x of cities) { const l = await cloudCityStops(x.city).catch(() => null); if (!l) miss.push(x.city + "的雲端站牌座標讀不到"); for (const s of l || []) { const p = s.StopPosition; if (p && p.PositionLat) stops[s.StopUID] = [p.PositionLat, p.PositionLon]; } }
   if (signal && signal.aborted) throw new Error("已取消");
   const hol = await ttLoad("HOLIDAY").catch(() => null), holidays = Object.keys((hol && hol.dates) || {}).map(x => x.replace(/-/g, ""));
-  const out = await bdRun({ records: recs, stops, o: { lat: +o.lat, lon: +o.lon }, d: { lat: +d.lat, lon: +d.lon }, when: w, time: t, opts: { ...P, holidays } });
+
+  // 1. 挑選起訖點附近站牌
+  const hav = (a, b, c, d) => {
+    const R = 6371000, r = x => x * Math.PI / 180, x = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(x));
+  };
+  const R = P.walkRadiusM;
+  const nearO = new Map(), nearD = new Map();
+  for (const [uid, pos] of Object.entries(stops)) {
+    if (!pos) continue;
+    const do_ = hav(+o.lat, +o.lon, pos[0], pos[1]);
+    if (do_ <= R) nearO.set(uid, do_);
+    const dd_ = hav(+d.lat, +d.lon, pos[0], pos[1]);
+    if (dd_ <= R) nearD.set(uid, dd_);
+  }
+
+  // 2. 候選路線挑選（最多 12 條）
+  const candMap = new Map(); // key: RouteUID + "|" + Direction -> { routeUID, dir, sub, walkO, rec }
+  // (a) 班表紀錄 st
+  for (const r of recs) {
+    if (r.st && r.st.length >= 2) {
+      let minO = Infinity, minD = Infinity;
+      for (const s of r.st) {
+        if (nearO.has(s[0])) minO = Math.min(minO, nearO.get(s[0]));
+        if (nearD.has(s[0])) minD = Math.min(minD, nearD.get(s[0]));
+      }
+      if (minO < Infinity && minD < Infinity) {
+        const k = r.u + "|" + r.d;
+        if (!candMap.has(k) || minO < candMap.get(k).walkO) {
+          candMap.set(k, { routeUID: r.u, dir: r.d, sub: r.s || r.sn || "", walkO: minO, rec: r });
+        }
+      }
+    }
+  }
+
+  // (b) 雲端 /od/eta?lat=&lon=&r=&nwt=1（開放資料，不打 TDX，起點、終點各一次）
+  const [etaO, etaD] = await Promise.all([
+    odGet(`/od/eta?lat=${+o.lat}&lon=${+o.lon}&r=${R}&nwt=1`).catch(() => null),
+    odGet(`/od/eta?lat=${+d.lat}&lon=${+d.lon}&r=${R}&nwt=1`).catch(() => null)
+  ]);
+
+  if (etaO && etaO.list && etaD && etaD.list) {
+    const oRoutes = new Map();
+    for (const it of etaO.list) {
+      if (it && it.RouteUID) {
+        const dir = it.Direction ?? 0;
+        const k = it.RouteUID + "|" + dir;
+        const wDist = nearO.get(it.StopUID) ?? (it.PositionLat ? hav(+o.lat, +o.lon, it.PositionLat, it.PositionLon) : R);
+        if (!oRoutes.has(k) || wDist < oRoutes.get(k)) oRoutes.set(k, wDist);
+      }
+    }
+    const dRoutes = new Set();
+    for (const it of etaD.list) {
+      if (it && it.RouteUID) {
+        const dir = it.Direction ?? 0;
+        dRoutes.add(it.RouteUID + "|" + dir);
+      }
+    }
+    for (const [k, walkO] of oRoutes.entries()) {
+      if (dRoutes.has(k)) {
+        const [u, dirStr] = k.split("|");
+        const dir = +dirStr;
+        const r = recs.find(x => x.u === u && Number(x.d) === dir);
+        if (r) {
+          if (!candMap.has(k) || walkO < candMap.get(k).walkO) {
+            candMap.set(k, { routeUID: u, dir, sub: r.s || r.sn || "", walkO, rec: r });
+          }
+        }
+      }
+    }
+  } else {
+    miss.push("開放資料即時/站牌查詢失敗，僅能依班表站序篩選候選路線");
+  }
+
+  // 依起點步行距離排序，最多 12 條
+  let candidates = Array.from(candMap.values()).sort((a, b) => a.walkO - b.walkO).slice(0, BD_MAX_CANDIDATES);
+
+  // 3. 候選路線用 cloudSor 取站序，確認起點站在終點站之前
+  const candUids = [...new Set(candidates.map(c => c.routeUID))];
+  const sorMap = candUids.length ? await cloudSor(candUids).catch(() => ({})) : {};
+
+  candidates = candidates.filter(cand => {
+    if (cand.rec && cand.rec.st && cand.rec.st.length >= 2) {
+      let hasO = false, valid = false;
+      for (const s of cand.rec.st) {
+        if (nearO.has(s[0])) hasO = true;
+        if (nearD.has(s[0]) && hasO) { valid = true; break; }
+      }
+      if (valid) return true;
+    }
+    const sorList = sorMap[cand.routeUID] || [];
+    const sorEntry = sorList.find(x => Number(x.Direction) === Number(cand.dir) && (!cand.sub || String(x.SubRouteUID) === String(cand.sub)));
+    if (sorEntry && sorEntry.Stops && sorEntry.Stops.length >= 2) {
+      let hasO = false;
+      for (const s of sorEntry.Stops) {
+        if (nearO.has(s.StopUID)) hasO = true;
+        if (nearD.has(s.StopUID) && hasO) return true;
+      }
+    }
+    return false;
+  });
+
+  // 4. 站間資料只讀候選路線（IndexedDB 有就不打網路，同一包只讀/下載一次）
+  const s2sDocs = {};
+  let s2sLocalPacks = 0, s2sNetPacks = 0, s2sBytes = 0, s2sNetBytes = 0;
+  const seenPacks = new Set();
+
+  for (const cand of candidates) {
+    const r = cand.rec;
+    if (!r) continue;
+    const city = (r.u && r.u.startsWith("NWT")) ? "NewTaipei" : "Taipei";
+    const routeName = r.n;
+    if (!routeName) continue;
+    try {
+      const res = await s2sDocGet({ c: city, route: routeName });
+      if (res && res.doc) {
+        s2sDocs[r.u] = res.doc;
+        s2sDocs[routeName] = res.doc;
+        const pId = res.partId || routeName;
+        if (!seenPacks.has(pId)) {
+          seenPacks.add(pId);
+          if (res.fromNet) s2sNetPacks++; else s2sLocalPacks++;
+          s2sBytes += res.bytes || 0;
+          s2sNetBytes += res.netBytes || 0;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 5. 執行直達計算
+  const out = await bdRun({
+    records: recs,
+    stops,
+    o: { lat: +o.lat, lon: +o.lon },
+    d: { lat: +d.lat, lon: +d.lon },
+    when: w,
+    time: t,
+    opts: { ...P, holidays },
+    s2s: s2sDocs,
+    sor: sorMap,
+    cand: candidates
+  });
+
   out.notes = [...(out.notes || []), ...miss, ...(hol ? [] : ["國定假日曆讀不到，無法排除國定假日"])];
-  out.meta = { cities: cities.map(x => ({ city: x.city, t: x.t, cached: !!x.cached })), opts: P, query: { when: w, time: t } };
+  out.meta = {
+    cities: cities.map(x => ({ city: x.city, t: x.t, cached: !!x.cached })),
+    opts: P,
+    query: { when: w, time: t },
+    candCount: candidates.length,
+    s2sPacks: {
+      local: s2sLocalPacks,
+      net: s2sNetPacks,
+      total: s2sLocalPacks + s2sNetPacks,
+      bytes: s2sBytes,
+      netBytes: s2sNetBytes   // Opus：實際網路下載量
+    },
+    s2sBytes
+  };
   return out;
 }
 // ---------- JT-20261107-02：站間旅行時間（TDX 加值，歷史推估）管理者匯入：一次一條，由管理者按鈕觸發 ----------
@@ -3783,15 +3940,12 @@ async function s2sMetaFetch(proxy, s, c) {
   return meta;
 }
 
-async function s2sRouteGet(o) {
-  // Opus：解壓後 doc.ver 要等於清單的 ver（上傳時的 sha256 前 16 碼）；不符就丟掉本機那份、重抓一次
-  try { return await s2sRouteGet1(o, false); }
-  catch (e) { if (e && e.s2sBad) return s2sRouteGet1(o, true); throw e; }
+async function s2sDocGet(o) {
+  try { return await s2sDocGet1(o, false); }
+  catch (e) { if (e && e.s2sBad) return s2sDocGet1(o, true); throw e; }
 }
-async function s2sRouteGet1({ c, route }, retry) {
-  const k = c + "|" + route;
-  if (s2sMem.has(k)) return s2sMem.get(k);
 
+async function s2sDocGet1({ c, route }, retry) {
   const proxy = getProxy(), s = getSession();
   if (!proxy) throw new Error("NO_PROXY");
   if (!s) throw new Error("請重新登入");
@@ -3815,7 +3969,8 @@ async function s2sRouteGet1({ c, route }, retry) {
   const e = meta && meta.r && meta.r[route];
   if (!e) return null; // 路線不在清單中
 
-  let gzBytes = null;
+  let gzBytes = null, packBufRef = null;
+  let fromNet = false;
 
   if (e.p) {
     // 2. 新格式（有 p）：IndexedDB s2sp|{c}|{p} 有就用，沒有就打 /bus/s2s/part 整包存進去。再用 o、n 切出這條路線的 gzip、解壓。
@@ -3835,8 +3990,12 @@ async function s2sRouteGet1({ c, route }, retry) {
       }
       packBuf = await r.arrayBuffer();
       await IDB.set(packKey, packBuf).catch(() => {});
+      fromNet = true;
+    } else {
+      fromNet = false;
     }
     // 切片
+    packBufRef = packBuf;
     gzBytes = packBuf.slice(e.o, e.o + e.n);
   } else {
     // 3. 舊格式（沒有 p）：沿用 /bus/s2s/route 單條讀取，結果（gzip bytes）存進 IndexedDB s2sr|{c}|{route}|{ver}。下次同 ver 直接用本機。
@@ -3858,6 +4017,9 @@ async function s2sRouteGet1({ c, route }, retry) {
       }
       gzBytes = await r.arrayBuffer();
       await IDB.set(routeKey, gzBytes).catch(() => {});
+      fromNet = true;
+    } else {
+      fromNet = false;
     }
   }
 
@@ -3871,6 +4033,25 @@ async function s2sRouteGet1({ c, route }, retry) {
     if (!retry) { const bad = new Error("站間時間資料核對不符"); bad.s2sBad = true; throw bad; }
     throw new Error("站間時間資料核對不符");
   }
+
+  // Opus：netBytes＝這次真的從網路下載的大小（新格式是整包，舊格式是單條）；bytes＝這條路線切片大小
+  const netBytes = fromNet ? (e.p && packBufRef ? packBufRef.byteLength : gzBytes.byteLength) : 0;
+  return { doc, ver: doc.ver || (e && e.ver) || null, partId: e.p || null, bytes: e.n || gzBytes.byteLength, netBytes, fromNet };
+}
+
+async function s2sRouteGet(o) {
+  // Opus：解壓後 doc.ver 要等於清單的 ver（上傳時的 sha256 前 16 碼）；不符就丟掉本機那份、重抓一次
+  try { return await s2sRouteGet1(o, false); }
+  catch (e) { if (e && e.s2sBad) return s2sRouteGet1(o, true); throw e; }
+}
+async function s2sRouteGet1({ c, route }, retry) {
+  const k = c + "|" + route;
+  if (s2sMem.has(k)) return s2sMem.get(k);
+
+  const res = await s2sDocGet1({ c, route }, retry);
+  if (!res || !res.doc) return null;
+  const { doc } = res;
+
   const segs = [];
   for (const x of doc.d || []) {
     for (const t of x.TravelTimes || []) {
@@ -3889,7 +4070,7 @@ async function s2sRouteGet1({ c, route }, retry) {
       }
     }
   }
-  const out = { c, route, ver: doc.ver, srcEff: doc.eff || null, srcExp: doc.exp || null, segs };
+  const out = { c, route, ver: doc.ver, srcEff: doc.eff || null, srcExp: doc.exp || null, segs, doc };
   s2sMem.set(k, out);
   return out;
 }
@@ -7922,6 +8103,7 @@ const dataApi0 = async (action, p = {}) => {
     case "s2sBatchRun": return s2sBatchRun(p || {});
     case "s2sBatchSkipCur": return s2sBatchSkipCur();
     case "s2sBatchReset": return s2sBatchReset();
+    case "s2sDocGet": return s2sDocGet(p || {});
     case "s2sRouteGet": return s2sRouteGet(p || {});
     case "s2sSampleGet": return s2sSampleGet();
     case "s2sSampleClear": return s2sSampleClear();
