@@ -1854,7 +1854,7 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 
 /* 搜尋區塊 */
 .fx-ss{z-index:45}
-.fx-ss .sheet{height:88%;max-height:none;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
+.fx-ss .sheet{height:min(88%, calc(100% - env(safe-area-inset-top,0px) - 16px));max-height:none;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
 .fx-ss .sheet.drag{transition:none}
 .fx-ss .grab{flex:none;cursor:grab;touch-action:none}
 .fx-ss .ss-t{flex:none;margin:0;font-size:26px;font-weight:800}
@@ -2007,6 +2007,56 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 @media (prefers-reduced-motion: reduce){
   .set-page-shell .sseg > i.fx-sp,.fx-val .o,.fx-val .n,.ttrow .ts::before{transition:none!important;animation:none!important}
 }
+.fx-rdir{margin:14px 2px 2px;font-size:14px;font-weight:800;color:var(--lime);letter-spacing:.02em}
+/* v2.50.1：更新時間＋更新鈕放在左上角設定鈕旁邊；面板裡原本的那兩個隱藏 */
+.hm-top-left{display:flex;align-items:center;gap:8px;min-width:0;margin-right:8px}   /* v2.50.1：膠囊跟右邊地圖鈕留 8px */
+.hm-upd{display:flex;align-items:center;gap:6px;height:46px;padding:0 6px 0 14px;border-radius:999px;background:rgba(26,28,27,.9);-webkit-backdrop-filter:blur(16px) saturate(1.4);backdrop-filter:blur(16px) saturate(1.4);border:1.5px solid rgba(255,255,255,.14);box-shadow:0 6px 20px rgba(0,0,0,.45);min-width:0}
+.hm-upd .ft-status{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.hm-upd .ft-status i{width:7px;height:7px;border-radius:50%;background:var(--lime);flex:none;display:inline-block}
+.hm-upd .ft-status.err{color:var(--bad)} .hm-upd .ft-status.err i{background:var(--bad)}
+.hm-upd .ft-status.snap{color:var(--warn)} .hm-upd .ft-status.snap i{background:var(--warn)}
+.hm-upd .ft-status .demo{margin-left:4px;padding:0 6px;border-radius:8px;background:rgba(255,176,58,.16);color:var(--warn);font-weight:700}
+.hm-upd-btn{display:flex;align-items:center;gap:4px;height:34px;padding:0 10px;border-radius:999px;background:rgba(255,255,255,.07);color:var(--text);font-size:13px;font-weight:700;flex:none}
+.hm-upd-btn svg{width:15px;height:15px}
+.hm-upd-btn.spin svg{animation:spin 1s linear infinite}
+body[data-tab="settings"] #fixedUpd{display:none}
+#main .bar-grab-row .ft-status,#main .func-bar .ft-head{display:none!important}
+.hm-upd{padding:0 5px 0 10px;gap:8px}
+.hm-upd-ico{display:none;width:28px;height:28px;border-radius:9px;background:rgba(198,241,53,.15);color:var(--lime);place-items:center;flex:none}
+.hm-upd.has-head .hm-upd-ico{display:grid}
+.hm-upd-ico svg{width:17px;height:17px}
+.hm-upd-col{display:flex;flex-direction:column;justify-content:center;min-width:0;line-height:1.2}
+.hm-upd-t{display:none;align-items:baseline;gap:6px;white-space:nowrap;overflow:hidden;min-width:0}
+.hm-upd.has-head .hm-upd-t{display:flex}
+.hm-upd-t b{font-size:15px;font-weight:900;color:var(--text);letter-spacing:-.2px}
+.hm-upd-t span{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+.hm-upd.has-head .ft-status{font-size:11px}
+.hm-upd-btn{width:36px;height:36px;padding:0;justify-content:center}
+.hm-upd-btn svg{width:17px;height:17px}
+#sheet.fx-tall > .fx-ttctl{flex:none;margin-bottom:4px!important}
+.fx-ttl:has(.ttdet){padding-bottom:calc(140px + env(safe-area-inset-bottom,0px))}
+.hm-upd-r2{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap}
+.hm-upd-meta{display:none;font-size:11px;color:var(--muted);flex:none}
+.hm-upd.has-head .hm-upd-meta:not(:empty){display:inline}
+.hm-upd.has-head .hm-upd-meta:not(:empty)::after{content:"・";margin-left:2px}
+.hm-upd .ft-status .demo{display:none}
+.hm-upd-col{line-height:1.25}
+/* v2.50.1：路線頁上方「路線／時刻表」雙鍵拿掉（按鈕留在 DOM 裡給左右滑切換用） */
+#routePage .rt2-tabs{display:none!important}
+/* v2.50.1：左上膠囊兩行在 390 寬也放得下（縮圖示、更新鈕、間距與第二行字級）；日期鈕完整顯示 */
+.hm-upd.has-head{padding:0 3px 0 6px;gap:5px}
+.hm-upd.has-head .hm-upd-ico{width:24px;height:24px;border-radius:8px}.hm-upd.has-head .hm-upd-ico svg{width:15px;height:15px}
+.hm-upd.has-head .hm-upd-btn{width:30px;height:30px}
+.hm-upd.has-head .hm-upd-r2{gap:0}
+.hm-upd.has-head .hm-upd-meta,.hm-upd.has-head .ft-status{font-size:10.5px;letter-spacing:-.2px;gap:0}
+.hm-upd.has-head .ft-status i{display:none}
+.hm-upd.has-head .hm-upd-meta:not(:empty)::after{margin-left:0}
+.sttd .seg{flex:1.15}
+.sttd .fx-dt-btn{gap:6px;padding-left:10px;padding-right:8px;font-size:14.5px}
+.sttd .fx-dt-btn .c{display:none}
+/* v2.50.1：設定頁不顯示大標題，只留返回鈕的高度 */
+.set-fixed-head h1{display:none!important}
+.set-fixed-head{height:70px!important;padding-top:0!important;padding-bottom:0!important}   /* 外層已在動態島下方，不再加 safe-top；只留返回鈕位置 */
 </style>
 </head>
 <body>
@@ -2032,7 +2082,10 @@ body[data-bar-exp="1"] .bar-grab-btn i,
   <div id="fixedRingsSlot"></div>
 </div>
 <div id="fixedTopBar" class="fixed-top-bar">
-  <button class="hm-gear" data-act="tab" data-v="settings" aria-label="設定" id="fixedGearBtn"></button>
+  <div class="hm-top-left">
+    <button class="hm-gear" data-act="tab" data-v="settings" aria-label="設定" id="fixedGearBtn"></button>
+    <div class="hm-upd" id="fixedUpd"><span class="hm-upd-ico" id="fixedHeadIco"></span><div class="hm-upd-col"><div class="hm-upd-t"><b id="fixedHeadTitle"></b></div><div class="hm-upd-r2"><span class="hm-upd-meta" id="fixedHeadMeta"></span><span class="ft-status" id="fixedUpdTxt"></span></div></div><button class="hm-upd-btn" data-act="hmRefresh" aria-label="更新" id="fixedUpdBtn"></button></div>
+  </div>
   <div class="hm-top-right" id="fixedTopRight">
     <button class="hm-ctrl-btn" data-act="hmNorthToggle" aria-label="切換北方朝上／跟隨手機方向"><span class="hm-north-ico"><i></i>N</span></button>
     <button class="hm-ctrl-btn" data-act="hmRecenter" aria-label="回到目前位置" id="fixedRecenterBtn"></button>
@@ -2058,7 +2111,7 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.50.0';   // 要跟 sw.js 的 VERSION（jisu-v2.50.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.50.1';   // 要跟 sw.js 的 VERSION（jisu-v2.50.1）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2250,6 +2303,21 @@ function renderStatus() {
   b.innerHTML = I.refresh + '<span>重新整理</span>';
   document.querySelectorAll('#main .ft-status').forEach(e => { e.className = 'ft-status' + (s.err ? ' err' : '') + (s.snap ? ' snap' : ''); e.innerHTML = s.html; });
   document.querySelectorAll('#main .ft-meta .refresh').forEach(e => e.classList.toggle('spin', !!S.loading));
+  // v2.50.1：更新時間與更新鈕移到左上角設定鈕旁邊
+  const ft = $('#fixedUpdTxt'), fb = $('#fixedUpdBtn');
+  if (ft) { ft.className = 'ft-status' + (s.err ? ' err' : '') + (s.snap ? ' snap' : ''); ft.innerHTML = s.html; }
+  if (fb) { fb.classList.toggle('spin', !!S.loading); if (!fb.firstChild) fb.innerHTML = I.refresh; }
+  syncFixedHead();
+}
+// v2.50.1：分頁標題（圖示、名稱、範圍站數）也搬到左上角；面板裡的 .ft-head 用 CSS 藏起來
+function syncFixedHead() {
+  const box = $('#fixedUpd'); if (!box) return;
+  const h = document.querySelector('#main .func-bar .ft-head');
+  const ico = h?.querySelector('.ft-ico'), tt = h?.querySelector('.ft-title span:not(.ft-ico)'), mt = h?.querySelector('.ft-meta > span');
+  $('#fixedHeadIco').innerHTML = ico ? ico.innerHTML : '';
+  $('#fixedHeadTitle').textContent = tt ? tt.textContent : '';
+  $('#fixedHeadMeta').textContent = mt ? mt.textContent : '';
+  box.classList.toggle('has-head', !!h);
 }
 window.renderStatus = renderStatus;
 function syncFixedMapShell() {
@@ -2277,6 +2345,7 @@ function render() {
   syncFixedMapShell();
   const v = viewOf(S.tab);
   $('#main').innerHTML = v();
+  syncFixedHead();
   mountMap();
   COMPASS.sync();
   if (S.page === 'adv') renderPage();   // 進階設定頁（時刻表進度等）跟著更新
@@ -2284,6 +2353,7 @@ function render() {
 }
 /* ---------- 首頁地圖（MapLibre GL 自帶於 vendor/，OpenFreeMap 深色向量底圖，免金鑰） ---------- */
 let MAP = null, mapEl = null, mapMarks = [], meMark = null, mlP = null, mapKey = null, mapUserMoved = false;
+let GEO_LAST = null, locfOn = false;   // v2.50.1：最近一次定位 {lat,lon,t}；首頁「跟隨位置」是否開著
 function loadMapLib() {
   if (window.maplibregl) return Promise.resolve();
   return mlP = mlP || new Promise((ok, bad) => {
@@ -2297,8 +2367,7 @@ function mountMap() {
   if (!mapEl) {
     mapEl = document.createElement('div'); mapEl.className = 'mapcard'; mapEl.setAttribute('data-noswipe', '');
     mapEl.innerHTML = `<div class="mapbox"></div><button class="maprc" aria-label="回到目前位置">${I.nav}</button><button class="mapnorth" aria-label="切換跟著手機轉／北方朝上" aria-pressed="false">N<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 2 15 10h10Z" fill="#ff6256"/></svg></button><button class="compass-enable map-compass-enable">開啟方向</button><div class="mapload">地圖載入中…</div>`;
-    mapEl.querySelector('.maprc').addEventListener('click', e => { e.stopPropagation(); mapUserMoved = false;
-      if (MAP && S.data) MAP.easeTo({ center:[S.data.lon, S.data.lat], zoom:15.5, bearing:COMPASS.mapBearing(), duration: COMPASS.available || matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 500 }); });
+    mapEl.querySelector('.maprc').addEventListener('click', e => { e.stopPropagation(); LOCF.recenter(); });   // v2.50.1：跟首頁定位鈕同一套
   }
   slot.appendChild(mapEl);
   loadMapLib().then(() => {
@@ -2307,7 +2376,7 @@ function mountMap() {
         center: [d.lon, d.lat], zoom: 15.5, minZoom: 9, maxZoom: 19, attributionControl: { compact: true }, pitchWithRotate: false, dragRotate: false,
         fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
       MAP.touchZoomRotate.disableRotation();
-      MAP.on('dragstart', () => { mapUserMoved = true; });
+      MAP.on('dragstart', () => { mapUserMoved = true; if (locfOn) LOCF.onDrag(); });   // v2.50.1：手動拖地圖＝離開跟隨
       MAP.on('load', () => { const m = mapEl.querySelector('.mapload'); if (m) m.remove(); });
       MAP.on('error', () => {});
     }
@@ -2326,9 +2395,11 @@ function mountMap() {
     if (!meMark) { const el = document.createElement('div'); el.className = 'mdot';
       el.innerHTML = '<svg class="mfan" viewBox="-100 -100 200 200" aria-hidden="true"><defs><radialGradient id="meHeadingFan" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100"><stop offset="0" stop-color="#4b8cff" stop-opacity=".65"/><stop offset="1" stop-color="#4b8cff" stop-opacity="0"/></radialGradient></defs><path d="M0 0 L-50 -86.603 A100 100 0 0 1 50 -86.603 Z" fill="url(#meHeadingFan)"/></svg>';
       meMark = new maplibregl.Marker({ element: el }); }
-    meMark.setLngLat([D.lon, D.lat]).addTo(MAP);
+    const g = GEO_LAST && Date.now() - GEO_LAST.t < 60000 ? GEO_LAST : D;   // v2.50.1：人點用最新定位，不用舊的資料座標
+    meMark.setLngLat([g.lon, g.lat]).addTo(MAP);
     walkRingsUpdate(D);
-    if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat], bearing:COMPASS.mapBearing() });
+    if (locfOn) LOCF.sync(true);
+    else if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat], bearing:COMPASS.mapBearing() });
   }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
 /* ---------- 手機方向：感測事件只更新 CSS 與首頁地圖 bearing ---------- */
@@ -2341,8 +2412,8 @@ const COMPASS = (() => {
   const supported = !!orientation && (needsPermission || absolute);
   const eventName = absolute ? 'deviceorientationabsolute' : 'deviceorientation';
   let ready = false;   // COMPASS 常數指定完成後才為 true；在那之前 paint 不碰其他模組（避免 TDZ）
-  let granted = false, pending = false, listening = false, usable = false, follow = true;
-  let heading = null, sample = null, latest = null, frame = 0, lastPaint = -Infinity;
+  let granted = false, pending = false, listening = false, usable = false, follow = false;   // v2.50.1：預設北方朝上
+  let heading = null, sample = null, latest = null, frame = 0, lastPaint = -Infinity, btnOn = false;
   const norm = a => (a % 360 + 360) % 360;
   const active = () => !document.hidden && !S.page && (S.tab === 'home' || S.tab === 'bus');
   const screenAngle = () => Number.isFinite(screen.orientation?.angle) ? screen.orientation.angle : 0;
@@ -2367,6 +2438,8 @@ const COMPASS = (() => {
     root.style.setProperty('--compass-heading', `${heading ?? 0}deg`);
     root.style.setProperty('--compass-fan', `${usable && !follow ? heading : 0}deg`);
     root.style.setProperty('--compass-north', `${-mapBearing()}deg`);
+    const fb = follow && granted;   // v2.50.1：指北鈕亮起＝跟著手機方向
+    if (fb !== btnOn) { btnOn = fb; document.querySelectorAll('[data-act="hmNorthToggle"]').forEach(b => { b.classList.toggle('on', fb); b.setAttribute('aria-pressed', String(fb)); }); }
     syncMap();
     if (ready) window.stopGlowPaint?.();
   }
@@ -2443,6 +2516,17 @@ const COMPASS = (() => {
       return 'error';
     } finally { pending = false; }
   }
+  // v2.50.1：指北鈕。未授權→在這次點擊當下詢問，同意後跟著手機方向；已在跟隨→回北方朝上；拒絕→說明到設定開啟
+  async function toggleNorth() {
+    if (!supported) { toast('這台裝置沒有方向感測，地圖固定北方朝上'); return; }
+    if (granted && follow) { follow = false; btnOn = null; paint(); toast('北方朝上'); return; }
+    if (!granted) {
+      const r = await request();   // requestPermission 在 request() 第一個 await 之前同步呼叫，仍在點擊手勢內
+      if (r === 'denied') { toast('沒有取得方向權限，可到 iOS「設定 › Safari › 動作與方向取用」開啟'); return; }
+      if (r !== 'granted') { if (r === 'error') toast('無法啟用方向感測，請再點一次指北鈕'); return; }
+    }
+    follow = true; btnOn = null; paint(); toast('地圖跟著手機方向');
+  }
   document.addEventListener('click', e => {
     if (e.target.closest('.compass-enable')) request();
     const button = e.target.closest('.mapnorth');
@@ -2463,10 +2547,12 @@ const COMPASS = (() => {
       const onFirstTouch = e => {
         document.removeEventListener('touchend', onFirstTouch, true);
         document.removeEventListener('click', onFirstTouch, true);
-        if (e.target?.closest?.('.compass-enable')) return;   // 按鈕自己的 click handler 會詢問
+        if (e.target?.closest?.('.compass-enable, [data-act="hmNorthToggle"]')) return;   // 按鈕自己的 click handler 會詢問
         request().then(r => { if (r === 'error') arm(); });
       };
-      arm();
+      // v2.50.1：不再第一次點畫面就跳權限詢問；只有以前同意過（jisu.compassOk=1，iOS 不會再跳視窗）才在第一次點擊時靜默重新取得
+      let ok = false; try { ok = localStorage.getItem(KEY) === '1'; } catch (e) {}
+      if (ok) arm();
     }
   }
   queueMicrotask(() => { ready = true; });
@@ -2474,7 +2560,8 @@ const COMPASS = (() => {
   // 詳情頁以 overlay 開關；偵測其開關即可停聽，不改動各頁的 render。
   new MutationObserver(sync).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
   return {
-    sync, syncMap, mapBearing,
+    sync, syncMap, mapBearing, toggleNorth,
+    get follow() { return follow && granted; },
     get heading() { return heading; },
     get available() { return usable && active(); },
     stopArrow(s) {
@@ -2577,6 +2664,7 @@ function syncBusWatch() {
         const lat = pos?.coords?.latitude;
         const lon = pos?.coords?.longitude;
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        GEO_LAST = { lat, lon, t: Date.now() };
         if (lastBusGeo && haversineM(lastBusGeo.lat, lastBusGeo.lon, lat, lon) < 5) return;
         lastBusGeo = { lat, lon };
         updateBusDistances(lat, lon);
@@ -2596,6 +2684,63 @@ function syncBusWatch() {
 
 document.addEventListener('visibilitychange', syncBusWatch);
 new MutationObserver(syncBusWatch).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
+
+/* ---------- v2.50.1：首頁定位鈕＝置中在可見區域並跟隨位置（像 Google 地圖）。只移動地圖與人點，不重抓附近資料（不打 TDX、不多打 Worker） ---------- */
+const LOCF = (() => {
+  let wid = null;
+  const visible = () => !document.hidden && !S.page && S.tab === 'home' && !!MAP;
+  const rm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 可見區域：上方按鈕列下緣 ～ 下方功能面板頂端（面板收起或不在就用分頁列頂端）
+  function pad() {
+    const box = MAP.getContainer().getBoundingClientRect();
+    const tb = document.getElementById('fixedTopBar'), tr = tb && tb.getBoundingClientRect();
+    let top = tr && tr.height > 0 ? tr.bottom - box.top : 0, bt = box.bottom;
+    const fb = document.querySelector('#main .func-bar'), fr = fb && fb.getBoundingClientRect(), tab = document.getElementById('tabbar'), ab = tab && tab.getBoundingClientRect();
+    if (fr && fr.height > 0 && fr.top > box.top + top + 80) bt = fr.top; else if (ab && ab.height > 0) bt = ab.top;
+    let bottom = box.bottom - bt;
+    top = Math.max(0, Math.round(top + 8)); bottom = Math.max(0, Math.round(bottom + 8));
+    if (top + bottom > box.height - 80) { top = 0; bottom = 0; }
+    return { top, bottom, left: 0, right: 0 };
+  }
+  function paintBtn() { document.querySelectorAll('[data-act="hmRecenter"]').forEach(b => { b.classList.toggle('on', locfOn); b.setAttribute('aria-pressed', String(locfOn)); }); }
+  function mark(lat, lon) { if (!MAP || !meMark) return; meMark.setLngLat([lon, lat]); if (!meMark._map) meMark.addTo(MAP); }
+  function center(lat, lon, dur, zoom) {
+    if (!MAP) return;
+    const o = { center: [lon, lat], padding: pad(), bearing: COMPASS.mapBearing(), duration: rm() ? 0 : dur };
+    if (zoom) o.zoom = Math.max(MAP.getZoom(), zoom);
+    MAP.easeTo(o);
+  }
+  function fix(p) {
+    const c = p && p.coords; if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) return;
+    GEO_LAST = { lat: c.latitude, lon: c.longitude, t: Date.now() };
+    mark(c.latitude, c.longitude);
+    if (locfOn && visible()) center(c.latitude, c.longitude, 600);
+  }
+  function sync(recenterNow) {
+    const want = locfOn && visible();
+    if (want && wid == null && navigator.geolocation?.watchPosition) {
+      try { wid = navigator.geolocation.watchPosition(fix, err => { if (err && err.code === 1) { off(); toast('沒有定位權限，無法跟隨目前位置'); } }, { enableHighAccuracy: true, maximumAge: 5000 }); } catch (e) { wid = null; }
+    } else if (!want && wid != null) { try { navigator.geolocation.clearWatch(wid); } catch (e) {} wid = null; }
+    if (want && recenterNow === true && GEO_LAST) { mark(GEO_LAST.lat, GEO_LAST.lon); center(GEO_LAST.lat, GEO_LAST.lon, 0); }
+  }
+  function off() { locfOn = false; paintBtn(); sync(); }
+  function recenter() {
+    if (!MAP) { toast(S.data && S.data.lat ? '地圖還沒載入' : '還沒定位到目前位置'); return; }
+    mapUserMoved = false; locfOn = true; paintBtn();
+    const g = GEO_LAST && Date.now() - GEO_LAST.t < 10000 ? GEO_LAST : null;
+    if (g) { mark(g.lat, g.lon); center(g.lat, g.lon, 400, 15.5); }
+    else if (navigator.geolocation?.getCurrentPosition) {
+      navigator.geolocation.getCurrentPosition(p => { fix(p); const c = p.coords; center(c.latitude, c.longitude, 400, 15.5); },
+        () => { const d = S.data; if (d && d.lat) { mark(d.lat, d.lon); center(d.lat, d.lon, 400, 15.5); } toast('暫時定位不到，先顯示上次的位置'); },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 5000 });
+    }
+    sync();
+  }
+  return { recenter, sync, onDrag: off, pad };
+})();
+document.addEventListener('visibilitychange', () => LOCF.sync());
+new MutationObserver(() => LOCF.sync()).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
+new MutationObserver(() => LOCF.sync()).observe(document.body, { attributes: true, attributeFilter: ['data-tab'] });
 
 function stopBearingDeg(lat1, lon1, lat2, lon2) {
   const p = Math.PI / 180;
@@ -2799,12 +2944,10 @@ function qpRowHtml(kind) {
   return `<div class="qp-row"><button class="trow nrow" data-act="${kind === 'home' ? 'quickGoHome' : 'quickGoWork'}"><span class="pico">${ico}</span><span class="tmain"><div class="td">${label}・${esc(x.name)}</div><div class="tt">${esc(x.addr || '點一下規劃到這裡')}</div></span><span class="chev">${I.chev}</span></button>
     <div class="qp-acts" style="display:flex;gap:8px;justify-content:flex-end;padding:0 14px 12px"><button class="chip" style="padding:6px 14px;font-size:14px;min-height:0" data-act="qpSet" data-v="${kind}">更改</button><button class="chip" style="padding:6px 14px;font-size:14px;min-height:0" data-act="qpClear" data-v="${kind}">清除</button></div></div>`;
 }
-function openQuickPlaceSheet(kind) {
-  const rec = recentPlaces();
+function openQuickPlaceSheet(kind) {   // v2.50.1：拿掉「最近搜尋地點」
   openSheet(`<h2>收藏與常用地點</h2><div class="addr">家和公司只存在這支手機，不會上傳</div>
     <div class="sgh">常用地點</div><div class="board">${qpRowHtml('home')}${qpRowHtml('work')}</div>
-    <div class="sgh">收藏</div><div style="margin-top:10px">${vFavs()}</div>
-    ${rec.length ? `<div class="sgh">最近搜尋地點</div><div class="board">${rec.slice(0, 5).map(p => `<button class="trow nrow" data-act="quickDest" data-i="${reg(p)}"><span class="pico">${I.pin}</span><span class="tmain"><div class="td">${esc(p.name)}</div><div class="tt">${esc(p.sub || '')}</div></span><span class="chev">${I.chev}</span></button>`).join('')}</div>` : ''}`);
+    <div class="sgh">收藏</div><div style="margin-top:10px">${vFavs()}</div>`);
 }
 function walkMinTxt(distM) {
   if (distM == null) return '—';
@@ -2844,8 +2987,8 @@ function walkRingsUpdate(D) {
 function hmTopControlsHtml() {
   return `<button class="hm-gear" data-act="tab" data-v="settings" aria-label="設定">${I.gear}</button>
     <div class="hm-top-right">
-      <button class="hm-ctrl-btn" data-act="hmNorthToggle" aria-label="切換北方朝上／跟隨手機方向"><span class="hm-north-ico"><i></i>N</span></button>
-      <button class="hm-ctrl-btn" data-act="hmRecenter" aria-label="回到目前位置">${I.nav}</button>
+      <button class="hm-ctrl-btn${(() => { try { return COMPASS.follow; } catch (e) { return false; } })() ? ' on' : ''}" data-act="hmNorthToggle" aria-label="切換北方朝上／跟隨手機方向"><span class="hm-north-ico"><i></i>N</span></button>
+      <button class="hm-ctrl-btn${locfOn ? ' on' : ''}" data-act="hmRecenter" aria-label="回到目前位置">${I.nav}</button>
     </div>`;
 }
 
@@ -2887,12 +3030,7 @@ function homeListHtml() {
   const d = S.data;
   let h = errBox();
   if (!h && d && ((d.busError && d.busStops.length) || (d.bikeError && d.bikes.length))) h += staleNote();
-  if (!d) h += S.error || NO_DATA_JS ? '' : `<div class="sec"><h2>離你最近</h2></div>` + skel(2);
-  else {
-    h += `<div class="sec"><h2>離你最近</h2></div>`;
-    const mix = [...d.busStops.slice(0,2).map(s => ({k:'s', d:s.dist ?? 9e9, o:s})), ...d.bikes.slice(0,2).map(b => ({k:'b', d:b.dist, o:b})), ...(d.rail || []).filter(r => !r.far && !r.fallback).slice(0,1).map(r => ({k:'r', d:r.dist, o:r}))].sort((a,b) => a.d - b.d);
-    h += mix.length ? mix.map(x => x.k === 's' ? busComboCard(x.o) : x.k === 'r' ? railComboCard(x.o) : bikeComboCard(x.o)).join('') : `<div class="note">附近${S.settings.busR}公尺內沒有公車站牌、${S.settings.bikeR}公尺內沒有 YouBike。點左上角「設定」加大搜尋範圍。</div>`;
-  }
+  // v2.50.1：使用者要求拿掉首頁「離你最近」區塊（附近資料仍供各分頁使用）
   h += `<div class="sec"><h2>我的收藏</h2><span class="live-tag">${I.signal}即時</span></div>`;
   return h + vFavs();
 }
@@ -3999,9 +4137,12 @@ function railComboCard(r) {
   // v2.50.0：卡片上的到站時間來自之前打開車站時存下的看板快取；超過 RAIL_CARD_LIVE_MS 就不再當成即時顯示（只標資料時間，不另外抓）
   const ck = 'rail:' + r.op + (r.ids || []).join(','), cc = (S.liveCache || {})[ck], cached = cc && cc.data;
   const fresh = !!(cc && cc.at && Date.now() - cc.at <= RAIL_CARD_LIVE_MS);
-  const firstTrain = cached && cached.trains && cached.trains[0];
+  // v2.50.1：台鐵／高鐵的班次只有表定時間（加誤點），自己算還要幾分鐘；已經開走的跳過
+  const nm = nowMinUI(), etaOf = t => { if (t.eta != null) return t.eta; let m = t.t; if (m == null && /^\d{1,2}:\d{2}/.test(t.time || '')) { const [h, mi] = t.time.split(':'); m = +h * 60 + +mi.slice(0, 2); } if (m == null) return null; let e = m + (t.delay || 0) - nm; if (e < -720) e += 1440; return e; };
+  const firstTrain = cached && cached.trains && (cached.trains.find(t => { const e = etaOf(t); return e == null || e >= 0; }) || null);
+  const fEta = firstTrain ? etaOf(firstTrain) : null;
   const subDest = firstTrain ? `往${firstTrain.dest}` : `查看 ${r.name} 即時班次與時刻表`;
-  const subEta = !firstTrain ? '即時看板' : !fresh ? `${hhmm(cc.at)} 資料` : firstTrain.eta != null ? (firstTrain.eta <= 0 ? '進站中' : `${firstTrain.eta}分鐘`) : '即時看板';
+  const subEta = !firstTrain ? '即時看板' : !fresh ? `${hhmm(cc.at)} 資料` : fEta != null ? (fEta <= 0 ? '進站中' : `${fEta}分鐘`) : '即時看板';
   const etaIco = firstTrain && !fresh ? '' : I.signal;
   return `<div class="ft-combo-card">
     <button class="ft-combo-top" data-act="rail" data-i="${reg(r)}">
@@ -4023,8 +4164,27 @@ function railComboCard(r) {
   </div>`;
 }
 const RAIL_CARD_LIVE_MS = 2 * 60000;
+// v2.50.1：軌道分頁打開時，每張車站卡片自己讀下一班車（railCard：只走非 TDX 來源）。
+// 同一站 60 秒內只讀一次（失敗也算），最多 6 站；捷運也一樣（各系統官網／雲端時刻表）。
+const RC = { busy: new Set(), last: {} };
+function railCardPrefetch() {
+  if (S.tab !== 'rail' || S.page || !S.data || !Array.isArray(S.data.rail)) return;
+  const list = S.data.rail.slice(0, 6);
+  for (const r of list) {
+    const ck = 'rail:' + r.op + (r.ids || []).join(','), c = (S.liveCache || {})[ck];
+    if ((c && Date.now() - c.at < 60000) || RC.busy.has(ck) || (RC.last[ck] && Date.now() - RC.last[ck] < 60000)) continue;
+    RC.busy.add(ck); RC.last[ck] = Date.now();
+    api('railCard', { op: r.op, kind: r.kind, ids: r.ids, name: r.name }).then(b => {
+      if (!b || !b.trains || !b.trains.length) return;
+      const cur = (S.liveCache || {})[ck]; if (cur && cur.at > RC.last[ck]) return;   // 期間點進車站拿到更新的看板：不蓋掉
+      (S.liveCache = S.liveCache || {})[ck] = { data: b, at: Date.now() };
+      if (S.tab === 'rail' && !S.page) render();
+    }).catch(() => {}).finally(() => RC.busy.delete(ck));
+  }
+}
 
 function vRail() {
+  setTimeout(railCardPrefetch, 0);
   const d = S.data, eb = errBox();
   const w = S.settings.railWalk || 1.5;
   let listHtml = eb;
@@ -4041,7 +4201,7 @@ function vRail() {
   return `<section class="func-bar">
     ${barGrabHtml()}
     <div class="ft-head">
-      <div class="ft-title"><span class="ft-ico">${I.train}</span><span>捷運・軌道</span></div>
+      <div class="ft-title"><span class="ft-ico">${I.train}</span><span>軌道</span></div>
       <div class="ft-meta"><span>步行${w < 1 ? w * 1000 + 'm' : w + 'km'}內</span><button class="refresh" data-act="hmRefresh">${I.refresh}<span>更新</span></button></div>
     </div>
     <div class="ft-scroll">${listHtml}</div>
@@ -6172,23 +6332,8 @@ document.addEventListener('click', e => {
       if (k) { S[k] = v; render(); }
       break;
     }
-    case 'hmRecenter': {
-      mapUserMoved = false;
-      if (MAP && S.data && S.data.lat) {
-        MAP.easeTo({ center:[S.data.lon, S.data.lat], zoom:15.5, bearing:COMPASS.mapBearing(), duration: 400 });
-      } else toast(S.data && S.data.lat ? '地圖還沒載入' : '還沒定位到目前位置');   // v2.50.0：地圖沒載入時不觸發資料更新
-      break;
-    }
-    case 'hmNorthToggle': {
-      const nb = mapEl && mapEl.querySelector('.mapnorth');
-      if (nb && COMPASS.available) nb.click();
-      else {
-        const ce = document.querySelector('.compass-enable');
-        if (ce) ce.click();
-        toast('已切換北方朝上對齊');
-      }
-      break;
-    }
+    case 'hmRecenter': LOCF.recenter(); break;   // v2.50.1：取目前定位、置中在可見區域並開始跟隨；不重抓附近資料
+    case 'hmNorthToggle': COMPASS.toggleNorth(); break;
     case 'hmSearchFocus': {
       document.body.dataset.searching = '1';
       const inp = $('#q');
@@ -6408,12 +6553,13 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
   let y0 = 0, t0 = 0, dy = 0, on = false, armed = false;
   sh.addEventListener('touchstart', e => {
     if (e.touches.length !== 1) return;
-    armed = sh.scrollTop <= 0 && !e.target.closest('[data-noswipe]'); on = false; dy = 0; y0 = e.touches[0].clientY; t0 = Date.now();
+    const ttl = S.fxCardTT && sh.querySelector('.fx-ttl');   // v2.50.1：時刻表卡片捲的是裡面的清單
+    armed = sh.scrollTop <= 0 && !(ttl && ttl.scrollTop > 0) && !e.target.closest('[data-noswipe]'); on = false; dy = 0; y0 = e.touches[0].clientY; t0 = Date.now();
   }, { passive:true });
   sh.addEventListener('touchmove', e => {
     if (!armed) return;
     const d = e.touches[0].clientY - y0;
-    if (!on) { if (d > 6 && sh.scrollTop <= 0) { on = true; y0 = e.touches[0].clientY; sh.classList.add('drag'); scrim.style.transition = 'none'; } else { if (d < -6) armed = false; return; } }
+    if (!on) { if (d > 6 && sh.scrollTop <= 0 && !(S.fxCardTT && (sh.querySelector('.fx-ttl')?.scrollTop || 0) > 0)) { on = true; y0 = e.touches[0].clientY; sh.classList.add('drag'); scrim.style.transition = 'none'; } else { if (d < -6) armed = false; return; } }
     e.preventDefault();
     dy = Math.max(0, e.touches[0].clientY - y0);
     sh.style.transform = `translateY(${dy}px)`;
@@ -6424,7 +6570,9 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     on = armed = false;
     const v = dy / Math.max(1, Date.now() - t0);
     sh.classList.remove('drag'); scrim.style.transition = '';
-    if (dy > sh.offsetHeight * 0.3 || (v > 0.5 && dy > 30)) {
+    if (S.fxCardTT && (dy > 70 || (v > 0.5 && dy > 30)) && window.fxBackCardTT) {   // v2.50.1：時刻表往下拉＝回到車站即時小卡
+      sh.style.transform = ''; scrim.style.opacity = ''; window.fxBackCardTT();
+    } else if (dy > sh.offsetHeight * 0.3 || (v > 0.5 && dy > 30)) {
       sh.style.transform = 'translateY(100%)'; scrim.style.opacity = '';
       closeSheet(); setTimeout(() => { sh.style.transform = ''; }, reduceMotion() ? 0 : 260);
     } else { sh.style.transform = ''; scrim.style.opacity = ''; }
@@ -6455,6 +6603,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     if (st === 1) {
       if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
       if (Math.abs(ddx) < Math.abs(ddy) * 1.3) { st = 0; return; }   // 垂直捲動：交給瀏覽器
+      if (e.__fxTab) { st = 0; return; }   // v2.50.1：下方面板左右滑＝切換路線／時刻表，不當成返回
       mode = 'back';
       if (blk) {
         tabBtns = pgBtns(blk, pgK); tabIdx = tabBtns.findIndex(b => b.classList.contains('on'));
@@ -6927,6 +7076,9 @@ function setBarExpanded(exp) {
     const t = e.touches[0]; if (t.clientX <= 24) return false;   // 左邊緣留給返回手勢
     if (e.target.closest('input,textarea,select,[data-noswipe],.maplibregl-map,#mapSlot,.gmapc,.pmap,#planMapSlot')) return false;   // 地圖：拖曳是平移
     if (scTop() > 0) return false;
+    // v2.50.1：路線／規劃頁的清單是在面板裡面捲（#routePage 本身永遠在 0），清單沒捲到最上面時不能當成下拉更新；拖拉把手也不算
+    if (e.target.closest('.rp-grab')) return false;
+    for (let x = e.target; x && x !== document.body; x = x.parentElement) { if (x.scrollTop > 0 && x.scrollHeight > x.clientHeight + 2) return false; }
     return true;
   };
   document.addEventListener('touchstart', e => {
@@ -6957,7 +7109,8 @@ function setBarExpanded(exp) {
     busy = true; clearTimeout(dwellT);
     place(HOLD, true); snapped = false; paint(HOLD, true);
     const t0 = Date.now();
-    try { await L.run(); } catch (x) {}
+    // v2.50.1：更新最多等 12 秒；逾時或已經離開這一頁就先收起轉圈，不讓它卡在畫面上（資料晚到照樣會更新畫面）
+    try { await Promise.race([Promise.resolve(L.run()), new Promise(r => setTimeout(r, 12000))]); } catch (x) {}
     await new Promise(r => setTimeout(r, Math.max(0, 450 - (Date.now() - t0))));   // 太快回來也讓轉圈看得到
     busy = false; collapse();
   };
@@ -7238,7 +7391,7 @@ async function demo(action, p) {
     S.liveCache = S.liveCache || {};
     return { lat: 25.1203, lon: 121.5205, busStops, bikes, favs, rail };
   }
-  if (action === 'railBoard') {
+  if (action === 'railBoard' || action === 'railCard') {
     const now = new Date(), base = now.getHours() * 60 + now.getMinutes();
     const t = m => { const x = (base + m) % 1440; return String(Math.floor(x / 60)).padStart(2,'0') + ':' + String(x % 60).padStart(2,'0'); };
     if (p.kind === 'tra') return { kind:'tra', live:true, note:null, trains:[
@@ -7757,7 +7910,14 @@ async function demo(action, p) {
     if (!SS.open || !VV) return;
     const k = Math.max(0, innerHeight - VV.height - VV.offsetTop);
     sheet.style.bottom = k + 'px';
-    sheet.style.height = Math.min(innerHeight * 0.88, VV.height - 12) + 'px';
+    // v2.50.1：扣掉狀態列／動態島（safe-area-inset-top）再留 16px，標題不會被擋住
+    sheet.style.height = Math.max(200, Math.min(innerHeight * 0.88, VV.height - safeTop() - 16)) + 'px';
+  }
+  let _st = null;
+  function safeTop() {
+    if (_st == null) { const d = document.createElement('div'); d.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none';
+      document.body.appendChild(d); _st = d.getBoundingClientRect().height || 0; d.remove(); }
+    return _st;
   }
   if (VV) { VV.addEventListener('resize', kb); VV.addEventListener('scroll', kb); }
 
@@ -7891,8 +8051,12 @@ async function demo(action, p) {
     if (tiles.length) h += `<div class="nums" style="margin:14px 0 8px">${tiles.join('')}</div>`;
     h += S.railError ? staleNote() : pupd(S.railAt);   // v2.50.0：車站卡片也標資料更新時間
     const key = t => t.eta != null && !t.time ? t.eta : (t.time || '99:99');
-    const list = all.slice().sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0)).slice(0, 5);
-    if (list.length) h += `<div class="fx-rlist">${list.map(t => `<button class="lnk" data-act="fxRailFull" data-i="${reg(r)}">${trainRow(D.kind, r.op, t)}</button>`).join('')}</div>`;
+    const srt = a => a.slice().sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0));
+    // v2.50.1：完整車站頁拿掉；台鐵／高鐵點一班＝看這班車停靠站，其他只顯示
+    const row = t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t)}</button>` : trainRow(D.kind, r.op, t);
+    // v2.50.1：兩個方向分開列（每個方向最多 3 班），不再混在一起依時間排
+    if (G.length >= 2) h += G.slice(0, 2).map(g => `<div class="fx-rdir">${esc(lab(g, g.trains[0]))}</div><div class="fx-rlist">${srt(g.trains).slice(0, 3).map(row).join('')}</div>`).join('');
+    else if (all.length) h += `<div class="fx-rlist">${srt(all).slice(0, 5).map(row).join('')}</div>`;
     else h += `<div class="note">目前沒有列車資訊</div>`;
     if (D.note) h += `<div class="fx-rnote">${esc(D.note)}</div>`;
     return h + btns;
@@ -7932,10 +8096,8 @@ async function demo(action, p) {
       const sh = document.getElementById('sheet'), y = sh.scrollTop; sh.innerHTML = '<div class="grab"></div>' + stopHtml(o); sh.scrollTop = y;
       const b = sh.querySelector('[data-act="fxFavStop"]');
       if (b && !all && !RM()) { anim(b, [{ transform: 'scale(.86)' }, { transform: 'scale(1)' }], { duration: 560, easing: SPRING }); const s = document.createElement('span'); s.className = 'fx-burst'; s.style.borderRadius = '999px'; b.style.position = 'relative'; b.appendChild(s); setTimeout(() => s.remove(), 760); }
-    } else if ((act === 'fxRailFull' || act === 'fxRailTT') && o) {
-      railPrev = undefined;
-      closeSheetQuiet(); oOpenRail(o);
-      if (act === 'fxRailTT') openSttt();
+    } else if (act === 'fxRailFull' || act === 'fxRailTT') {
+      return;   // v2.50.1：不再開完整車站頁（時刻表在卡片裡開）
     } else return;
     e.stopPropagation();
   }, true);
@@ -7944,12 +8106,28 @@ async function demo(action, p) {
   const PG = document.getElementById('routePage');
   const RP = { key: null, level: 1, tt: null, scroll: 0, fly: null, h: null, res: false };
   const curWrap = () => PG.querySelector(':scope > .rp');
+  // v2.50.1：面板最高不能蓋到狀態列／動態島（扣掉上下 safe area、面板底部 10px，再留 12px）
+  let _sa = null;
+  function safeArea() {
+    if (!_sa) { const d = document.createElement('div'); d.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)';
+      document.body.appendChild(d); const cs = getComputedStyle(d); _sa = { t: parseFloat(cs.paddingTop) || 0, b: parseFloat(cs.paddingBottom) || 0 }; d.remove(); }
+    return _sa;
+  }
+  function maxPanelH() {
+    const H = PG.clientHeight || innerHeight, a = safeArea(); let M = H - a.t - a.b - 10 - 12;
+    // v2.50.1：有上方按鈕卡（路線、時刻表、車站頁）時，面板最高切齊卡片下緣、留 10px，不鑽到卡片後面
+    const w = curWrap(), top = w && w.querySelector('.rt2-top'), pn = w && w.querySelector('.rp-panel');
+    // v2.50.1：規劃頁的外框本身已經扣掉上下 safe area，用面板實際底緣算，頂端才會停在狀態列下方 12px
+    if (pn) { const pb = pn.getBoundingClientRect().bottom; if (pb > 0) M = Math.min(M, pb - a.t - 12); }
+    if (top) { const tb = top.getBoundingClientRect().bottom, wb = w.getBoundingClientRect().bottom; if (tb > 0) M = Math.min(M, wb - a.b - 10 - tb - 10); }
+    return Math.max(200, Math.round(M));
+  }
   function heights(wrap) {
     wrap = wrap || curWrap();
-    const H = PG.clientHeight || innerHeight, k = wrap ? wrap.dataset.rp : 'route';
-    if (k === 'plan') { const od = wrap.querySelector('.pl2-od-card'); return [od ? Math.min(Math.round(H * 0.42), od.offsetHeight + 60) : 230, Math.round(H * 0.6), Math.round(H * 0.88)]; }
-    if (k === 'detail') return [Math.round(H * 0.3), Math.round(H * 0.5), Math.round(H * 0.88)];
-    return [Math.min(Math.round(H * 0.3), 230), Math.round(H * 0.45), Math.round(H * 0.85)];
+    const H = PG.clientHeight || innerHeight, k = wrap ? wrap.dataset.rp : 'route', M = maxPanelH(), c = a => a.map(x => Math.min(x, M));
+    if (k === 'plan') { const od = wrap.querySelector('.pl2-od-card'); return c([od ? Math.min(Math.round(H * 0.42), od.offsetHeight + 60) : 230, Math.round(H * 0.6), Math.round(H * 0.88)]); }
+    if (k === 'detail') return c([Math.round(H * 0.3), Math.round(H * 0.5), Math.round(H * 0.88)]);
+    return c([Math.min(Math.round(H * 0.3), 230), Math.round(H * 0.45), Math.round(H * 0.85)]);
   }
   const pageKey = () => S.page === 'route' || S.page === 'bustt' ? 'r:' + (S.route ? S.route.routeUID + '|' + S.route.dirNum : '')
     : S.page === 'plan' ? 'plan' : S.page === 'planDetail' ? 'detail:' + (S.plan ? S.plan.sel : '')
@@ -8096,12 +8274,14 @@ async function demo(action, p) {
     });
     PG.addEventListener('pointermove', e => {
       if (!st) return; const dy = e.clientY - st.y; if (Math.abs(dy) > 4) st.moved = true;
-      const h = Math.max(120, Math.min(PG.clientHeight * 0.9, st.h - dy));
-      st.wrap.style.setProperty('--rp-h', h + 'px'); st.cur = h;
+      const h = Math.max(120, Math.min(maxPanelH(), st.h - dy));
+      st.wrap.style.setProperty('--rp-h', h + 'px'); st.cur = h; st.pull = st.h - dy;   // pull：沒被下限夾住的高度，用來判斷往下拉關閉
     });
     const up = () => {
       if (!st) return; const { wrap } = st; wrap.classList.remove('drag'); const H = heights(wrap);
       if (!st.moved) RP.level = RP.level < 2 ? RP.level + 1 : 1;
+      // v2.50.1：在最低段再往下拉超過 90px＝關掉這一頁（跟按返回一樣）
+      else if (st.h <= H[0] + 4 && st.pull != null && st.pull < H[0] - 90) { st = null; closeRoute(); return; }
       else {
         const h = st.cur ?? st.h, dt = Math.max(1, performance.now() - st.t), vel = (h - st.h) / dt;   // 往上為正
         let best = 0; H.forEach((x, i) => { if (Math.abs(x - h) < Math.abs(H[best] - h)) best = i; });
@@ -8113,6 +8293,47 @@ async function demo(action, p) {
     };
     PG.addEventListener('pointerup', up); PG.addEventListener('pointercancel', up);
   })();
+  // v2.50.1：在下方面板左右滑動＝切換「路線／時刻表」（公車路線、軌道路線、車站頁都適用；地圖上的滑動照樣是移動地圖）
+  (() => {
+    let sw = null;
+    const scrollsX = el => { for (let x = el; x && x !== PG; x = x.parentElement) { if (x.scrollWidth > x.clientWidth + 2) { const o = getComputedStyle(x).overflowX; if (o === 'auto' || o === 'scroll') return true; } } return false; };
+    // 用 capture 先判斷：確定是要切分頁的水平滑動，就在事件上標記 __fxTab，原本「往右滑＝返回」的手勢看到標記就不接手（也不會吃掉分頁的 click）
+    PG.addEventListener('touchstart', e => {
+      sw = null; if (e.touches.length !== 1) return;
+      const t = e.target; if (!t.closest || t.closest('.rp-grab, .maplibregl-canvas, .rt2-map, input, textarea') || !t.closest('.rp-panel, .rt2-body')) return;
+      if (e.touches[0].clientX <= 24 || scrollsX(t)) return;   // 左邊緣留給返回手勢
+      if (S.page === 'line') return;   // v2.50.1：軌道列車／路線頁不提供時刻表（車站小卡有）
+      const wrap = t.closest('.rt2-wrap'); if (!wrap || wrap.querySelectorAll('.rt2-tab').length < 2) return;
+      sw = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: performance.now(), wrap, blk: S.page === 'rail' ? t.closest('.lblk') : null, claim: false, dec: false };
+    }, { passive: true, capture: true });
+    PG.addEventListener('touchmove', e => {
+      if (!sw) return;
+      if (!sw.dec) {
+        const c = e.touches[0], ddx = c.clientX - sw.x, ddy = c.clientY - sw.y;
+        if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+        sw.dec = true;
+        if (Math.abs(ddx) < Math.abs(ddy) * 1.3) { sw = null; return; }   // 垂直捲動
+        const d = ddx < 0 ? 1 : -1;
+        if (sw.blk) { const b = pgBtns(sw.blk), i = b.findIndex(x => x.classList.contains('on')); if (b.length > 1 && b[i + d]) { sw = null; return; } }   // 車站頁方向區塊：還有下一個方向就照原本切方向
+        const tabs = [...sw.wrap.querySelectorAll('.rt2-tab')], cur = tabs.findIndex(b => b.classList.contains('on')), nx = tabs[cur + d];
+        if (!nx || nx.disabled) { sw = null; return; }   // 沒有下一個分頁（例如在第一個分頁往右滑）：照原本返回上一頁
+        sw.claim = true;
+      }
+      if (sw && sw.claim) e.__fxTab = true;
+    }, { passive: true, capture: true });
+    PG.addEventListener('touchend', e => {
+      if (!sw || !sw.claim) { sw = null; return; } const c = e.changedTouches[0], dx = c.clientX - sw.x, dy = c.clientY - sw.y, dt = performance.now() - sw.t, w = sw.wrap; sw = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6 || dt > 700) return;
+      const tabs = [...w.querySelectorAll('.rt2-tab')], cur = tabs.findIndex(b => b.classList.contains('on'));
+      const nx = tabs[cur + (dx < 0 ? 1 : -1)];
+      if (nx && !nx.disabled) nx.click();
+    }, { passive: true, capture: true });
+    PG.addEventListener('touchcancel', () => { sw = null; }, { passive: true, capture: true });
+  })();
+  // v2.50.1：地圖來源標示（OpenStreetMap 授權要求）平常收成右下角的 ⓘ，點了才展開
+  new MutationObserver(() => {
+    document.querySelectorAll('.maplibregl-ctrl-attrib.maplibregl-compact-show:not([data-fxc])').forEach(a => { a.dataset.fxc = '1'; a.classList.remove('maplibregl-compact-show'); a.setAttribute('open', ''); });   // 跟 MapLibre 自己收起時一樣
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   window.fxRouteRefit = () => { const w = curWrap(); if (w && w.dataset.rp === 'route') refit(w, 0); };
   // v2.50.0：真地圖上點站牌→清單捲到那一站（跟示意圖的 fx-hit 一樣）
   window.fxRouteListTo = i => {
@@ -8184,7 +8405,8 @@ async function demo(action, p) {
     const idx = body.querySelector('.ttidx'); if (!idx) return;
     const inner = idx.firstElementChild; if (!inner) return;
     const btns = [...inner.children], n = btns.length; if (!n) return;
-    const avail = body.clientHeight - 16; if (avail < 80) return;
+    if (body.classList.contains('fx-ttl') && !body.closest('#sheet.fx-tall')) return;   // v2.50.1：卡片還沒長高前量到的是整份清單高度
+    const avail = Math.min(body.clientHeight, innerHeight) - 16; if (avail < 80) return;
     if (inner.dataset.fitH === String(avail) && inner.dataset.fitN === String(n)) return;
     inner.dataset.fitH = avail; inner.dataset.fitN = n;
     const per = avail / n, step = per >= 15 ? 1 : Math.ceil(15 / per);
@@ -8208,12 +8430,19 @@ async function demo(action, p) {
     if (T && !T.data && !T.err && T.keep == null) T.keep = cur;
     sh.innerHTML = '<div class="grab"></div>' + cardTTHtml(S.rail);
     const list = sh.querySelector('.fx-ttl');
+    // v2.50.1：日期、方向、到站選單固定在清單上方，不跟著捲
+    const ctl = list.querySelector(':scope > .stctl'); if (ctl) { ctl.classList.add('fx-ttctl'); list.before(ctl); }
     if (scroll === 'next') {
       const el = list.querySelector('#stttNext');
       list.scrollTop = el ? Math.max(0, el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 6) : 0;
       if (T) T.keep = null;
     } else { const v = T && T.data && T.keep != null ? T.keep : cur; if (T && (T.data || T.err)) T.keep = null; list.scrollTop = v; }
-    if (showDet) { showDet = false; const d = list.querySelector('.ttdet'); if (d) { const over = d.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 10); if (over > 0) list.scrollBy({ top: over, behavior: RM() ? 'auto' : 'smooth' }); } }
+    if (showDet) { showDet = false; requestAnimationFrame(() => {   // v2.50.1：詳情卡要整張看得到（以螢幕可見底部為準，扣掉 home 列），但不把選到的那班捲出畫面
+      const d = list.querySelector('.ttdet'); if (!d) return;
+      const lr = list.getBoundingClientRect(), r = d.getBoundingClientRect(), sb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sab')) || 34;
+      const vb = Math.min(lr.bottom, innerHeight - sb) - 12, over = r.bottom - vb, room = r.top - lr.top - 84;
+      if (over > 0) list.scrollBy({ top: Math.max(0, Math.min(over, room)), behavior: RM() ? 'auto' : 'smooth' });
+    }); }
     ttFit(list);
   }
   function slideKids(sh, dir) {
@@ -8227,6 +8456,8 @@ async function demo(action, p) {
     const T = ensureStttInit(); if (T && T.data) T.next = false;
     renderCardTT(T && T.data ? 'next' : '');
     sh.classList.add('fx-tall');
+    const refit = () => { const L = sh.querySelector('.fx-ttl'); if (!L || !S.fxCardTT) return; const i = L.querySelector('.ttidx > div'); if (i) delete i.dataset.fitH; ttFit(L); };
+    requestAnimationFrame(refit); setTimeout(refit, 700);
     if (!RM()) {
       sh.style.transition = 'none'; sh.style.height = h0 + 'px'; sh.offsetHeight;
       sh.style.transition = 'transform .26s ease, height .62s var(--spring)'; sh.style.height = '';
@@ -8234,6 +8465,7 @@ async function demo(action, p) {
     }
     slideKids(sh, 1);
   }
+  window.fxBackCardTT = () => backCardTT();
   function backCardTT() {
     const sh = sheetEl(), h0 = sh.offsetHeight;
     S.fxCardTT = false; S.railSubTab = 'live';
@@ -8278,6 +8510,12 @@ async function demo(action, p) {
     const act = el.dataset.act, inSheet = !!el.closest('#sheet');
     if (act === 'fxRailTT' && inSheet && S.sheet && S.sheet.type === 'fxRail') { e.stopPropagation(); openCardTT(S.rail); return; }
     if (act === 'fxTTBack') { e.stopPropagation(); backCardTT(); return; }
+    if (inSheet && !S.fxCardTT && S.sheet && S.sheet.type === 'fxRail' && act === 'trainOpen') {   // v2.50.1：車站小卡點一班車
+      railPrev = undefined; S.fxLineFromCard = true;
+      closeSheetQuiet();
+      setTimeout(() => { if (S.page === 'line' && !PG.classList.contains('open')) { PG.classList.add('open'); PG.setAttribute('aria-hidden', 'false'); } }, 0);
+      return;
+    }
     if (!inSheet || !S.fxCardTT) return;
     if (act === 'ttHr') {
       e.stopPropagation();
@@ -8286,12 +8524,36 @@ async function demo(action, p) {
       return;
     }
     if (act === 'ttSel') showDet = true;
-    if (act === 'tripOpen' || act === 'trainOpen') {
+    if (act === 'tripOpen' || act === 'trainOpen' || act === 'stttTrain') {   // v2.50.1：「停靠站一覽」也要先關卡片，不然列車頁開在卡片後面
       railPrev = undefined; S.fxLineFromCard = true; S.fxCardTT = false;
       closeSheetQuiet();
       setTimeout(() => { if (S.page === 'line' && !PG.classList.contains('open')) { PG.classList.add('open'); PG.setAttribute('aria-hidden', 'false'); } }, 0);
     }
   }, true);
+  // v2.50.1：卡片時刻表左右滑＝換方向（在日期列上滑＝換日期）
+  (() => {
+    const sh = sheetEl(); let x0 = 0, y0 = 0, k = null, st = 0;
+    sh.addEventListener('touchstart', e => {
+      st = 0; if (!S.fxCardTT || e.touches.length !== 1) return;
+      const t = e.target; if (!t.closest('.fx-ttl, .fx-ttctl') || t.closest('.ttidx, input, select, [data-noswipe]')) return;
+      k = t.closest('.sttd') ? 'date' : null; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; st = 1;
+    }, { passive: true });
+    sh.addEventListener('touchmove', e => {
+      if (st !== 1) return; const dx = e.touches[0].clientX - x0, dy = e.touches[0].clientY - y0;
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      st = Math.abs(dx) > Math.abs(dy) * 1.3 ? 2 : 0;
+    }, { passive: true });
+    sh.addEventListener('touchend', e => {
+      if (st !== 2) { st = 0; return; } st = 0;
+      const dx = e.changedTouches[0].clientX - x0; if (Math.abs(dx) < 40) return;
+      const c = sh.querySelector('.fx-ttctl'); if (!c) return;
+      const seg = k ? c.querySelector('.seg[data-seg="date"]') : c.querySelector('.sttdir .seg[data-seg]:not([data-seg="date"])'); if (!seg) return;
+      const bs = [...seg.querySelectorAll('button')], i = bs.findIndex(b => b.classList.contains('on')), nb = bs[i + (dx < 0 ? 1 : -1)];
+      if (!nb) return;
+      nb.click();
+      const L = sh.querySelector('.fx-ttl'); if (L && !RM()) anim(L, [{ opacity: 0, transform: `translateX(${dx < 0 ? 44 : -44}px)` }, { opacity: 1, transform: 'none' }], { duration: 380, easing: SMOOTH });
+    });
+  })();
   // 卡片裡的整點索引：按住上下拖曳跳到該整點
   (() => {
     const sh = sheetEl(); let idx = null, cur = null;

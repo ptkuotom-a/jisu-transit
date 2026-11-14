@@ -49,7 +49,8 @@ function fetchT(u, ms, opt) {
 // 手動下拉、第一次載入不受影響（原本的官網→TDX 備援照舊）
 let AUTO = 0;
 const tdxMemo = new Map();
-const nt = u => AUTO ? u + (u.includes("?") ? "&" : "?") + "notdx=1" : u;
+let CARD_NOTDX = 0;   // v2.50.1：軌道分頁卡片讀取期間，送到 Worker 的請求一律帶 notdx=1
+const nt = u => (AUTO || CARD_NOTDX) ? u + (u.includes("?") ? "&" : "?") + "notdx=1" : u;
 const NOTDX_MSG = "定時更新略過 TDX";
 const TDX_MS = 12000, NET_MSG = "連不到伺服器，請確認網路後重試", TIMEOUT_MSG = "連線逾時，請確認網路後重試";
 function tdxKeep(k, v) { tdxMemo.delete(k); tdxMemo.set(k, { v }); if (tdxMemo.size > 80) tdxMemo.delete(tdxMemo.keys().next().value); return v; }
@@ -3107,6 +3108,22 @@ async function traBoard(get, st) {
     };
   }
   return fetchLive();
+}
+
+// v2.50.1：軌道分頁卡片的下一班車。完全不打 TDX：沿用車站看板 railBoard 的非 TDX 來源
+// （台鐵＝雲端時刻表＋台鐵官網；高鐵＝雲端時刻表；北捷／環狀＝北捷官網→Bus+；桃捷、淡海／安坑輕軌、高捷／高雄輕軌＝各自官網；中捷＝雲端班距；其餘＝雲端時刻表），
+// 但把 TDX 呼叫換成直接失敗，而且讀取期間所有 Worker 請求帶 notdx=1，Worker 端不准轉打 TDX。讀不到就回 null，卡片維持「即時看板」。
+async function railCard(p) {
+  const st = { op: p.op, kind: p.kind, ids: p.ids || [], name: p.name };
+  if (!st.ids.length) return null;
+  const noTdx = () => { const e = new Error(NOTDX_MSG); e.notdx = true; return Promise.reject(e); };
+  CARD_NOTDX++;
+  try {
+    let b = await railBoard(noTdx, st);
+    if (b && b.pending) { const up = await b.pending.catch(() => null); if (up) b = up; }
+    if (b && (!b.trains || !b.trains.length) && b.tt && b.tt.length) b = { ...b, trains: b.tt };   // 沒有即時就用時刻表的下一班
+    return b && b.trains && b.trains.length ? b : null;
+  } finally { CARD_NOTDX--; }
 }
 
 async function thsrBoard(get, st) {
@@ -8333,6 +8350,7 @@ const dataApi0 = async (action, p = {}) => {
     case "schBuild": return schBuild(p || {});
     case "khhSchDate": return khhSchDate();
     case "railBoard": return railBoard(tdx, p);
+    case "railCard": return railCard(p);
     case "loadState": return loadState();
     case "saveState": localStorage.setItem(STATE_KEY, JSON.stringify(p)); return true;
     case "session": return getSession();
