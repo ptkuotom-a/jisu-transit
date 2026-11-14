@@ -2865,8 +2865,10 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     stops: stops.map(s => {
       const nm = (s.StopName && s.StopName.Zh_tw) || "?";
       const e = em[s.StopUID] || { sec: null, status: null, noLive: isNorth ? !odR : !etas.length };
+      // v2.50.0：站序本來就帶的站牌座標（雲端 P:[lat,lon] 或 TDX StopPosition）一併傳給路線頁畫真地圖；不多抓任何資料
+      const sp = s.StopPosition && s.StopPosition.PositionLat != null ? [s.StopPosition.PositionLat, s.StopPosition.PositionLon] : Array.isArray(s.P) ? s.P : null;
       return {
-        seq: s.StopSequence, name: nm, uid: s.StopUID, ...e,
+        seq: s.StopSequence, name: nm, uid: s.StopUID, ...e, ...(sp && Number.isFinite(+sp[0]) && Number.isFinite(+sp[1]) ? { lat: +sp[0], lon: +sp[1] } : {}),
         noLive: e.noLive ?? (isNorth ? !odR : !etas.length),
         bus: !!busAt[s.StopUID], plate: typeof busAt[s.StopUID] === "string" ? busAt[s.StopUID] : null, sub: busSub[s.StopUID] || null,
         here: (stopUID && s.StopUID === stopUID) || (!!stopName && nm === stopName),
