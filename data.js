@@ -2775,13 +2775,63 @@ function odBikeLive(a, src = null) {
 }
 // ---------- 路線頁：沿途站牌 + 預估 + 公車位置 ----------
 const sorPack = l => l.map(r => ({ RouteUID: r.RouteUID, Direction: r.Direction, Stops: (r.Stops || []).map(x => ({ StopUID: x.StopUID, StopName: { Zh_tw: x.StopName && x.StopName.Zh_tw }, StopSequence: x.StopSequence, ...(x.StopPosition && x.StopPosition.PositionLat ? { P: [+x.StopPosition.PositionLat.toFixed(5), +x.StopPosition.PositionLon.toFixed(5)] } : {}) })) }));
-// v2.49.3：官網讀不到時的 TDX 備援，雙北路線同一個網址 60 秒內只問一次（含下拉）；其他縣市照舊
-const rvTdx = (routeUID, url) => isNwtR(routeUID) || isTpeR(routeUID) ? memoTdx("route", url, 60000) : tdx("route", url);
+// 路線頁只走官網。讀不到、沒車、沒站序、對不上站名，都不改打 TDX。
+function pageLive(live, j) {
+  const ui = live === "ok" ? "ok" : live === "empty" ? "empty" : live === "fail" ? "fail" : "none";
+  return { list: (j && j.list) || [], near: Array.isArray(j && j.near) ? j.near : [], live: ui, src: (j && j.src) || null };
+}
+function pageAfter(path, j) {
+  if (j && Array.isArray(j.list) && j.list.length) return { ...j, live: "ok" };
+  const h = odMemo.get(path);
+  if (!h) return pageLive("fail");
+  if (h.v && h.v.empty) return pageLive("empty");
+  return pageLive("none");
+}
+async function routePageLive(routeUID, route, dirNum, sor) {
+  if (isTpeR(routeUID) || isNwtR(routeUID)) {
+    const pda = await pdaRouteEta(routeUID, 20000);
+    if (pda && Array.isArray(pda.list) && pda.list.length) return { ...pda, live: "ok" };
+    const od = await odRouteEta(routeUID, true, route);
+    if (od && Array.isArray(od.list) && od.list.length) return { ...od, live: "ok" };
+    const p = (routeUID || "").slice(0, 3), rid = (routeUID || "").slice(3);
+    const pdaPath = `/pda/route?c=${p}&rid=${rid}`;
+    const odPath = isTpeR(routeUID) ? `/od/eta?route=${routeUID}&near=1` : (route ? `/ebus?route=${routeUID}&name=${encodeURIComponent(route)}` : `/od/eta?route=${routeUID}&nwt=1`);
+    const a = odMemo.get(pdaPath), b = odMemo.get(odPath);
+    if ((a && a.v && a.v.empty) || (b && b.v && b.v.empty)) return pageLive("empty");
+    if (!a && !b) return pageLive("fail");
+    return pageLive("none");
+  }
+  if (!sor || !Array.isArray(sor) || !sor.length) return pageLive("none");
+  if (isTaoR(routeUID)) {
+    const path = `/tyebus?route=${enc(routeUID)}`;
+    return pageAfter(path, await taoRouteEta(routeUID));
+  }
+  if (isThbR(routeUID)) {
+    const subs = thbSubs(routeUID, dirNum, sor);
+    if (!subs.length) return pageLive("none");
+    const path = `/thb?sub=${subs.join(",")}&route=${routeUID}`;
+    return pageAfter(path, await thbRouteEta(routeUID, dirNum, sor));
+  }
+  if (isCitybusR(routeUID)) {
+    if (!citybusStops(routeUID, sor)) return pageLive("none");
+    const subs = [...new Set((sor || []).filter(x => x.RouteUID === routeUID && x.SubRouteUID).map(x => x.SubRouteUID))].slice(0, 8).join(",");
+    const path = `/citybus?route=${enc(routeUID)}&name=${enc(route)}&stops=${enc(citybusStops(routeUID, sor))}${subs ? "&subs=" + enc(subs) : ""}`;
+    return pageAfter(path, await citybusRouteEta(routeUID, route, sor));
+  }
+  if (isHszR(routeUID)) return pageAfter(`/hszbus?route=${enc(routeUID)}&name=${enc(route)}`, await hszRouteEta(routeUID, route, sor));
+  if (isTxgR(routeUID)) return pageAfter(`/tcgo?route=${enc(routeUID)}&name=${enc(route)}`, await tcgoRouteEta(routeUID, route, sor));
+  if (isTnnR(routeUID)) return pageAfter(`/tnbus?route=${enc(routeUID)}&name=${enc(route)}`, await tnbusRouteEta(routeUID, route, sor));
+  if (isKhhR(routeUID)) return pageAfter(`/twh?route=${enc(routeUID)}&name=${enc(route)}`, await twhRouteEta(routeUID, route, sor));
+  if (isKinR(routeUID)) {
+    const ids = kinbusIds(routeUID, sor);
+    const path = `/kinbus?route=${enc(routeUID)}&name=${enc(route)}${ids.length ? `&ids=${ids.join(",")}` : ""}`;
+    return pageAfter(path, await kinbusRouteEta(routeUID, route, sor));
+  }
+  return pageAfter(`/od/eta?route=${routeUID}&near=1`, await odRouteEta(routeUID, true, route));
+}
 async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
-  // v2.46.3：預估與公車位置用 RouteUID 過濾；高雄等路線名稱當路徑參數 TDX 會回 []
-  const u = api => `${BASE}/basic/v2/Bus/${api}/${k.path}?%24filter=${enc(`RouteUID eq '${routeUID}'`)}&%24top=600&%24format=JSON`;
   // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站，或找不到這條路線，就重抓
   const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
   // 雲端 KV 的全 23 地區站序是手機端唯一來源；同名的其他路線保留在同一份快取裡。
@@ -2793,22 +2843,10 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     return d;
   };
   let sor = sc ? sc.d : await sorCloud().then(d => d || []);
-  let odR = null;
-  const isNorth = isTpeR(routeUID) || isNwtR(routeUID);
-  if (isNorth) {
-    odR = await pdaRouteEta(routeUID, 20000);
-    if (!odR) {
-      odR = await odRouteEta(routeUID, true, route);
-    }
-  } else {
-    odR = isTaoR(routeUID) ? await taoRouteEta(routeUID) : isThbR(routeUID) ? await thbRouteEta(routeUID, dirNum, sor) : isCitybusR(routeUID) ? await citybusRouteEta(routeUID, route, sor) : isHszR(routeUID) ? await hszRouteEta(routeUID, route, sor) : isTxgR(routeUID) ? await tcgoRouteEta(routeUID, route, sor) : isTnnR(routeUID) ? await tnbusRouteEta(routeUID, route, sor) : isKhhR(routeUID) ? await twhRouteEta(routeUID, route, sor) : isKinR(routeUID) ? await kinbusRouteEta(routeUID, route, sor) : await odRouteEta(routeUID, true, route);
-  }
-  const [etas, near] = isNorth
-    ? [odR ? (odR.list || []) : [], odR ? (Array.isArray(odR.near) ? odR.near : []) : []]
-    : await Promise.all([
-        odR ? odR.list : rvTdx(routeUID, u("EstimatedTimeOfArrival")),
-        odR ? (Array.isArray(odR.near) ? odR.near : []) : rvTdx(routeUID, u("RealTimeNearStop")).catch(() => []),
-      ]);
+  const odR = await routePageLive(routeUID, route, dirNum, sor);
+  const live = odR && odR.live || "none";
+  const etas = live === "ok" ? (odR.list || []) : [];
+  const near = live === "ok" && Array.isArray(odR.near) ? odR.near : [];
   try { reportSor(routeUID, sor, etas); } catch (e) {}
   if (sc) {
     let have = new Set(); for (const r of sor) if (r.RouteUID === routeUID) for (const x of r.Stops || []) have.add(x.StopUID);
@@ -2829,7 +2867,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const hitN = r => etaU.size ? (r.Stops || []).filter(x => etaU.has(x.StopUID)).length : 0;
   cand.sort((a, b) => hitN(b) - hitN(a) || (b.Stops || []).length - (a.Stops || []).length);
   const stops = ((cand[0] && cand[0].Stops) || []).slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0));
-  if (!stops.length) return { routeUID, route, dirs: [dirNum], dest: { 0: null, 1: null }, stops: [] };
+  if (!stops.length) return { routeUID, route, dirs: [dirNum], dest: { 0: null, 1: null }, stops: [], live };
 
   const em = {};
   for (const t of etas) {
@@ -2861,16 +2899,17 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   busHeal([routeUID]);
 
   return {
-    routeUID, route, dirNum, dirs: dirs.length ? dirs : [dirNum],
+    routeUID, route, dirNum, live, dirs: dirs.length ? dirs : [dirNum],
     dest: oneWayDest({ 0: destOf(routeUID, 0, destMap), 1: destOf(routeUID, 1, destMap) }, dirs, dirNum, stops),
     stops: stops.map(s => {
       const nm = (s.StopName && s.StopName.Zh_tw) || "?";
-      const e = em[s.StopUID] || { sec: null, status: null, noLive: isNorth ? !odR : !etas.length };
+      const e = em[s.StopUID] || { sec: null, status: null, noLive: live !== "ok" };
       // v2.50.0：站序本來就帶的站牌座標（雲端 P:[lat,lon] 或 TDX StopPosition）一併傳給路線頁畫真地圖；不多抓任何資料
       const sp = s.StopPosition && s.StopPosition.PositionLat != null ? [s.StopPosition.PositionLat, s.StopPosition.PositionLon] : Array.isArray(s.P) ? s.P : null;
       return {
         seq: s.StopSequence, name: nm, uid: s.StopUID, ...e, ...(sp && Number.isFinite(+sp[0]) && Number.isFinite(+sp[1]) ? { lat: +sp[0], lon: +sp[1] } : {}),
-        noLive: e.noLive ?? (isNorth ? !odR : !etas.length),
+        noLive: live !== "ok",
+        liveWhy: live === "ok" ? null : live,
         bus: !!busAt[s.StopUID], plate: typeof busAt[s.StopUID] === "string" ? busAt[s.StopUID] : null, sub: busSub[s.StopUID] || null,
         here: (stopUID && s.StopUID === stopUID) || (!!stopName && nm === stopName),
       };

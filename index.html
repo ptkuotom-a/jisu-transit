@@ -2111,7 +2111,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.50.1';   // 要跟 sw.js 的 VERSION（jisu-v2.50.1）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.50.2';   // 要跟 sw.js 的 VERSION（jisu-v2.50.2）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2173,6 +2173,9 @@ const hhmm = s => { const d = new Date(s); return isNaN(d) ? '' : String(d.getHo
 function eta(r) {
   if (!r) return { t:'—', k:'off' };
   if (r.loading || r.sec === -1) return { t:'…', k:'off' };
+  if (r.liveWhy === 'empty' && r.sec == null) return { t:'目前沒有車', k:'off' };
+  if (r.liveWhy === 'fail' && r.sec == null) return { t:'暫時拿不到即時資料', k:'off' };
+  if (r.liveWhy === 'none' && r.sec == null && !r.next) return { t:'暫無即時資料', k:'off' };
   if (r.noLive && r.sec == null && !r.next && (r.status === 0 || r.status == null)) return { t:'暫無免 TDX 的即時資料', k:'off' };
   if (r.status === 0 && r.sec != null) {
     if (r.sec < 60) return { t:'進站中', k:'hot' };
@@ -5190,6 +5193,9 @@ function routeHtml() {
     h += inlineBusttHtml();
   } else {
     h += `${D ? (S.routeError ? staleNote() : pupd(S.routeAt)) : ''}`;
+    if (D && D.live === 'empty') h += `<div class="pupd">目前沒有車</div>`;
+    if (D && D.live === 'fail') h += `<div class="pupd err"><i></i>暫時拿不到即時資料</div>`;
+    if (D && D.live === 'none') h += `<div class="pupd">暫無即時資料</div>`;
     if (!D) h += S.routeError && !S.routeLoading ? failBox(S.routeError, 'retryRoute') : skel(5);
     else {
       h += `<div class="line">` + D.stops.map((s, i) => {
