@@ -2112,7 +2112,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.51.3';   // 要跟 sw.js 的 VERSION（jisu-v2.51.3）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.51.4';   // 要跟 sw.js 的 VERSION（jisu-v2.51.4）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -5573,7 +5573,7 @@ function planHtml() {
           ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
         </div>` : ''}
         <div class="plab">交通工具<span>步行一定會用到</span></div>
-        <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button></div>
+        <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button><button class="chip ${P.modes.walk ? 'chip-on' : ''}" data-act="planMode" data-v="walk">步行</button></div>
         <button class="btn pri pgo" data-act="planGo" ${P.o && P.d ? '' : 'disabled'}>${P.locating ? '定位中…' : P.loading ? '規劃中…' : P.res ? '重新規劃' : '規劃路線'}</button>`;
   if (P.loading && !P.res) h += skel(3);
   else if (P.err) h += `<div class="note" style="margin-top:14px">${esc(P.err)}</div>`;
@@ -5725,7 +5725,8 @@ function planSrcLine(r) {
 async function planGo(more) {
   const P = S.plan; if (!P.o || !P.d) return;
   const modes = PLAN_MODES.filter(([k]) => P.modes[k]).map(x => x[2]);
-  if (!modes.length) { P.err = '至少選一種交通工具'; P.res = null; renderPage(); return; }
+  const walkOnly = !modes.length && !P.modes.bike && !!P.modes.walk;   // v2.51.4：只選步行也能規劃
+  if (!modes.length && !walkOnly) { P.err = '至少選一種交通工具'; P.res = null; renderPage(); return; }
   const tok = P.tok = (P.tok || 0) + 1;
   P.loading = true; P.err = null; P.liveBusy = false; P.pendRes = null;
   // v2.33.0：起訖有「目前位置」：按下後才確認座標（近期／快速定位夠準就直接用），還在定位就顯示「定位中…」，拿到座標接著規劃
@@ -5738,7 +5739,7 @@ async function planGo(more) {
   }
   renderPage();
   try {
-    const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))), more: more === true, onLive: L => planLiveDone(tok, L) });
+    const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, walk: !!P.modes.walk, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))), more: more === true, onLive: L => planLiveDone(tok, L) });
     if (tok === P.tok) { P.res = res; P.err = null; P.moreUsed = more === true; P.liveBusy = res.some(r => r.livePending); }
   }
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
@@ -5986,13 +5987,14 @@ async function planFillShape(i) {
   const P = S.plan, r = P && P.res && P.res[i];
   if (!r || r.shapeDone || r.src === 'google' || r.src === 'tdx') return;
   r.shapeDone = true;
-  for (const l of r.legs || []) {
-    if ((l.kind !== 'walk' && l.kind !== 'bike') || l.from == null || l.from.lat == null || l.to == null || l.to.lat == null) continue;
+  // v2.51.4：打開詳情才查；步行與 YouBike 段依序排隊，一個方案最多 3 段；結果存手機 7 天
+  for (const l of BusDirect.shapeLegs(r, 3)) {
     const pts = [[l.from.lat, l.from.lon], [l.to.lat, l.to.lon]];
     const res = await api('walkRoute', { mode: l.kind === 'bike' ? 'bike' : 'foot', pts }).catch(() => null);
-    if (res && res.ok) l.shape = { roads: res.roads || [], parts: res.parts || 1 };
+    if (res && res.ok) l.shape = { roads: res.roads || [], parts: res.parts || 1, coords: Array.isArray(res.coords) ? res.coords : [] };
   }
-  if (S.page === 'planDetail' && P.sel === i) renderPage();
+  r.shapeFilled = true;
+  if (S.page === 'planDetail' && P.sel === i) { planMapKey = null; renderPage(); }
 }
 async function planLoadLive(auto) {
   const P = S.plan, r = P.res && P.res[P.sel]; if (!r) return;
@@ -6054,7 +6056,9 @@ function xWalkRow(l) {
   const line = l.timeSrc === 'line';
   const txt = l.kind === 'wait' ? `等車${m}分` : `${l.kind === 'bike' ? 'YouBike' : '步行'}${l.approx || line ? '約' : ''}${m}分${l.len ? `・${distTxt(Math.round(l.len / 10) * 10)}` : ''}`;
   const roads = l.shape && l.shape.roads && l.shape.roads.length ? `<small class="gate">經 ${esc(l.shape.roads.join(' → '))}</small>` : '';
-  return `<div class="xsg wk"><div class="rl"></div><div class="by"><span class="wk">${l.kind === 'bike' ? I.bike : l.kind === 'wait' ? I.clock : I.walk}${txt}</span>${line ? '<small class="gate">直線估算</small>' : ''}${l.gate ? `<small class="gate">${/出口|出入口|M\d|口$/.test(l.gate) ? '經 ' : ''}${esc(l.gate)}</small>` : ''}${l.approx ? '<small class="gate">原為計程車接駁，改以步行估算</small>' : ''}${roads}</div></div>`;
+  const pr = S.plan && S.plan.res && S.plan.res[S.plan.sel];
+  const sketch = l.kind !== 'wait' && S.page === 'planDetail' && pr && pr.shapeFilled && !(l.shape && l.shape.coords && l.shape.coords.length >= 2) ? '<small class="gate">地圖為直線示意</small>' : '';
+  return `<div class="xsg wk"><div class="rl"></div><div class="by"><span class="wk">${l.kind === 'bike' ? I.bike : l.kind === 'wait' ? I.clock : I.walk}${txt}</span>${line ? '<small class="gate">直線估算</small>' : ''}${l.gate ? `<small class="gate">${/出口|出入口|M\d|口$/.test(l.gate) ? '經 ' : ''}${esc(l.gate)}</small>` : ''}${l.approx ? '<small class="gate">原為計程車接駁，改以步行估算</small>' : ''}${roads}${sketch}</div></div>`;
 }
 // 狀態小標：公車即時＞火車／捷運即時或表定＞時刻表校正＞班距估計＞規劃時間
 function xChips(l, L, c) {
@@ -6165,7 +6169,7 @@ function legOpen(i) {
   if (L.open.type === 'rail') stackPush(() => openRail(L.open.r));
   else stackPush(() => openRoute(L.open.r));
 }
-/* 詳情頁地圖：公共運輸依站點座標畫線（路線色），步行／YouBike 畫虛線直線 */
+/* 詳情頁地圖：公共運輸依站點座標畫線（路線色）；步行／YouBike 有路網形狀就沿街畫實線，沒有就畫虛線直線並標「直線示意」 */
 let PM = null, planMapEl = null, planMapKey = null;
 function planGeo(r) {
   const F = [], pts = [];
@@ -6175,7 +6179,11 @@ function planGeo(r) {
     if (l.kind === 'transit') {
       F.push({ type:'Feature', properties:{ k:'t', c:legColor(l) }, geometry:{ type:'LineString', coordinates:co } });
       for (const [j, p] of co.entries()) F.push({ type:'Feature', properties:{ k: j === 0 || j === co.length - 1 ? 'e' : 's', c:legColor(l) }, geometry:{ type:'Point', coordinates:p } });
-    } else if (l.kind !== 'wait') F.push({ type:'Feature', properties:{ k: l.kind === 'bike' ? 'b' : 'w', c: l.kind === 'bike' ? '#FFB400' : '#B8BBB6' }, geometry:{ type:'LineString', coordinates:[co[0], co[co.length - 1]] } });
+    } else if (l.kind !== 'wait') {
+      const sh = l.shape && Array.isArray(l.shape.coords) && l.shape.coords.length >= 2 ? l.shape.coords.map(([a, b]) => [b, a]) : null;   // v2.51.4：有路網形狀就沿街畫實線
+      if (sh) pts.push(...sh);
+      F.push({ type:'Feature', properties:{ k: (l.kind === 'bike' ? 'b' : 'w') + (sh ? 'r' : ''), c: l.kind === 'bike' ? '#FFB400' : '#B8BBB6' }, geometry:{ type:'LineString', coordinates: sh || [co[0], co[co.length - 1]] } });
+    }
   }
   const o = r.legs[0]?.from, d = r.legs[r.legs.length - 1]?.to;
   if (o && o.lat != null) F.push({ type:'Feature', properties:{ k:'o', c:'#C6F135' }, geometry:{ type:'Point', coordinates:[o.lon, o.lat] } });
@@ -6220,6 +6228,7 @@ function mountPlanMap() {
         const m = planMapEl.querySelector('.mapload'); if (m) m.remove();
         PM.addSource('plan', { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
         PM.addLayer({ id:'pw', type:'line', source:'plan', filter:['in', ['get','k'], ['literal', ['w','b']]], paint:{ 'line-color':['get','c'], 'line-width':3.5, 'line-dasharray':[1.2, 1.4] }, layout:{ 'line-cap':'round' } });
+        PM.addLayer({ id:'pwr', type:'line', source:'plan', filter:['in', ['get','k'], ['literal', ['wr','br']]], paint:{ 'line-color':['get','c'], 'line-width':4 }, layout:{ 'line-cap':'round', 'line-join':'round' } });
         PM.addLayer({ id:'pt0', type:'line', source:'plan', filter:['==', ['get','k'], 't'], paint:{ 'line-color':'#0E100F', 'line-width':9 }, layout:{ 'line-cap':'round', 'line-join':'round' } });
         PM.addLayer({ id:'pt', type:'line', source:'plan', filter:['==', ['get','k'], 't'], paint:{ 'line-color':['get','c'], 'line-width':6 }, layout:{ 'line-cap':'round', 'line-join':'round' } });
         PM.addLayer({ id:'ps', type:'circle', source:'plan', filter:['==', ['get','k'], 's'], paint:{ 'circle-radius':3.5, 'circle-color':'#F1F2EF', 'circle-stroke-color':['get','c'], 'circle-stroke-width':2 } });

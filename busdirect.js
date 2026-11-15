@@ -848,7 +848,108 @@
     return ok;
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, sortOwn, searchArrive, transferHubs, chooseTransfer };
+
+  // v2.51.4：步行查詢工具（前端與測試共用）。
+  // walkQueue：所有 /walk 依序送，上一個不是快取時間隔 gap 毫秒；收到 429 busy 或 502 就隔 gap 再試一次，仍失敗才丟錯。
+  function walkQueue(get, opt) {
+    const o = opt || {};
+    const gap = o.gap || 1100;
+    const sleep = o.sleep || (ms => new Promise(r => setTimeout(r, ms)));
+    const now = o.now || (() => Date.now());
+    const stat = { calls: 0, out: 0, retries: 0, fails: 0 };
+    let chain = Promise.resolve(), lastAt = -Infinity;
+    const retryable = e => !!e && (e.status === 502 || (e.status === 429 && e.code === "busy"));
+    const one = async (path, ms) => {
+      const w = lastAt + gap - now();
+      if (w > 0) await sleep(w);
+      stat.calls++;
+      try {
+        const j = await get(path, ms);
+        if (j && j.cached) lastAt = -Infinity; else { lastAt = now(); stat.out++; }
+        return j;
+      } catch (e) { lastAt = now(); throw e; }
+    };
+    const run = async (path, ms) => {
+      try { return await one(path, ms); }
+      catch (e) {
+        if (!retryable(e)) { stat.fails++; throw e; }
+        stat.retries++;
+        lastAt = Math.max(lastAt, now());
+        try { return await one(path, ms); } catch (e2) { stat.fails++; throw e2; }
+      }
+    };
+    const call = (path, ms) => { const p = chain.then(() => run(path, ms)); chain = p.catch(() => {}); return p; };
+    call.stat = stat;
+    return call;
+  }
+
+  // walkBatches：起點附近的點（oPts）、終點附近的點（dPts）、以及起點到終點（只步行）合成 table 查詢。
+  // 每批 pts＝[起點, 終點, ...最多 23 點]，sources＝[0, 1]，destinations＝其餘各點（第一批另加 1＝終點，給只步行用）。一共不超過 25 點時只有 1 批。
+  function walkBatches(o, d, oPts, dPts, wantOD, maxPts) {
+    const cap = (maxPts || 25) - 2, seen = new Map(), list = [];
+    const key = q => (+q[0]).toFixed(4) + "," + (+q[1]).toFixed(4);
+    for (const [side, arr] of [["o", oPts || []], ["d", dPts || []]]) {
+      for (const q of arr) {
+        if (!q || q[0] == null || q[1] == null) continue;
+        const k = key(q);
+        let it = seen.get(k);
+        if (!it) { it = { k, q: [+q[0], +q[1]], o: false, d: false }; seen.set(k, it); list.push(it); }
+        it[side] = true;
+      }
+    }
+    const out = [];
+    if (!list.length && !wantOD) return out;
+    for (let s = 0; s < Math.max(1, list.length); s += cap) {
+      const part = list.slice(s, s + cap);
+      const pts = [[+o.lat, +o.lon], [+d.lat, +d.lon], ...part.map(x => x.q)];
+      const dst = part.map((_, i) => i + 2);
+      const od = s === 0 && wantOD;
+      if (od) dst.push(1);
+      if (!dst.length) continue;
+      out.push({ pts, src: [0, 1], dst, part, od });
+    }
+    return out;
+  }
+  // 把一批的回應拆成 Wo（起點→點）、Wd（終點→點）、od（起點→終點），單位：公尺、秒。
+  function walkParse(batch, res, acc) {
+    const A = acc || { o: new Map(), d: new Map(), od: null };
+    if (!res || !res.ok || !Array.isArray(res.distances)) return A;
+    const num = v => typeof v === "number" && isFinite(v);
+    const D = res.distances, T = res.durations || [];
+    batch.part.forEach((it, c) => {
+      if (it.o && D[0] && num(D[0][c])) A.o.set(it.k, { m: Math.round(D[0][c]), s: num(T[0] && T[0][c]) ? T[0][c] : null });
+      if (it.d && D[1] && num(D[1][c])) A.d.set(it.k, { m: Math.round(D[1][c]), s: num(T[1] && T[1][c]) ? T[1][c] : null });
+    });
+    if (batch.od) {
+      const c = batch.part.length;
+      if (D[0] && num(D[0][c]) && T[0] && num(T[0][c])) A.od = { m: Math.round(D[0][c]), s: T[0][c] };
+    }
+    return A;
+  }
+
+  // 規劃要跑哪些部分。walkOnly：只選「步行」時只查一次步行，不跑軌道、公車、YouBike，不讀班表與雲端站序。
+  function planBranches(modes, yb, walk) {
+    const m = modes || [];
+    if (walk && !m.length && !yb) return { walkOnly: true, rail: false, bus: false, stitch: false, bike: false, walk: true };
+    const rail = m.some(x => x !== 5), bus = m.includes(5);
+    return { walkOnly: false, rail, bus, stitch: rail && bus, bike: !!yb, walk: true, none: !m.length };
+  }
+
+  // 詳情要查路線形狀的段：步行與 YouBike 騎車段依序，最多 3 段；太短（< 30 公尺直線）不查。
+  function shapeLegs(route, max) {
+    const out = [];
+    for (const l of (route && route.legs) || []) {
+      if (l.kind !== "walk" && l.kind !== "bike") continue;
+      if (!l.from || !l.to || l.from.lat == null || l.to.lat == null) continue;
+      const dy = (l.from.lat - l.to.lat) * 111000, dx = (l.from.lon - l.to.lon) * 101000;
+      if (Math.sqrt(dx * dx + dy * dy) < 30) continue;
+      out.push(l);
+      if (out.length >= (max || 3)) break;
+    }
+    return out;
+  }
+
+  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, sortOwn, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, planBranches, shapeLegs };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = e => {
