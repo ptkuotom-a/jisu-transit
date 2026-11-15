@@ -1,6 +1,6 @@
 // v2.49.29：自有雲端資料（bsch 公車時刻表＋雲端站牌座標＋s2stime 站間旅行時間）算「公車直達」，不呼叫外部路徑引擎（TDX MaaS／Google）。
 // 純函式模組：瀏覽器（含 Web Worker）掛在 self.BusDirect，Node 用 module.exports。時間一律以台北時間（UTC+8）計算，與裝置時區無關。
-// 安全子集：支援逐站表定時刻（timetable）、起點發車（startOnly）、班距估算（halfHeadway）；有特殊日規則的班次、國定假日都不列，只計數回報。
+// 安全子集：支援逐站表定時刻（timetable）、起點發車（startOnly）、班距估算（halfHeadway）。國定假日不再整天不列：有假日位元（bit 7）用假日班表，舊打包沒有這個位元就用週日班表。
 // 未定案政策不寫死：步行半徑、步行速度、直線距離係數必須由呼叫端傳入；「提早抵達下限」沒傳就不套用並明示；freqPolicy 支援 "exclude" 與 "halfHeadway"。
 (function (root) {
   "use strict";
@@ -37,6 +37,161 @@
   const dayMid = ms => Math.floor((ms + TPE) / DAY) * DAY - TPE; // 該台北日期 00:00 的 epoch
   const ymd = mid => new Date(mid + TPE).toISOString().slice(0, 10).replace(/-/g, "");
   const wday = mid => new Date(mid + TPE).getUTCDay(); // 0＝日
+
+  // 國定假日：有獨立假日位元（bit 7，新打包才有）就用假日班表；舊雲端打包沒有這個位元，改用週日班表。不再整天不列。
+  function serviceBit(mask, weekday, isHoliday) {
+    if (isHoliday) {
+      if ((mask >> 7) & 1) return true;
+      return (mask & 1) === 1;
+    }
+    return ((mask >> weekday) & 1) === 1;
+  }
+
+  function walkChunks(pts) {
+    const out = [];
+    for (let i = 0; i < (pts || []).length - 1;) {
+      const slice = pts.slice(i, i + 5);
+      out.push(slice);
+      i += Math.max(1, slice.length - 1);
+    }
+    return out;
+  }
+
+  const CITY_BOX = {
+    Keelung: [25.07, 121.62, 25.18, 121.82],
+    Taipei: [24.96, 121.46, 25.21, 121.67],
+    NewTaipei: [24.67, 121.28, 25.30, 122.01],
+    Taoyuan: [24.58, 120.98, 25.12, 121.48],
+    Hsinchu: [24.75, 120.89, 24.86, 121.04],
+    HsinchuCounty: [24.45, 120.92, 24.95, 121.30],
+    MiaoliCounty: [24.28, 120.62, 24.75, 121.25],
+    Taichung: [24.00, 120.45, 24.45, 121.40],
+    ChanghuaCounty: [23.78, 120.20, 24.20, 120.70],
+    NantouCounty: [23.45, 120.60, 24.25, 121.35],
+    YunlinCounty: [23.50, 120.10, 23.85, 120.75],
+    Chiayi: [23.45, 120.40, 23.52, 120.50],
+    ChiayiCounty: [23.20, 120.10, 23.65, 120.90],
+    Tainan: [22.88, 120.05, 23.42, 120.66],
+    Kaohsiung: [22.47, 120.20, 23.05, 120.75],
+    PingtungCounty: [21.90, 120.40, 22.90, 120.95],
+    YilanCounty: [24.30, 121.30, 24.95, 121.98],
+    HualienCounty: [23.00, 120.95, 24.40, 121.80],
+    TaitungCounty: [22.00, 120.75, 23.50, 121.55],
+    PenghuCounty: [23.15, 119.40, 23.80, 119.75],
+    KinmenCounty: [24.38, 118.20, 24.55, 118.50],
+    LienchiangCounty: [25.95, 119.90, 26.40, 120.55]
+  };
+
+  function citiesFor(o, d) {
+    const pad = 0.08;
+    const inside = (p, b) => p && isFinite(p.lat) && isFinite(p.lon) && p.lat >= b[0] - pad && p.lat <= b[2] + pad && p.lon >= b[1] - pad && p.lon <= b[3] + pad;
+    const names = Object.keys(CITY_BOX).filter(c => inside(o, CITY_BOX[c]) || inside(d, CITY_BOX[c]));
+    const far = o && d && isFinite(o.lat) && isFinite(d.lat) && hav(o.lat, o.lon, d.lat, d.lon) > 12000;
+    const thin = names.includes("MiaoliCounty") || names.includes("TaitungCounty");
+    const out = names.slice(0, 4);
+    if (far || thin || !out.length) out.push("InterCity");
+    return [...new Set(out)];
+  }
+
+  function placePt(p, time, kind) {
+    return { time, place: { name: p && p.name || "", type: kind || "location", location: p && p.lat != null ? { lat: p.lat, lng: p.lon } : {} } };
+  }
+
+  function sectionsFromBus(r, o, d) {
+    const wsrc = w => w && w.src === "osrm" ? "osrm" : "line";
+    let rideSrc = "line";
+    if (r.confidence === "live") rideSrc = "live";
+    else if (r.headway) rideSrc = "headway";
+    else if (r.confidence === "timetable") rideSrc = "schedule";
+    else if (r.confidence === "s2s" || (r.rideSrc && (r.rideSrc === "s2s" || r.rideSrc.ride === "s2s"))) rideSrc = "s2s";
+    else if (r.confidence === "schedule" || (r.rideSrc && (r.rideSrc === "schedule" || r.rideSrc.ride === "schedule"))) rideSrc = "schedule";
+    const stop = s => ({ time: s.time, place: { name: s.name, type: "stop", location: s.pos ? { lat: s.pos[0], lng: s.pos[1] } : {} } });
+    return {
+      source: "self",
+      start_time: r.startIso,
+      end_time: r.endIso,
+      sections: [
+        { type: "pedestrian", timeSrc: wsrc(r.walkO), departure: placePt(o, r.startIso), arrival: stop(r.from), travelSummary: { duration: (r.walkO && r.walkO.min || 0) * 60, length: r.walkO && r.walkO.m || 0 } },
+        { type: "transit", timeSrc: rideSrc, transport: { mode: "bus", name: r.name, headsign: r.to && r.to.name || "", ...(r.confidence === "live" ? { liveDep: true } : rideSrc === "schedule" ? {} : { est: true }) }, agency: { agency_id: "bus", name: "公車" }, departure: stop(r.from), arrival: stop(r.to), travelSummary: { duration: (r.ride || 0) * 60 } },
+        { type: "pedestrian", timeSrc: wsrc(r.walkD), departure: stop(r.to), arrival: placePt(d, r.endIso), travelSummary: { duration: (r.walkD && r.walkD.min || 0) * 60, length: r.walkD && r.walkD.m || 0 } }
+      ]
+    };
+  }
+
+  function walkOnlyRoute(o, d, startIso, endIso, sec, meters, src) {
+    return {
+      source: "self",
+      start_time: startIso,
+      end_time: endIso,
+      sections: [
+        { type: "pedestrian", timeSrc: src, departure: placePt(o, startIso), arrival: placePt(d, endIso), travelSummary: { duration: sec, length: meters } }
+      ]
+    };
+  }
+
+  function bikeRoute(o, d, a, b, p) {
+    const t0 = parseTpe(p.startIso);
+    const t1 = t0 + p.walkO.sec * 1000;
+    const t2 = t1 + p.ride.sec * 1000;
+    const t3 = t2 + p.walkD.sec * 1000;
+    return {
+      source: "self",
+      start_time: isoTpe(t0),
+      end_time: isoTpe(t3),
+      sections: [
+        { type: "pedestrian", timeSrc: p.walkO.src, departure: placePt(o, isoTpe(t0)), arrival: placePt(a, isoTpe(t1), "stop"), travelSummary: { duration: p.walkO.sec, length: p.walkO.m } },
+        { type: "cycle", timeSrc: p.ride.src, departure: placePt(a, isoTpe(t1), "stop"), arrival: placePt(b, isoTpe(t2), "stop"), travelSummary: { duration: p.ride.sec, length: p.ride.m } },
+        { type: "pedestrian", timeSrc: p.walkD.src, departure: placePt(b, isoTpe(t2), "stop"), arrival: placePt(d, isoTpe(t3)), travelSummary: { duration: p.walkD.sec, length: p.walkD.m } }
+      ]
+    };
+  }
+
+  function joinRoutes(bus, rail, opt) {
+    if (!bus || !rail || !Array.isArray(bus.sections) || !Array.isArray(rail.sections)) return null;
+    const b = bus.sections.slice();
+    const r = rail.sections.slice();
+    const keepTail = !!(opt && opt.keepTail);
+    if (!keepTail && b.length && b[b.length - 1].type === "pedestrian") b.pop();
+    if (r.length && r[0].type === "pedestrian") r.shift();
+    return { source: "self", start_time: bus.start_time, end_time: rail.end_time, sections: b.concat(r) };
+  }
+
+  function sortOwn(list, when, limit) {
+    const walkLen = r => (r.legs || []).reduce((a, l) => a + ((l.kind === "walk" || l.kind === "bike") ? (l.len || 0) : 0), 0);
+    const hasT = r => (r.legs || []).some(l => l.kind === "transit");
+    const hasBike = r => (r.legs || []).some(l => l.kind === "bike");
+    const cmp = (a, b) => (when === "arr" ? b.start - a.start : a.end - b.end) || (a.transfers || 0) - (b.transfers || 0) || walkLen(a) - walkLen(b);
+    // 指定抵達：先拿掉抵達晚於指定時間的方案（含步行）。全部趕不上才留最早到的一條。
+    if (when === "arr" && limit != null && isFinite(limit)) {
+      const onTime = list.filter(r => r.end <= limit);
+      if (!onTime.length) {
+        const earliest = list.slice().sort((a, b) => (a.end - b.end) || (a.start - b.start))[0];
+        if (!earliest) return [];
+        earliest.note = earliest.note ? earliest.note + "；趕不上指定時間" : "趕不上指定時間";
+        return [earliest];
+      }
+      list = onTime;
+    }
+    const bikes = list.filter(r => hasBike(r));
+    const walks = list.filter(r => !hasT(r) && !hasBike(r));
+    const rides = list.filter(r => hasT(r) && !hasBike(r));
+    rides.sort(cmp);
+    walks.sort(cmp);
+    bikes.sort(cmp);
+    if (!rides.length && !bikes.length) {
+      if (walks[0]) walks[0].suggestWalk = true;
+      return walks.slice(0, 1);
+    }
+    const w = walks[0];
+    const walkFirst = !!(w && rides.length && rides.every(r => when === "arr" ? w.start >= r.start : w.end <= r.end));
+    if (walkFirst) w.suggestWalk = true;
+    const out = (walkFirst ? [w] : []).concat(rides, bikes);
+    out.sort(cmp);
+    if (walkFirst && out[0] !== w) { out.splice(out.indexOf(w), 1); out.unshift(w); }
+    const capped = out.slice(0, 8);
+    if (bikes.length && !capped.some(hasBike)) capped[capped.length - 1] = bikes[0];
+    return capped;
+  }
 
   function plan(input) {
     const { records, stops, o, d, when, time, opts, s2s, sor, cand, walkTable, live, nowMs, sorOneStop } = input || {};
@@ -100,14 +255,9 @@
     if (!ND.size) return { status: "not-covered", reason: "終點" + R + "公尺內沒有已收錄座標的站牌", routes: [], stats: st, notes };
 
     const q0 = dayMid(t);
-    const days = [q0 - DAY, q0, q0 + DAY].filter(m => {
-      if (hol.has(ymd(m))) {
-        st.holidaySkipped.push(ymd(m));
-        return false;
-      }
-      return true;
-    });
-    if (st.holidaySkipped.length) notes.push("國定假日（" + st.holidaySkipped.join("、") + "）的公車班表規則尚未支援，那天不列");
+    const days = [q0 - DAY, q0, q0 + DAY];
+    const holHit = days.filter(m => hol.has(ymd(m))).map(m => ymd(m));
+    if (holHit.length) notes.push("國定假日（" + holHit.join("、") + "）用假日班表；雲端舊打包沒有獨立假日位元時，改用週日班表");
 
     const s2sInst = getS2STime();
     const best = new Map();
@@ -210,7 +360,7 @@
             to: toStop,
             depart: departTime,
             holidays: hol,
-            city: (r.u && r.u.slice(0, 3) === "NWT" ? "NewTaipei" : "Taipei")
+            city: String(r.u || "").slice(0, 3) === "THB" ? "InterCity" : "Taipei"
           });
           if (dRes && dRes.ok) return { seconds: dRes.seconds, minutes: dRes.minutes, source: "distance" };
         }
@@ -289,7 +439,7 @@
           if (sp !== -1 && sp != null && sp !== "") { st.special++; continue; }
 
           for (const mid of days) {
-            if (!(mask >> wday(mid) & 1)) continue;
+            if (!serviceBit(mask, wday(mid), hol.has(ymd(mid)))) continue;
             st.tripsChecked++;
 
             for (const i of iO) for (const j of iD) {
@@ -396,7 +546,7 @@
           const halfHeadwayMs = halfHeadwayMin * 60000;
 
           for (const mid of days) {
-            if (!(mask >> wday(mid) & 1)) continue;
+            if (!serviceBit(mask, wday(mid), hol.has(ymd(mid)))) continue;
 
             for (const i of iO) for (const j of iD) {
               if (j <= i) continue;
@@ -539,7 +689,166 @@
     return recs;
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe };
+  // 起點附近公車可到的軌道站，以及軌道下車後可接公車的站。步行上限用呼叫端的 walkRadiusM。不打網路。
+  function transferHubs(input) {
+    const { records, sor, stops, o, d, stations, opts } = input || {};
+    const P = opts || {};
+    const R = P.walkRadiusM;
+    if (!(R > 0) || !o || !d || !Array.isArray(stations)) return { access: [], egress: [], accessCount: 0, egressCount: 0 };
+    const cell = 0.008, keyOf = (lat, lon) => Math.floor(lat / cell) + "," + Math.floor(lon / cell);
+    const grid = new Map();
+    for (const s of stations) {
+      if (!s || s.lat == null || s.lon == null) continue;
+      const id = (s.op || "") + ":" + (s.id != null ? s.id : s.name);
+      const st = { id, name: s.name || id, lat: +s.lat, lon: +s.lon, op: s.op || "" };
+      const c = keyOf(st.lat, st.lon);
+      if (!grid.has(c)) grid.set(c, []);
+      grid.get(c).push(st);
+    }
+    const nearSt = (lat, lon) => {
+      const a = Math.floor(lat / cell), b = Math.floor(lon / cell), out = [];
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const s of grid.get((a + i) + "," + (b + j)) || []) {
+          const m = hav(lat, lon, s.lat, s.lon);
+          if (m <= R) out.push([s, m]);
+        }
+      }
+      return out;
+    };
+    const point = (x) => {
+      if (Array.isArray(x)) {
+        const uid = x[0], p = x[2], c = stops && stops[uid];
+        const lat = p && p[0] ? +p[0] : c && +c[0];
+        const lon = p && p[1] ? +p[1] : c && +c[1];
+        if (!lat || !lon) return null;
+        return { uid, name: x[1] || (c && c[2]) || "", lat, lon };
+      }
+      if (x && x.StopUID) {
+        const p = x.P, c = stops && stops[x.StopUID];
+        const lat = p && p[0] ? +p[0] : c && +c[0];
+        const lon = p && p[1] ? +p[1] : c && +c[1];
+        if (!lat || !lon) return null;
+        const nm = x.StopName && (x.StopName.Zh_tw || x.StopName) || (c && c[2]) || "";
+        return { uid: x.StopUID, name: typeof nm === "string" ? nm : "", lat, lon };
+      }
+      return null;
+    };
+    const seqOf = (r) => {
+      if (r && Array.isArray(r.st) && r.st.length >= 2) {
+        const s = r.st.map(point).filter(Boolean);
+        if (s.length >= 2) return s;
+      }
+      const list = sor && r && sor[r.u];
+      if (!list) return null;
+      const match = list.find(x => Number(x.Direction) === Number(r.d) && (!r.s || String(x.SubRouteUID || "") === String(r.s)));
+      if (!match || !match.Stops) return null;
+      const s = match.Stops.map(point).filter(Boolean);
+      return s.length >= 2 ? s : null;
+    };
+    const rideMin = (seq, i, j) => {
+      let m = 0;
+      const a = Math.min(i, j), b = Math.max(i, j);
+      for (let k = a + 1; k <= b; k++) m += hav(seq[k - 1].lat, seq[k - 1].lon, seq[k].lat, seq[k].lon);
+      return Math.ceil(m / 250 + 0.3 * (b - a));
+    };
+    const access = new Map(), egress = new Map();
+    let accessSeen = 0, egressSeen = 0;
+    for (const r of records || []) {
+      const seq = seqOf(r);
+      if (!seq) continue;
+      let board = -1, boardM = Infinity;
+      for (let i = 0; i < seq.length; i++) {
+        const m = hav(o.lat, o.lon, seq[i].lat, seq[i].lon);
+        if (m <= R && m < boardM) { board = i; boardM = m; }
+      }
+      if (board >= 0) {
+        for (let j = board + 1; j < seq.length; j++) {
+          for (const [st, walkSt] of nearSt(seq[j].lat, seq[j].lon)) {
+            accessSeen++;
+            const ride = rideMin(seq, board, j);
+            const score = Math.ceil(boardM * (P.walkFactor || 1.3) / (P.walkMpm || 70)) + ride + Math.ceil(walkSt * (P.walkFactor || 1.3) / (P.walkMpm || 70));
+            const prev = access.get(st.id);
+            if (!prev || score < prev.score) access.set(st.id, { station: st, score, ride, walkO: Math.round(boardM), walkSt: Math.round(walkSt), route: r.n || "", uid: r.u || "", board: seq[board].name, alight: seq[j].name });
+          }
+        }
+      }
+      let alight = -1, alightM = Infinity;
+      for (let i = 0; i < seq.length; i++) {
+        const m = hav(d.lat, d.lon, seq[i].lat, seq[i].lon);
+        if (m <= R && m < alightM) { alight = i; alightM = m; }
+      }
+      if (alight > 0) {
+        for (let j = 0; j < alight; j++) {
+          for (const [st, walkSt] of nearSt(seq[j].lat, seq[j].lon)) {
+            egressSeen++;
+            const ride = rideMin(seq, j, alight);
+            const score = Math.ceil(walkSt * (P.walkFactor || 1.3) / (P.walkMpm || 70)) + ride + Math.ceil(alightM * (P.walkFactor || 1.3) / (P.walkMpm || 70));
+            const prev = egress.get(st.id);
+            if (!prev || score < prev.score) egress.set(st.id, { station: st, score, ride, walkO: Math.round(walkSt), walkD: Math.round(alightM), route: r.n || "", uid: r.u || "", board: seq[j].name, alight: seq[alight].name });
+          }
+        }
+      }
+    }
+    const top = (m) => [...m.values()].sort((a, b) => a.score - b.score).slice(0, 8);
+    return { access: top(access), egress: top(egress), accessCount: access.size, egressCount: egress.size, accessSeen, egressSeen };
+  }
+
+  // 指定抵達的時間窗。scan(t0) 回傳從 t0 起最早開得成的走法，每條要有 dep、arr（毫秒）。
+  // 舊視窗從指定時間往前 4 小時起算，每次只推進到最早那班的下一分鐘，最多約 30 次。
+  // 約 4 到 6 分一班時，30 次只蓋到約 2 小時，指定 18:00 會停在 16:30 前後，17 點多的班進不了清單。
+  // 這裡從指定時間往前 lookback（預設 6 小時）開始。離指定時間還遠就大步靠近，最後 40 分鐘再一班一班往後收。
+  // 00:30 的起點在前一天 18:30，前一天 23 點多的班次在窗內。
+  function searchArrive(opt) {
+    const arrBy = opt && opt.arrBy;
+    const scan = opt && opt.scan;
+    if (!(arrBy > 0) || typeof scan !== "function") return { list: [], from: null, scans: 0 };
+    const look = opt.lookbackMs > 0 ? opt.lookbackMs : 6 * 3600000;
+    const cap = opt.maxScan > 0 ? opt.maxScan : 48;
+    const from = arrBy - look;
+    const kept = [];
+    const seen = new Set();
+    let t0 = from;
+    let scans = 0;
+    while (scans < cap && t0 < arrBy) {
+      scans++;
+      let res = [];
+      try { res = scan(t0) || []; } catch (e) { break; }
+      const good = [];
+      for (const J of res) {
+        if (!J || !(J.dep >= t0 - 1000) || !(J.arr <= arrBy)) continue;
+        good.push(J);
+        const k = J.key != null ? String(J.key) : (J.dep + ":" + J.arr);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        kept.push(J);
+      }
+      if (!good.length) break;
+      const deps = good.map(J => J.dep);
+      const latestDep = Math.max.apply(null, deps);
+      const earliestArr = Math.min.apply(null, good.map(J => J.arr));
+      const slack = arrBy - earliestArr;
+      let next;
+      if (slack > 40 * 60000) {
+        const ride = Math.max(10 * 60000, earliestArr - Math.min.apply(null, deps));
+        const target = arrBy - ride - 5 * 60000;
+        const half = t0 + Math.floor(slack / 2);
+        next = Math.max(latestDep + 60000, Math.min(target, half));
+      } else next = latestDep + 60000;
+      if (!(next > t0)) next = t0 + 60000;
+      t0 = next;
+    }
+    kept.sort((a, b) => b.dep - a.dep || a.arr - b.arr);
+    return { list: kept, from, scans };
+  }
+
+  // 多個轉乘站都算過之後，用抵達時間選最快。轉乘超過 3 次或任一段步行超過 800 公尺的不列。
+  function chooseTransfer(list) {
+    const ok = (list || []).filter(x => x && (x.transfers == null || x.transfers <= 3) && (x.walkMax == null || x.walkMax <= 800) && Number.isFinite(x.end));
+    ok.sort((a, b) => a.end - b.end || (a.transfers || 0) - (b.transfers || 0) || String(a.id || "").localeCompare(String(b.id || "")));
+    return ok;
+  }
+
+  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, sortOwn, searchArrive, transferHubs, chooseTransfer };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = e => {
