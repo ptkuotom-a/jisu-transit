@@ -2112,7 +2112,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.51.5';   // 要跟 sw.js 的 VERSION（jisu-v2.51.5）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.51.6';   // 要跟 sw.js 的 VERSION（jisu-v2.51.6）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -5681,7 +5681,7 @@ function segItem(p) {
   if (p.k === 'walk') return `<span class="sw">${I.walk}${p.m}${p.l.approx ? '≈' : ''}</span>`;
   if (p.k === 'bike') return `<span class="si" style="color:${SEG_BIKE}">${I.bike}</span><span class="sl" style="--c:${SEG_BIKE}">YouBike・${p.m}分</span>`;
   const l = p.l;
-  if (l.mode === 'bus') return `<span class="si" style="color:${MODE_C.bus}">${I.busG}</span><span class="sl" style="--c:${MODE_C.bus}">${esc(l.name || '公車')}</span>`;
+  if (l.mode === 'bus') return `<span class="si" style="color:${MODE_C.bus}">${I.busG}</span><span class="sl" style="--c:${MODE_C.bus}">${esc(busNames(l))}</span>`;
   if (l.mode === 'tra' || l.mode === 'thsr') { const c = l.mode === 'tra' ? SEG_TRA : MODE_C.thsr; return `<span class="si" style="color:${c}">${SYS_LOGO[l.mode === 'tra' ? 'TRA' : 'THSR']}</span><span class="sl" style="--c:${c}">${l.mode === 'tra' ? esc(traLabel(l)) : MODE_ZH[l.mode]}</span>`; }
   const ln = legLine(l), c = legColor(l);
   if (ln) {
@@ -5706,7 +5706,7 @@ function planCard(r, i) {
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${planSrcLine(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
+    ${segBar(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${r.connWarn ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.connWarn)}</div>` : ''}${planSrcLine(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -5715,7 +5715,9 @@ function geoSub(g) {
   if (g.span) parts.push(`範圍約${g.span}公里，以中心點規劃`);
   return parts.join('・');
 }
-const PLAN_SRC = { osrm:'路網', line:'直線估算', live:'即時', schedule:'表定', s2s:'站間', headway:'班距' };
+const PLAN_SRC = { osrm:'路網', line:'直線估算', live:'即時', livefix:'即時校正', schedule:'表定', s2s:'站間', headway:'班距' };
+// v2.51.6：同一段合併的公車路線名稱（小8／224／508…）
+const busNames = (l, max = 4) => { const n = Array.isArray(l.alts) && l.alts.length > 1 ? l.alts.map(a => a.name).filter(Boolean) : [l.name || '公車']; return n.slice(0, max).join('／') + (n.length > max ? '等' : ''); };
 function planSrcLine(r) {
   const tags = [...new Set((r.legs || []).map(l => l.timeSrc).filter(Boolean))].map(s => PLAN_SRC[s] || s);
   const head = r.suggestWalk ? '建議步行' : r.src === 'google' ? '路線資料：Google 地圖' : r.src === 'tt' ? '路線資料：官方時刻表' : r.src === 'self' ? '自有規劃' : '';
@@ -6000,7 +6002,25 @@ async function planLoadLive(auto) {
   const P = S.plan, r = P.res && P.res[P.sel]; if (!r) return;
   const tok = P.liveTok = (P.liveTok || 0) + 1;
   P.liveLoading = true;
-  try { const L = await api('planLive', { legs:r.legs, auto:auto === true }); if (tok === P.liveTok) { P.live = L; P.liveAt = Date.now(); P.liveErr = null; } } catch (e) { if (tok === P.liveTok) P.liveErr = e.message || 'err'; }
+  try {
+    const L = await api('planLive', { legs:r.legs, auto:auto === true });
+    if (tok === P.liveTok) {
+      P.live = L; P.liveAt = Date.now(); P.liveErr = null;
+      // v2.51.6：用剛查到的公車即時校正這條方案的出發時間，後段跟著改；列表也換成同一個物件，兩邊一致
+      if (r.src === 'self' && r.legs.some(l => l.mode === 'bus')) {
+        const modes = PLAN_MODES.filter(([k]) => P.modes[k]).map(x => x[2]);
+        const fx = await api('planLiveFix', { route:r, live:L, modes, auto:auto === true }).catch(() => null);
+        if (fx && fx.route && fx.changed && tok === P.liveTok && P.res && P.res[P.sel] === r) {
+          const nr = fx.route, same = nr.legs.length === r.legs.length && nr.legs.every((x, k) => x.kind === r.legs[k].kind && x.mode === r.legs[k].mode);
+          if (!same) { const cut = nr.legs.findIndex(x => x.recaught); const keep = {}; for (const [k, v] of Object.entries(L || {})) if (cut < 0 || +k < cut) keep[k] = v; P.live = keep; }
+          P.res[P.sel] = nr;
+          const sorted = BusDirect.sortOwn(P.res.slice(), P.when === 'arr' ? 'arr' : 'dep', null);
+          if (sorted.length === P.res.length) { P.res = sorted; P.sel = sorted.indexOf(nr); }
+          planMapKey = null;
+        }
+      }
+    }
+  } catch (e) { if (tok === P.liveTok) P.liveErr = e.message || 'err'; }
   P.liveLoading = false;
   if (tok === P.liveTok && S.page === 'planDetail') renderPage();
   // v2.25.0：不再每 40 秒更新；同一個行程每次 session 只自動更新一次，之後下拉更新
@@ -6072,6 +6092,9 @@ function xChips(l, L, c) {
     const p = L.pill, m = p.min;
     out.push(p.live ? `<span class="xc lm">${esc(p.tag)}${m != null && m <= 180 ? '・' + cd(m) : ''}</span>` : `<span class="xc o" style="--c:${c}">${esc(p.tag)}${m != null && m <= 180 ? '・' + cd(m) : ''}</span>`);
   }
+  if (l.liveFix && l.liveFix.src !== 'live') out.push(`<span class="xc w">${esc(l.liveFix.tag)}</span>`);   // v2.51.6
+  else if (l.liveFix && l.liveFix.missed) out.push(`<span class="xc w">${esc(l.liveFix.tag)}</span>`);
+  if (l.recaught) out.push(`<span class="xc w">公車即時校正後改接下一班</span>`);
   if (l.timeSrc && PLAN_SRC[l.timeSrc]) out.push(`<span class="xc ${l.timeSrc === 'line' ? 'w' : 'o'}" style="--c:${c}">${PLAN_SRC[l.timeSrc]}</span>`);
   else if (!(L && (L.bus || (L.pill && L.pill.live)))) {
     if (l.est) out.push(`<span class="xc w">依班距估計</span>`);
@@ -6086,17 +6109,23 @@ function xChips(l, L, c) {
   else if (!L && P.liveLoading) out.push(`<span>對應即時資料中…</span>`);
   return out.join('');
 }
+// v2.51.6：同一段可搭的各條公車：下一班時間（有即時標即時），最近那班排第一
+function xAlts(l) {
+  if (l.mode !== 'bus' || !Array.isArray(l.alts) || l.alts.length < 2) return '';
+  const row = a => { const n = a.next, t = n ? xT(n.time) : xT(a.from && a.from.time), tag = n ? (n.src === 'live' ? '即時' : '表定') : '表定'; return `<div><span>${esc(t)}</span>${esc(a.name || '')}<small class="ltag">${tag}</small>${a.from && a.from.name && l.from && a.from.name !== l.from.name ? `<small>　${esc(a.from.name)}上車</small>` : ''}</div>`; };
+  return `<div class="istops" style="margin-top:6px"><div style="opacity:.7">這一段可搭 ${l.alts.length} 條路線，下一班：</div>${l.alts.map(row).join('')}</div>`;
+}
 function xLeg(l, i, L, c) {
   const P = S.plan, m = Math.max(1, Math.round(l.dur / 60)), stops = l.stops || [], open2 = P.open[i];
   let ic, title;
   if (l.mode === 'tra' || l.mode === 'thsr') { const ti = trainIco(l); ic = `<span class="ic">${ti ? `<img src="icons/train/${ti}.svg" alt="">` : I.trainG}</span>`; const ty = l.mode === 'thsr' ? '高鐵' : (l.trainType || '').replace(/[(（].*$/, '') || '台鐵'; title = l.number ? `${ty} ${l.number}次` : MODE_ZH[l.mode]; }
-  else if (l.mode === 'bus') { ic = `<span class="ic">${I.busG}</span>`; title = l.name || '公車'; }
+  else if (l.mode === 'bus') { ic = `<span class="ic">${I.busG}</span>`; title = busNames(l, 6); }
   else { const ln = legLine(l); if (ln) { ic = xRound(ln[0], ln[1]); title = (LINE_NAME[ln[0]] || {})[ln[1]] || l.name || MODE_ZH[l.mode]; } else { ic = `<span class="lc" style="${chipStyle(c)}">${esc(legLabel(l))}</span>`; title = ''; } }
   const dir = l.via ? `${l.via}・到 ${l.to.name || ''}` : l.headsign ? `往 ${l.headsign}` : `到 ${l.to.name || ''}`;
   const open = L && L.open;
   let h = `<div class="xsg" style="--c:${c}"><div class="rl"></div><div class="by">
     <button class="xln" data-act="legOpen" data-i="${reg({ i })}">${ic}${title ? `<span class="nmx">${esc(title)}</span>` : ''}<span class="dr">${esc(dir)}</span>${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
-    <div class="xmt">${xChips(l, L, c)}</div>
+    <div class="xmt">${xChips(l, L, c)}</div>${xAlts(l)}
     <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站 ›'}</span>` : ''}</button>
     ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
     </div></div>`;

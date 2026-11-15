@@ -295,7 +295,9 @@
     const walkLen = r => (r.legs || []).reduce((a, l) => a + ((l.kind === "walk" || l.kind === "bike") ? (l.len || 0) : 0), 0);
     const hasT = r => (r.legs || []).some(l => l.kind === "transit");
     const hasBike = r => (r.legs || []).some(l => l.kind === "bike");
-    const cmp = (a, b) => (when === "arr" ? b.start - a.start : a.end - b.end) || (a.transfers || 0) - (b.transfers || 0) || walkLen(a) - walkLen(b);
+    // v2.51.6：同時抵達時晚出發的排前面（少等）；先比分鐘，避免秒數差把晚出發的排到後面
+    const minOf = t => Math.floor((t || 0) / 60000);
+    const cmp = (a, b) => (when === "arr" ? b.start - a.start : minOf(a.end) - minOf(b.end)) || (when === "arr" ? 0 : minOf(b.start) - minOf(a.start)) || (a.transfers || 0) - (b.transfers || 0) || walkLen(a) - walkLen(b);
     // 指定抵達：先拿掉抵達晚於指定時間的方案（含步行）。全部趕不上才留最早到的一條。
     if (when === "arr" && limit != null && isFinite(limit)) {
       const onTime = list.filter(r => r.end <= limit);
@@ -1124,7 +1126,138 @@
     return out;
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
+  // ===== v2.51.6：公車即時校正、同一段多路線合併 =====
+  const hav2 = (a, b) => (a && b && a.lat != null && b.lat != null) ? hav(+a.lat, +a.lon, +b.lat, +b.lon) : Infinity;
+  const nm2 = s => String(s || "").replace(/臺/g, "台").replace(/\s/g, "").replace(/[（(].*?[)）]/g, "");
+  // 同一段公車：上車站同名或 200 公尺內、下車站同名或 300 公尺內（步行範圍）
+  function sameBusSeg(a, b) {
+    const okEnd = (p, q, m) => (nm2(p.name) && nm2(p.name) === nm2(q.name)) || hav2(p, q) <= m;
+    return okEnd(a.from || {}, b.from || {}, 200) && okEnd(a.to || {}, b.to || {}, 300);
+  }
+  const trSig = l => l.mode + "|" + nm2(l.name) + "|" + String(l.from && l.from.time || "").slice(0, 16) + "|" + nm2(l.to && l.to.name);
+  // 兩條方案能不能合併：搭車段數一樣；公車段是同一段但路線名不同；其他車段完全一樣（同一班）
+  function mergeable(A, B) {
+    const ta = (A.legs || []).filter(l => l.kind === "transit"), tb = (B.legs || []).filter(l => l.kind === "transit");
+    if (!ta.length || ta.length !== tb.length) return false;
+    if ((A.legs || []).some(l => l.kind === "bike") || (B.legs || []).some(l => l.kind === "bike")) return false;
+    let busDiff = false;
+    for (let k = 0; k < ta.length; k++) {
+      const x = ta[k], y = tb[k];
+      if (x.mode !== y.mode) return false;
+      if (x.mode === "bus") {
+        if (!sameBusSeg(x, y)) return false;
+        if (nm2(x.name) !== nm2(y.name)) busDiff = true;
+        else if (String(x.from.time).slice(0, 16) !== String(y.from.time).slice(0, 16)) return false;   // 同一條路線不同班次：不合併
+      } else if (trSig(x) !== trSig(y)) return false;
+    }
+    return busDiff;
+  }
+  const altOf = l => ({ name: l.name || "", routeUID: l.routeUID || "", city: l.city || "", dir: l.dir, stopUID: l.stopUID || "", toStopUID: l.toStopUID || "",
+    from: { ...l.from }, to: { ...l.to }, dur: l.dur, timeSrc: l.timeSrc || "", ...(l.est ? { est: true } : {}) });
+  // 同一段（同一組上下車站附近）有多條路線能到：合併成一條方案。代表那條取最早抵達（同時抵達取晚出發），這一段列出全部路線（alts，依上車時間）
+  function mergeBusAlts(list) {
+    const src = (list || []).slice(), out = [], used = new Set();
+    const better = (a, b) => (a.end - b.end) || (b.start - a.start);
+    for (let i = 0; i < src.length; i++) {
+      if (used.has(i)) continue;
+      const grp = [src[i]];
+      for (let j = i + 1; j < src.length; j++) if (!used.has(j) && grp.every(g => mergeable(g, src[j]))) { grp.push(src[j]); used.add(j); }
+      if (grp.length === 1) { out.push(src[i]); continue; }
+      const best = grp.slice().sort(better)[0];
+      const R = { ...best, legs: best.legs.map(l => ({ ...l })) };
+      const bi = R.legs.map((l, k) => l.kind === "transit" && l.mode === "bus" ? k : -1).filter(k => k >= 0);
+      for (const k of bi) {
+        const nth = R.legs.slice(0, k).filter(l => l.kind === "transit").length;
+        const alts = [];
+        for (const g of grp) {
+          const gl = g.legs.filter(l => l.kind === "transit")[nth];
+          if (gl && !alts.some(a => nm2(a.name) === nm2(gl.name))) alts.push(altOf(gl));
+        }
+        alts.sort((a, b) => parseTpe(a.from.time) - parseTpe(b.from.time));
+        if (alts.length > 1) R.legs[k].alts = alts;
+      }
+      R.merged = grp.length;
+      out.push(R);
+    }
+    return out;
+  }
+  // 公車段的即時校正。live：{ 段落序號: { sec, more:[秒…], alts:[{ routeUID, name, sec, more }] } }（秒＝距現在幾秒到站）
+  // 上車時間＝現在＋即時；下車＝上車＋原本的車上時間。趕不上（車比人早到站）改搭下一班即時，沒有就用表定，再沒有就保留原表定並標示。
+  // 後面的車接不上原班次時回傳 recatch（交給呼叫端用已載入的時刻表改接下一班）。
+  function liveFixRoute(route, live, nowMs, opt) {
+    if (!route || !Array.isArray(route.legs)) return { route, changed: false };
+    const R = JSON.parse(JSON.stringify(route));
+    const legs = R.legs, slack = ((opt && opt.slackSec) || 30) * 1000;
+    const num = v => typeof v === "number" && isFinite(v);
+    let ready = nowMs, changed = false, recatch = null, seenTransit = false;
+    for (let i = 0; i < legs.length; i++) {
+      const l = legs[i];
+      if (l.kind === "walk" || l.kind === "bike") { ready += Math.round((l.dur || 0) * 1000); continue; }
+      if (l.kind !== "transit") continue;
+      // 再校正時（詳情打開後又查一次）以原本的表定為準，不把上次校正的時間當表定
+      const c0 = parseTpe(l.from && l.from.time), ca = parseTpe(l.to && l.to.time);
+      const s0 = l.sched ? parseTpe(l.sched.from) : c0, a0 = l.sched ? parseTpe(l.sched.to) : ca;
+      if (s0 == null || a0 == null || c0 == null || ca == null) { ready = ca != null ? ca : ready; continue; }
+      let dep = c0, ride = ca - c0, pick = null;
+      const lv = live && live[i];
+      if (l.mode === "bus" && lv) {
+        const C = [];
+        const altList = Array.isArray(l.alts) && l.alts.length ? l.alts : [altOf(l)];
+        for (const a of altList) {
+          const ra = parseTpe(a.to && a.to.time) - parseTpe(a.from && a.from.time);
+          const rideA = num(ra) && ra > 0 ? ra : ride;
+          const info = (nm2(a.name) === nm2(l.name) || a.routeUID === l.routeUID) && !(lv.alts || []).some(x => x.routeUID === a.routeUID && a.routeUID !== l.routeUID) ? lv : (lv.alts || []).find(x => (x.routeUID && x.routeUID === a.routeUID) || nm2(x.name) === nm2(a.name));
+          const secs = info ? [info.sec, ...(info.more || [])].filter(num).sort((x, y) => x - y) : [];
+          for (const sec of secs) C.push({ a, src: "live", dep: nowMs + sec * 1000, ride: rideA, sec });
+          const sa = nm2(a.name) === nm2(l.name) && l.sched ? s0 : parseTpe(a.from && a.from.time);
+          if (num(sa)) C.push({ a, src: "schedule", dep: sa, ride: rideA });
+        }
+        const ok = c => c.dep >= ready - slack;
+        const liveC = C.filter(c => c.src === "live").sort((x, y) => x.dep - y.dep);
+        const schC = C.filter(c => c.src === "schedule").sort((x, y) => x.dep - y.dep);
+        const missedLive = liveC.length > 0 && !ok(liveC[0]);
+        pick = liveC.find(ok) || schC.find(ok) || null;
+        if (!l.sched) l.sched = { from: l.from.time, to: l.to.time };
+        if (pick) {
+          dep = pick.dep; ride = pick.ride;
+          if (pick.a && nm2(pick.a.name) !== nm2(l.name)) {   // 最近那班是別條路線：這一段改用那條的名稱與代碼
+            const a = pick.a;
+            l.name = a.name; if (a.routeUID) l.routeUID = a.routeUID; if (a.city) l.city = a.city; if (a.dir != null) l.dir = a.dir;
+            if (a.stopUID) l.stopUID = a.stopUID; if (a.toStopUID) l.toStopUID = a.toStopUID;
+          }
+          if (Array.isArray(l.alts)) {   // 列出各路線的下一班（有即時用即時），最近那班排第一
+            for (const a of l.alts) {
+              const best = liveC.filter(c => c.a === a && ok(c))[0] || schC.filter(c => c.a === a && ok(c))[0];
+              a.next = best ? { time: isoTpe(best.dep), src: best.src, ...(best.sec != null ? { sec: best.sec } : {}) } : null;
+            }
+            l.alts.sort((x, y) => (x.next ? parseTpe(x.next.time) : Infinity) - (y.next ? parseTpe(y.next.time) : Infinity));
+          }
+          l.liveFix = { src: pick.src, tag: pick.src === "live" ? (missedLive ? "趕不上前一班・改搭下一班（即時）" : "即時校正") : (missedLive ? "趕不上即時那班・改用下一班表定" : "沒有即時・用表定"), missed: missedLive, at: nowMs };
+          if (pick.src === "live") l.timeSrc = "livefix";
+        } else {
+          dep = s0; ride = a0 - s0;   // 保留原表定
+          l.liveFix = { src: "none", tag: "趕不上・沒有下一班資料，保留原表定", missed: true, at: nowMs };
+        }
+      } else if (seenTransit || l.mode !== "bus") {
+        // 沒有即時的車：只檢查接不接得上
+        if (c0 < ready - slack) { recatch = { at: i, readyMs: ready }; break; }
+      }
+      seenTransit = true;
+      if (dep !== c0 || ride !== ca - c0) {
+        const k = (ca - c0) > 0 ? ride / (ca - c0) : 1;
+        l.from.time = isoTpe(dep); l.to.time = isoTpe(dep + ride);
+        l.dur = Math.round(ride / 1000);
+        if (Array.isArray(l.stops)) for (const st of l.stops) { const t = parseTpe(st.time); if (t != null) st.time = isoTpe(dep + Math.round((t - c0) * k)); }
+        changed = true;
+      }
+      ready = dep + ride;
+    }
+    if (changed) syncRouteTimes(R);
+    if (changed || recatch) R.liveFixed = true;
+    return { route: R, changed, recatch };
+  }
+
+  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, liveFixRoute, mergeBusAlts, sameBusSeg, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = e => {

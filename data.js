@@ -7738,7 +7738,20 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
   }
   const walkRaw = await ownWalkRoute(o, d, t0, wctx).catch(() => null);
   const walkL = walkRaw ? planClean([walkRaw], false) : [];
-  const sorted = BusDirect.sortOwn(rail.concat(bus, stitched, bike, walkL), when, when === "arr" && time ? t0 : null);
+  // v2.51.6：同一段公車有多條路線能到就合併成一條方案；現在出發時，90 分內要搭的公車用即時校正出發時間（只查公車、同一路線只打一次），再依校正後的抵達排序
+  let all = BusDirect.mergeBusAlts(rail.concat(bus, stitched, bike, walkL));
+  if (when === "now") {
+    const memo = new Map(); memo.calls = { n: 0 };
+    const near = r => (r.legs || []).some(l => l.kind === "transit" && l.mode === "bus" && (tms(l.from.time) - Date.now()) <= 90 * 60000 && (tms(l.from.time) - Date.now()) > -3 * 60000);
+    const pre = BusDirect.sortOwn(all.slice(), when, null);
+    const pick = new Set(pre.filter(near).slice(0, 6));
+    all = await Promise.all(all.map(async r => {
+      if (!pick.has(r)) return r;
+      try { const x = await planLiveFix({ route: r, modes: modesA, memo }); return x.route; } catch (e) { if (isRate(e)) throw e; console.warn("live fix", e); return r; }
+    }));
+    req.live += memo.calls.n;
+  }
+  const sorted = BusDirect.sortOwn(all, when, when === "arr" && time ? t0 : null);
   sorted.hubs = hubMeta;
   return done(sorted);
   } finally {
@@ -8703,21 +8716,55 @@ async function planBusMatch(leg) {
   return null;
 }
 // 每段公共運輸：對到的車站／路線＋即時（或表定）到站。只有90分鐘內要搭的才查即時
-async function planLive({ legs }) {
+// v2.51.6：同一次查詢裡同一條路線只打一次（合併段的幾條路線、多條方案共用同一條路線時）
+function etaMemo(memo, b) {
+  if (!memo) return routeEtas(b);
+  const k = b.routeUID || b.route;
+  if (!memo.has(k)) { memo.set(k, routeEtas(b).catch(e => { memo.delete(k); throw e; })); if (memo.calls) memo.calls.n++; }
+  return memo.get(k);
+}
+// 一條路線在這一站的即時：最近一班＋之後幾班（秒）
+async function busLiveOf(leg, memo) {
+  const b = await planBusMatch(leg); if (!b) return { miss: true };
+  const o = { open: { type: "route", r: { routeUID: b.routeUID, route: b.route, dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact, routeUID: b.routeUID, name: leg.name };
+  return { o, b };
+}
+async function busLiveEtas(o, b, memo) {
+  const etas = await etaMemo(memo, b);
+  // 同一站可能有好幾條支線（例如 1815A～G），挑最有用的那筆：有預估秒數的最近一班 > 有下一班時間的 > 其他
+  const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
+  const mine = (etas || []).filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && etaDirOk(t, b.dirNum, b.routeUID)).sort((x, y) => rank(x) - rank(y));
+  const e = mine[0];
+  if (e) {
+    o.bus = { sec: typeof e.EstimateTime === "number" ? e.EstimateTime : null, status: e.StopStatus ?? 0, next: e.NextBusTime || null };
+    const more = mine.slice(1).filter(t => t.StopStatus === 0 && typeof t.EstimateTime === "number").map(t => t.EstimateTime);   // v2.51.6：同一站的下一班（有的話）
+    if (more.length) o.bus.more = more;
+  }
+  return o;
+}
+async function planLive({ legs, busOnly, memo }) {
   const now = Date.now(), nowM = nowMin(), out = {};
+  memo = memo || new Map();
   await Promise.all((legs || []).map(async (leg, i) => {
     if (leg.kind !== "transit") return;
+    if (busOnly && leg.mode !== "bus") return;   // v2.51.6：列表校正只查公車，不碰軌道看板
     const m0 = Math.round((tms(leg.from.time) - now) / 60000), wantLive = m0 > -3 && m0 <= 90;
     try {
       if (leg.mode === "bus") {
-        const b = await planBusMatch(leg); if (!b) { out[i] = { miss: true }; return; }
-        const o = { open: { type: "route", r: { routeUID: b.routeUID, route: b.route, dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact };
-        if (wantLive) {
-          const etas = await routeEtas(b);
-          // 同一站可能有好幾條支線（例如 1815A～G），挑最有用的那筆：有預估秒數的最近一班 > 有下一班時間的 > 其他
-          const rank = t => t.StopStatus === 0 && typeof t.EstimateTime === "number" ? t.EstimateTime : (t.StopStatus ?? 0) === 1 && t.NextBusTime ? 1e6 : 2e6 + (t.StopStatus || 0);
-          const e = etas.filter(t => t.RouteUID === b.routeUID && t.StopUID === b.stopUID && etaDirOk(t, b.dirNum, b.routeUID)).sort((x, y) => rank(x) - rank(y))[0];
-          if (e) o.bus = { sec: typeof e.EstimateTime === "number" ? e.EstimateTime : null, status: e.StopStatus ?? 0, next: e.NextBusTime || null };
+        const m = await busLiveOf(leg, memo); if (m.miss) { out[i] = { miss: true }; return; }
+        const o = m.o;
+        if (wantLive) await busLiveEtas(o, m.b, memo);
+        // v2.51.6：同一段合併的其他路線也查即時（同一條路線只打一次）
+        if (wantLive && Array.isArray(leg.alts) && leg.alts.length > 1) {
+          o.alts = [];
+          await Promise.all(leg.alts.filter(a => (a.routeUID || a.name) !== (leg.routeUID || leg.name)).map(async a => {
+            try {
+              const am = await busLiveOf({ ...leg, name: a.name, routeUID: a.routeUID, city: a.city, dir: a.dir, stopUID: a.stopUID, toStopUID: a.toStopUID, from: a.from, to: a.to, alts: null }, memo);
+              if (am.miss) { o.alts.push({ routeUID: a.routeUID, name: a.name, miss: true }); return; }
+              const ao = await busLiveEtas(am.o, am.b, memo);
+              o.alts.push({ routeUID: am.b.routeUID, name: a.name, ...(ao.bus || {}) });
+            } catch (e) { if (isRate(e)) throw e; o.alts.push({ routeUID: a.routeUID, name: a.name, err: true }); }
+          }));
         }
         out[i] = o; return;
       }
@@ -8746,6 +8793,56 @@ async function planLive({ legs }) {
     } catch (e) { out[i] = { err: String(e.message || e) }; }
   }));
   return out;
+}
+
+// v2.51.6：公車即時校正出發時間。live 沒給就只查公車段（不查軌道看板）。後段軌道接不上原班次時，
+// 只用記憶體裡已載入的自有時刻表（rpDayMem）改接下一班，沒載入就不改接、只標示，不額外打網路。
+const liveSecOf = x => x && (x.status ?? 0) === 0 && typeof x.sec === "number" ? x.sec : null;
+function liveMapOf(L) {
+  const m = {};
+  for (const [i, x] of Object.entries(L || {})) {
+    if (!x || !x.bus) continue;
+    const sec = liveSecOf(x.bus), alts = (x.alts || []).filter(a => liveSecOf(a) != null).map(a => ({ routeUID: a.routeUID, name: a.name, sec: a.sec, more: a.more || [] }));
+    if (sec == null && !alts.length) continue;
+    m[i] = { sec, more: x.bus.more || [], alts };
+  }
+  return m;
+}
+function rpDayLoaded(ops, ms) {
+  const day = tpeSvcDay(ms), late = new Date(ms + 8 * 3600000).getUTCHours(), k = d => ops.join(",") + "|" + isoDay(d);
+  return !!rpDayMem[k(day)] && (!(late >= 19 || late < 3) || !!rpDayMem[k(dayAdd(day, 1))]);
+}
+async function liveRecatch(R, rc, modes) {
+  const l = R.legs[rc.at];
+  if (!l || l.kind !== "transit" || l.mode === "bus") return { ok: false, why: "bus" };
+  const railModes = (modes || []).filter(m => m !== 5), ops = [...new Set(railModes.flatMap(m => RP_OPS[m] || []))];
+  if (!ops.length || !rpDayLoaded(ops, rc.readyMs)) return { ok: false, why: "not-loaded" };
+  const last = R.legs[R.legs.length - 1], dEnd = last && last.to;
+  if (!dEnd || dEnd.lat == null || l.from.lat == null) return { ok: false, why: "no-coord" };
+  const st = { name: l.from.name, lat: l.from.lat, lon: l.from.lon, st: true, sub: l.mode === "tra" ? "台鐵" : l.mode === "thsr" ? "高鐵" : "捷運" };
+  const dd = { name: dEnd.name, lat: dEnd.lat, lon: dEnd.lon, ...(planIsStation(dEnd) ? { st: true } : {}) };
+  const tail = await railPlanRail({ o: st, d: dd, modes: railModes, when: "dep", time: BusDirect.isoTpe(rc.readyMs).slice(0, 16), skipBus: true }).catch(() => []);
+  const cl = planClean(tail || [], false).map(rpTag).filter(x => x && x.start >= rc.readyMs - 60000).sort((a, b) => a.end - b.end)[0];
+  if (!cl) return { ok: false, why: "no-train" };
+  let tl = cl.legs.slice(); while (tl.length && tl[0].kind !== "transit") tl.shift();
+  tl = tl.map(x => x.kind === "transit" ? { ...x, recaught: true } : x);
+  const head = R.legs.slice(0, rc.at);
+  R.legs = head.concat(tl);
+  R.transfers = Math.max(0, R.legs.filter(x => x.kind === "transit").length - 1);
+  BusDirect.syncRouteTimes(R);
+  R.recaught = true;
+  return { ok: true };
+}
+async function planLiveFix({ route, live, modes, memo }) {
+  if (!route || !Array.isArray(route.legs)) return { route, live: live || {} };
+  const L = live || await planLive({ legs: route.legs, busOnly: true, memo });
+  const res = BusDirect.liveFixRoute(route, liveMapOf(L), Date.now());
+  const R = res.route;
+  if (res.recatch) {
+    const rc = await liveRecatch(R, res.recatch, modes || [5, 6, 7, 4, 3]).catch(() => ({ ok: false, why: "err" }));
+    if (!rc.ok) { R.connWarn = "後段接不上原班次" + (rc.why === "not-loaded" ? "（時刻表未載入，未改接）" : ""); }
+  }
+  return { route: R, live: L, changed: res.changed || !!res.recatch };
 }
 
 const SESS_KEY = "jisu_session";
@@ -8779,7 +8876,7 @@ async function authLogout() {
 }
 
 // v2.49.0：定時更新（p.auto）期間 AUTO>0；有延後補上的結果（railBoard 的 pending）就等它結束才放開
-const AUTO_OK = new Set(["nearby", "route", "railBoard", "planLive"]);
+const AUTO_OK = new Set(["nearby", "route", "railBoard", "planLive", "planLiveFix"]);
 let autoGen = 0;
 window.dataApi = async (action, p = {}) => {
   if (!(p && p.auto && AUTO_OK.has(action))) {
@@ -8863,6 +8960,7 @@ const dataApi0 = async (action, p = {}) => {
     case "walkRoute": return walkRoute(p || {});
     case "locatePlan": return locatePlan();
     case "planLive": return planLive(p);
+    case "planLiveFix": return planLiveFix(p);
     case "rpBusNear": return rpBusNear(p || {});
     case "liveFavs": return liveFavs(p.favs || {}, p.fresh);
     case "gmapImg": return gmapImg(p || {});
