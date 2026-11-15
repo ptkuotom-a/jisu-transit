@@ -709,14 +709,14 @@ body[data-tab="settings"] .hm-gear {
 .rt2-title {
   flex: 1;
   min-width: 0;
-  text-align: center;
+  text-align: left;   /* v2.60.3：路線名稱靠左（返回、收藏、分享鈕位置不變） */
   font-size: 22px;
   font-weight: 900;
   letter-spacing: -0.5px;
   color: var(--text);
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   white-space: nowrap;
   overflow: hidden;
@@ -1843,6 +1843,18 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 .fx-dtp .ok.done .s2{transform:none;opacity:1}
 .fx-dtp .ok .s2 path{stroke-dasharray:24;stroke-dashoffset:24;transition:stroke-dashoffset .4s var(--smooth) .12s}
 .fx-dtp .ok.done .s2 path{stroke-dashoffset:0}
+/* v2.60.3：規劃頁「出發：現在」時間面板＝上方離開／抵達與快選、中間月曆與時分、下方現在／於 HH:MM 離開；放不下時面板內捲動 */
+.fx-dtp .pn{max-height:calc(100dvh - 24px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.fx-dtp .pw[hidden],.fx-dtp .pft[hidden],.fx-dtp .ft[hidden]{display:none}
+.fx-dtp .pseg{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;border-radius:999px;background:var(--surface);border:1.5px solid var(--line)}
+.fx-dtp .pseg button{height:36px;border-radius:999px;font-size:15px;font-weight:800;color:var(--muted);transition:background .3s var(--smooth),color .3s}
+.fx-dtp .pseg button.on{background:var(--lime);color:var(--ink)}
+.fx-dtp .pq{display:flex;gap:6px;margin:10px 0 12px;overflow-x:auto}
+.fx-dtp .pq button{flex:1 0 auto;padding:7px 9px;border-radius:999px;background:var(--surface2);border:1.5px solid var(--line);font-size:14px;font-weight:700;color:var(--text)}
+.fx-dtp .pq button:disabled{opacity:.35}
+.fx-dtp .pw{padding-bottom:10px;margin-bottom:12px;border-bottom:1.5px solid var(--line)}
+.fx-dtp .pft{display:grid;grid-template-columns:auto 1fr;gap:10px;margin-top:14px}
+.fx-dtp .pft .pok{font-variant-numeric:tabular-nums}
 .fx-dtp .hint{margin:8px 4px 0;color:var(--warn);font-size:13px;font-weight:600;min-height:0}
 .fx-dtp .hint:empty{display:none}
 
@@ -1919,6 +1931,13 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 .rp-grab i{width:40px;height:4.5px;border-radius:9px;background:rgba(255,255,255,.24);transition:background .25s,width .3s var(--spring)}
 .rt2-wrap.rp.drag .rp-grab i{background:var(--lime);width:48px}
 .rp-panel .rt2-dirbar{flex:none;border-radius:0}
+/* v2.60.3：公車路線頁「時刻表」連結（目前方向；方向列可切換方向） */
+.rt2-dirrow{display:flex;align-items:stretch;flex:none;background:#1B241F;border-bottom:1.5px solid rgba(198,241,53,0.25)}
+.rt2-dirrow > .rt2-dirbar{flex:1 1 auto;min-width:0;border-bottom:0}
+.rt2-ttlink{flex:none;display:inline-flex;align-items:center;gap:5px;margin:8px 10px 8px 0;padding:0 12px;border-radius:999px;background:rgba(198,241,53,.16);color:var(--lime);font-size:14px;font-weight:800;white-space:nowrap}
+.rt2-ttlink svg{width:15px;height:15px}
+.rt2-ttlink.on{background:var(--lime);color:var(--ink)}
+.rt2-ttlink:disabled{opacity:.35}
 .rp-panel > .rt2-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:16px}
 .rt2-wrap.rp .lblk > .seg{top:0!important}
 .st.fx-flash{animation:fxFlash 1.4s var(--smooth)}
@@ -2143,7 +2162,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.1';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.3';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2435,6 +2454,7 @@ function mountMap() {
     walkRingsUpdate(D);
     if (locfOn) LOCF.sync(true);
     else if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat], bearing:COMPASS.mapBearing() });
+    if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();   // v2.60.3：開 app 後第一次定位到就置中（地圖晚於定位建立時在這裡補做）
   }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
 /* ---------- 手機方向：感測事件只更新 CSS 與首頁地圖 bearing ---------- */
@@ -2786,6 +2806,31 @@ const LOCF = (() => {
 })();
 document.addEventListener('visibilitychange', () => LOCF.sync());
 new MutationObserver(() => LOCF.sync()).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
+// v2.60.3（第 7 條）：App 一打開就要一次定位；拿到後把地圖置中在目前位置（只做一次，使用者已經拖過地圖就不動）。
+// 拿不到定位就維持原本的預設（資料中心／臺北車站）。只用 geolocation，不碰手機方向（方向權限照舊只在點 N 時詢問）。
+const OPEN_CENTER = (() => {
+  let done = false, fixP = null;
+  function apply() {
+    if (done || !fixP || !MAP || mapUserMoved) return;
+    done = true;
+    try {
+      if (meMark) { meMark.setLngLat([fixP.lon, fixP.lat]); if (!meMark._map) meMark.addTo(MAP); }
+      MAP.jumpTo({ center: [fixP.lon, fixP.lat], padding: LOCF.pad(), bearing: COMPASS.mapBearing() });
+      window.__openCenter = { lat: fixP.lat, lon: fixP.lon, t: Date.now() };
+    } catch (e) { done = false; }
+  }
+  function start() {
+    if (!navigator.geolocation?.getCurrentPosition) return;
+    try {
+      navigator.geolocation.getCurrentPosition(p => {
+        const c = p && p.coords; if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) return;
+        fixP = { lat: c.latitude, lon: c.longitude }; GEO_LAST = { lat: fixP.lat, lon: fixP.lon, t: Date.now() }; apply();
+      }, () => {}, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+    } catch (e) {}
+  }
+  return { start, apply };
+})();
+OPEN_CENTER.start();
 new MutationObserver(() => LOCF.sync()).observe(document.body, { attributes: true, attributeFilter: ['data-tab'] });
 
 function stopBearingDeg(lat1, lon1, lat2, lon2) {
@@ -5202,7 +5247,7 @@ function inlineBusttHtml() {
     <div class="rmeta">${meta}</div>
   </div>`;
   if (!T.data) h += T.err ? failBox(T.err, 'retryBustt') : `<div>${skel(4)}</div>`;
-  else if (!all.length) h += `<div class="note" style="margin-top:10px">這條路線沒有表定時刻表，請切換回「路線」查看即時到站。</div>`;
+  else if (!all.length) h += `<div class="note" style="margin-top:10px">暫無時刻表（這條路線在雲端沒有表定班次），請切換回「路線」查看即時到站。</div>`;
   else {
     const isToday = T.date === d0, nowM = isToday ? (new Date().getHours() < 3 ? nowMinUI() + 1440 : nowMinUI()) : -1;
     for (const f of c.freq) h += `<div class="tthw"><div><b>${schHm(f[1])}–${schHm(f[2])}</b><small>這段沒有固定時刻</small></div><div style="text-align:right"><b>每 ${f[3] != null && f[4] != null && f[3] !== f[4] ? `${f[3]}–${f[4]}` : f[3] ?? f[4] ?? '?'} 分</b><small>起站發車間隔</small></div></div>`;
@@ -5247,10 +5292,10 @@ function routeHtml() {
         </div>
       </div>
       ${routeMapHtml(D && D.stops, '#C6F135', { key: 'r:' + (R.routeUID || R.route) + '|' + (D && D.dirNum != null ? D.dirNum : R.dirNum) })}
-      ${canSwap
+      <div class="rt2-dirrow">${canSwap
         ? `<button class="rt2-dirbar" data-act="swapDir"><span>至 ${esc(dest || '切換方向')}${D ? `（共 ${D.stops.length} 站・點站名設下車提醒）` : ''}</span><span class="rt2-swap-ico">${I.swapV}</span></button>`
         : `<div class="rt2-dirbar"><span>至 ${esc(dest || R.route)}${D ? `（共 ${D.stops.length} 站）` : ''}</span></div>`
-      }
+      }<button class="rt2-ttlink ${isTT ? 'on' : ''}" type="button" data-act="routeSubTab" data-v="${isTT ? 'stops' : 'tt'}" ${D && D.stops.length ? '' : 'disabled'} aria-label="${isTT ? '回到路線' : '看這個方向的時刻表'}">${isTT ? '路線' : I.clock + '時刻表'}</button></div>
     </div>
     <div class="rt2-body lblk sttlist">`;
 
@@ -5381,7 +5426,7 @@ function busttHtml() {
     <div class="rmeta">${meta}</div>`;
   let body = '';
   if (!T.data) body = T.err ? failBox(T.err, 'retryBustt') : `<div>${skel(5)}</div>`;
-  else if (!all.length) body = `<div class="note" style="margin-top:12px">這條路線沒有表定時刻表（TDX 沒有提供），請看路線頁的即時到站。</div>`;
+  else if (!all.length) body = `<div class="note" style="margin-top:12px">暫無時刻表（這條路線在雲端沒有表定班次），請看路線頁的即時到站。</div>`;
   else {
     const isToday = T.date === d0, nowM = isToday ? (new Date().getHours() < 3 ? nowMinUI() + 1440 : nowMinUI()) : -1;
     for (const f of c.freq) body += `<div class="tthw"><div><b>${schHm(f[1])}–${schHm(f[2])}</b><small>這段沒有固定時刻</small></div><div style="text-align:right"><b>每 ${f[3] != null && f[4] != null && f[3] !== f[4] ? `${f[3]}–${f[4]}` : f[3] ?? f[4] ?? '?'} 分</b><small>起站發車間隔</small></div></div>`;
@@ -5483,8 +5528,11 @@ function openPlan() {
 const PLAN_PAGES = ['plan','planPick','planDetail','adv','siri'];
 function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : pg === 'siri' ? siriHtml() : ''; }
 let PL2_MAP = null, pl2MapEl = null;
+// v2.60.3（第 4 條根因）：返回動畫時，底下墊的上一頁（section.page.under，在 #routePage 前面）也有一份 #planHeroMap。
+// 以前用整份文件的第一個 #planHeroMap，找到的是墊底那份，地圖掛進去後墊底頁被移除，地圖跟著離開畫面（容器 0×0），回到輸入頁只看到黑底。一律只找 #routePage 裡的。
+const pl2Slot = () => document.querySelector('#routePage #planHeroMap');
 function mountPlanHeroMap() {
-  const slot = $('#planHeroMap'), P = S.plan;
+  const slot = pl2Slot(), P = S.plan;
   if (!slot || !P) return;
   // v2.50.0：只畫真的有座標的起訖點；都沒有就以目前位置（沒有定位時用臺北車站）為中心，不畫線
   const hasO = P.o && P.o.lat != null && P.o.lon != null, hasD = P.d && P.d.lat != null && P.d.lon != null;
@@ -5492,13 +5540,13 @@ function mountPlanHeroMap() {
   const oLat = hasO ? P.o.lat : cLat, oLon = hasO ? P.o.lon : cLon;
   const dLat = hasD ? P.d.lat : oLat, dLon = hasD ? P.d.lon : oLon;
   loadMapLib().then(() => {
-    if (!window.maplibregl || !$('#planHeroMap')) return;
+    if (!window.maplibregl || !pl2Slot()) return;
     if (!pl2MapEl) {
       pl2MapEl = document.createElement('div');
       pl2MapEl.className = 'mapbox';
       pl2MapEl.setAttribute('data-noswipe', '');
     }
-    const curSlot = $('#planHeroMap');
+    const curSlot = pl2Slot();
     if (!curSlot) return;
     curSlot.appendChild(pl2MapEl);
     const drawLine = () => {
@@ -5538,7 +5586,7 @@ function mountPlanHeroMap() {
     }
     // v2.51.7：掛上後（含換頁滑入動畫結束後）重新量一次大小；建立當下容器還沒排好時，iOS 會畫出整片黑
     requestAnimationFrame(() => { try { PL2_MAP && PL2_MAP.resize(); } catch (e) {} });
-    setTimeout(() => { try { if (PL2_MAP && $('#planHeroMap')) PL2_MAP.resize(); } catch (e) {} }, 400);
+    setTimeout(() => { try { if (PL2_MAP && pl2Slot()) PL2_MAP.resize(); } catch (e) {} }, 400);
   }).catch(() => {});
 }
 // v2.51.7：地圖保護。iOS 同時開好幾張 MapLibre 地圖（首頁、路線、規劃、詳情…）時，WebGL 可能被系統收回，畫面變成整片黑。
@@ -5579,6 +5627,7 @@ function stackPop(quiet) {
   const under = document.createElement('section'); under.className = 'page under';
   const keep = S.page; S.page = e.page; under.innerHTML = pageHtml(e.page); S.page = keep;
   pg.before(under); under.scrollTop = e.scroll || 0;
+  if (window.fxUnderDress) window.fxUnderDress(under, e.rp);   // v2.60.3：墊底的上一頁照面板樣子畫（以前是沒排版的原始頁，小卡被推到下面）
   pg.classList.add('drag');
   slideEls([under], -innerWidth * PARA, 0, NAV_MS);
   slideEls([pg], 0, innerWidth, NAV_MS, () => {
@@ -5591,7 +5640,7 @@ function stackPop(quiet) {
 function underPage() {
   if ((S.page === 'line' || S.page === 'sttt') && S.rail) return railUnder();
   if (S.page === 'bustt' && S.route) return railUnder();
-  if (S.back && S.back.length) { const e = S.back[S.back.length - 1], keep = S.page; S.page = e.page; const html = pageHtml(e.page); S.page = keep; return { html, scroll: e.scroll || 0 }; }
+  if (S.back && S.back.length) { const e = S.back[S.back.length - 1], keep = S.page; S.page = e.page; const html = pageHtml(e.page); S.page = keep; return { html, scroll: e.scroll || 0, rp: e.rp }; }
   return null;
 }
 
@@ -5658,7 +5707,7 @@ function planHtml() {
           </button>
           <button class="pl2-swap-btn" data-act="planSwap" aria-label="交換起點和終點">${I.swapV}</button>
         </div>
-        ${P.showTimeDrawer || P.when !== 'now' ? `<div class="pl2-time-drawer">
+        ${!window.fxPlanWhen && (P.showTimeDrawer || P.when !== 'now') ? `<div class="pl2-time-drawer">
           <div class="sseg">${[['now','現在出發'],['dep','指定出發'],['arr','指定抵達']].map(([k, l]) => `<button class="${P.when === k ? 'on' : ''}" data-act="planWhen" data-v="${k}">${l}</button>`).join('')}</div>
           ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
         </div>` : ''}
@@ -6349,7 +6398,7 @@ function mountGoogleMap(slot, r) {
   slot.appendChild(gMapEl);
 }
 function mountPlanMap() {
-  const slot = $('#planMapSlot'), P = S.plan, r = P && P.res && P.res[P.sel]; if (!slot || !r) return;
+  const slot = document.querySelector('#routePage #planMapSlot'), P = S.plan, r = P && P.res && P.res[P.sel]; if (!slot || !r) return;
   if (r.src === 'google') { mountGoogleMap(slot, r); return; }
   if (!planMapEl) { planMapEl = document.createElement('div'); planMapEl.className = 'mapcard'; planMapEl.setAttribute('data-noswipe', ''); planMapEl.innerHTML = `<div class="mapbox"></div><div class="mapload">地圖載入中…</div>`; }
   slot.appendChild(planMapEl);
@@ -6556,6 +6605,7 @@ document.addEventListener('click', e => {
     }
     case 'planToggleTimeDrawer': {
       const P = planInit();
+      if (window.fxPlanWhen) { window.fxPlanWhen({ when: P.when, time: P.time }, v => { P.when = v.when; if (v.time) P.time = v.time; P.showTimeDrawer = false; planChanged(); }); break; }
       P.showTimeDrawer = !P.showTimeDrawer;
       renderPage();
       break;
@@ -6781,13 +6831,13 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     else if (S.page === 'bustt') { blk = x0 > 24 && (e.target.closest('.stctl') || e.target.closest('.sttlist')) ? pg.querySelector('.sttlist') : null; pgK = 'date'; }   // 公車時刻表：左右滑＝換日期
     else blk = S.page === 'rail' && x0 > 24 ? e.target.closest('.lblk') : null;
   }, { passive:true });
-  pg.addEventListener('touchmove', e => {
+  const onMove = e => {
     if (!st) return;
     const t = e.touches[0], ddx = t.clientX - x0, ddy = t.clientY - yy0;
     if (st === 1) {
       if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
       if (Math.abs(ddx) < Math.abs(ddy) * 1.3) { st = 0; return; }   // 垂直捲動：交給瀏覽器
-      if (e.__fxTab) { st = 0; return; }   // v2.50.1：下方面板左右滑＝切換路線／時刻表，不當成返回
+      if (e.__fxTab && !edgeOn) { st = 0; return; }   // v2.50.1：下方面板左右滑＝切換路線／時刻表，不當成返回
       mode = 'back';
       if (blk) {
         tabBtns = pgBtns(blk, pgK); tabIdx = tabBtns.findIndex(b => b.classList.contains('on'));
@@ -6798,7 +6848,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       if (mode === 'back') {
         pg.classList.add('drag'); dim.style.transition = 'none';
         const u = underPage();   // 從下一層返回：底下先墊好上一頁（車站頁、路線規劃的上一頁），避免露出第一頁
-        if (u) { under = document.createElement('section'); under.className = 'page under'; under.innerHTML = u.html; pg.before(under); setPageScroll(under, u.scroll); }
+        if (u) { under = document.createElement('section'); under.className = 'page under'; under.innerHTML = u.html; pg.before(under); setPageScroll(under, u.scroll); if (u.rp && window.fxUnderDress) window.fxUnderDress(under, u.rp); }
         paraEls = under ? [under] : baseEls();
         for (const e of paraEls) e.style.transition = 'none';
       }
@@ -6817,7 +6867,8 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     pg.style.transform = `translateX(${dx}px)`;
     for (const e of paraEls) e.style.transform = `translateX(${-innerWidth * PARA * (1 - dx / innerWidth)}px)`;   // 底下那頁視差跟著滑進來
     dim.style.opacity = String(0.35 * (1 - dx / innerWidth));
-  }, { passive:false });
+  };
+  pg.addEventListener('touchmove', onMove, { passive:false });
   const pend = () => {
     if (st !== 2) { st = 0; return; }
     st = 0;
@@ -6857,6 +6908,23 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     }
   };
   pg.addEventListener('touchend', pend); pg.addEventListener('touchcancel', pend);
+  // v2.60.3（第 3 條）：從左邊緣（24px 內）往右滑＝返回，跟按「返回」一樣，整頁式卡片（規劃詳情）、公車路線頁、車站頁都適用。
+  // 在 capture 階段先接手，事件不再往下傳給地圖（MapLibre）和面板拖拉，所以邊緣滑動不會變成拖地圖或拖面板；邊緣以外的手勢照舊。
+  let edgeOn = false;
+  window.__edgeLog = [];
+  const edgeOk = e => pg.classList.contains('open') && e.touches.length === 1 && e.touches[0].clientX <= 24 && $('#sheetWrap').hidden && !(S.page === 'plan' && document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName));
+  pg.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' && e.clientX <= 24 && pg.classList.contains('open') && $('#sheetWrap').hidden) e.stopPropagation(); }, { capture:true });
+  pg.addEventListener('touchstart', e => {
+    edgeOn = false;
+    if (!edgeOk(e)) return;
+    edgeOn = true; e.stopPropagation();
+    const t = e.touches[0];
+    st = 1; x0 = t.clientX; yy0 = t.clientY; tt = Date.now(); dx = 0; mode = ''; pgK = undefined; blk = null;
+    window.__edgeLog.push({ ev: 'start', page: S.page, x: Math.round(x0) });
+  }, { passive:true, capture:true });
+  pg.addEventListener('touchmove', e => { if (!edgeOn) return; e.stopPropagation(); onMove(e); }, { passive:false, capture:true });
+  const edgeEnd = e => { if (!edgeOn) return; edgeOn = false; e.stopPropagation(); const from = S.page; pend(); window.__edgeLog.push({ ev: 'end', page: from, dx: Math.round(dx) }); };
+  pg.addEventListener('touchend', edgeEnd, { capture:true }); pg.addEventListener('touchcancel', edgeEnd, { capture:true });
 })();
 let swallowClick = 0;
 document.addEventListener('click', e => { if (Date.now() < swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
@@ -7874,6 +7942,8 @@ async function demo(action, p) {
   const W = document.createElement('div'); W.className = 'fx-dtp'; W.hidden = true;
   W.innerHTML = `<div class="scr"></div>
     <div class="pn" tabindex="-1" role="dialog" aria-modal="true" aria-label="選擇日期">
+      <div class="pw" hidden><div class="pseg"><button type="button" data-pw="dep">離開</button><button type="button" data-pw="arr">抵達</button></div>
+        <div class="pq"><button type="button" data-pq="30">30分鐘內</button><button type="button" data-pq="60">60分鐘內</button><button type="button" data-pq="90">90分鐘內</button><button type="button" data-pq="tonight">今晚</button></div></div>
       <div class="hd"><div class="ttl"><b><span class="yy"></span>&nbsp;年&nbsp;<span class="mm"></span>&nbsp;月</b><small class="sum"></small></div>
         <button class="nv pv" aria-label="上個月">${IC.prev}</button><button class="nv nx" aria-label="下個月">${IC.next}</button></div>
       <div class="qk"></div>
@@ -7886,12 +7956,13 @@ async function demo(action, p) {
       <div class="hint"></div>
       <div class="ft"><button type="button" class="btn sec2 rs">重置</button>
         <button type="button" class="btn pri ok"><span class="s1">完成</span><span class="s2">${IC.check}已設定</span></button></div>
+      <div class="pft" hidden><button type="button" class="btn sec2 pnow">現在</button><button type="button" class="btn pri pok"></button></div>
     </div>`;
   document.body.appendChild(W);
   const $w = s => W.querySelector(s);
   const grid = $w('.gd'), cells = [...grid.querySelectorAll('button')], pill = $w('.pill'), okB = $w('.ok');
 
-  let inp = null, dt = false, sel = null, view = null, min = null, max = null;
+  let inp = null, dt = false, sel = null, view = null, min = null, max = null, plan = null;   // plan：v2.60.3 規劃頁時間面板 { mode:'dep'|'arr' }
 
   const minDay = () => min && new Date(min.getFullYear(), min.getMonth(), min.getDate());
   const outDay = d => (min && dayKey(d) < dayKey(min)) || (max && dayKey(d) > dayKey(max));
@@ -7920,10 +7991,18 @@ async function demo(action, p) {
     placePill(); pill.offsetWidth; pill.style.transition = '';
   }
   function drawSum() {
-    $w('.sum').textContent = label(sel, dt);
+    $w('.sum').textContent = label(sel, dt); drawPlan();
     $w('.qk').querySelectorAll('button').forEach(b => { const d = new Date(); d.setDate(d.getDate() + +b.dataset.o); b.classList.toggle('on', dayKey(d) === dayKey(sel)); b.disabled = outDay(d); });
   }
-  function drawTime(dirH, dirM) { if (!dt) return; roll($w('.hh'), p2(sel.getHours()), dirH || 1); roll($w('.mi'), p2(sel.getMinutes()), dirM || 1); }
+  function drawTime(dirH, dirM) { if (!dt) return; roll($w('.hh'), p2(sel.getHours()), dirH || 1); roll($w('.mi'), p2(sel.getMinutes()), dirM || 1); drawPlan(); }
+  // v2.60.3：下方按鈕「於 HH:MM 離開／抵達」（不是今天時加上日期）
+  const planBtnTxt = () => `於 ${dayKey(sel) === dayKey(new Date()) ? '' : (sel.getMonth() + 1) + '/' + sel.getDate() + ' '}${p2(sel.getHours())}:${p2(sel.getMinutes())} ${plan && plan.mode === 'arr' ? '抵達' : '離開'}`;
+  function drawPlan() {
+    if (!plan) return;
+    $w('.pok').textContent = planBtnTxt();
+    W.querySelectorAll('[data-pw]').forEach(b => b.classList.toggle('on', b.dataset.pw === plan.mode));
+    const now = new Date(); $w('[data-pq="tonight"]').disabled = now.getHours() >= 20;
+  }
   const hint = t => { $w('.hint').textContent = t || ''; };
 
   function pick(date, fromTap) {
@@ -7952,18 +8031,19 @@ async function demo(action, p) {
     drawTime(sel.getHours() === h0 ? 1 : (mins > 0 ? 1 : -1), mins > 0 ? 1 : -1); drawSum(); hint(dayMoved ? (mins > 0 ? '已跨到隔天' : '已回到前一天') : '');
   }
 
-  function open(input) {
+  function open(input, planOpt) {
+    plan = planOpt || null; $w('.pw').hidden = $w('.pft').hidden = !plan; $w('.ft').hidden = !!plan;
     inp = input; dt = input.type === 'datetime-local';
     min = parse(input.min, dt); max = parse(input.max, dt);
     sel = parse(input.value, dt) || defVal(); view = new Date(sel.getFullYear(), sel.getMonth(), 1);
     $w('.pn').setAttribute('aria-label', dt ? '選擇日期與時間' : '選擇日期');
     $w('.tm').hidden = !dt; okB.classList.remove('done'); hint();
     $w('.qk').innerHTML = [['今天', 0], ['明天', 1], ['後天', 2], ['下週', 7]].map(([l, o]) => `<button type="button" data-o="${o}">${l}</button>`).join('');
-    W.hidden = false; drawMonth(0); drawTime(); drawSum();
+    W.hidden = false; drawMonth(0); drawTime(); drawSum(); drawPlan(); $w('.pn').scrollTop = 0;
     pill.style.transition = 'none'; placePill(); pill.offsetWidth; pill.style.transition = '';
     requestAnimationFrame(() => { W.classList.add('open'); $w('.pn').focus({ preventScroll: true }); });
   }
-  function close() { W.classList.remove('open'); setTimeout(() => { if (!W.classList.contains('open')) W.hidden = true; }, 320); const b = inp && inp._fxBtn; inp = null; b && b.isConnected && b.focus({ preventScroll: true }); }
+  function close() { plan = null; W.classList.remove('open'); setTimeout(() => { if (!W.classList.contains('open')) W.hidden = true; }, 320); const b = inp && inp._fxBtn; inp = null; b && b.isConnected && b.focus({ preventScroll: true }); }
   function commit() {
     if (!inp || okB.classList.contains('done')) return;
     if (dt && min && sel < min) { const m = new Date(min); m.setMinutes(Math.ceil(m.getMinutes() / 5) * 5, 0, 0); sel = m; pick(sel); drawTime(1, 1); hint('已調整為最早可選的時間'); return; }
@@ -7979,6 +8059,21 @@ async function demo(action, p) {
     const b = e.target.closest('button');
     if (e.target.classList.contains('scr')) return close();
     if (!b) return;
+    if (plan) {   // v2.60.3：規劃頁時間面板的按鈕
+      if (b.dataset.pw) { plan.mode = b.dataset.pw; drawPlan(); return; }
+      if (b.dataset.pq) {
+        const d = new Date();
+        if (b.dataset.pq === 'tonight') d.setHours(20, 0, 0, 0); else { d.setMinutes(d.getMinutes() + +b.dataset.pq); d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0); }
+        const dir = d > sel ? 1 : -1; sel = d;
+        if (sel.getMonth() !== view.getMonth() || sel.getFullYear() !== view.getFullYear()) { view = new Date(sel.getFullYear(), sel.getMonth(), 1); drawMonth(dir); } else placePill();
+        drawTime(dir, dir); drawSum(); hint(); return;
+      }
+      if (b.matches('.pnow')) { const f = plan.done; close(); f && f({ when: 'now' }); return; }
+      if (b.matches('.pok')) {
+        if (sel < new Date(Date.now() - 60000)) { hint('這個時間已經過了，請選之後的時間'); return; }
+        const f = plan.done, v = { when: plan.mode, time: fmt(sel, true) }; close(); f && f(v); return;
+      }
+    }
     if (b.parentElement === grid && b.dataset.d) return pick(new Date(view.getFullYear(), view.getMonth(), +b.dataset.d), true);
     if (b.matches('.pv, .nx')) { const dir = b.matches('.nx') ? 1 : -1; view = new Date(view.getFullYear(), view.getMonth() + dir, 1); return drawMonth(dir); }
     if (b.dataset.o != null) { const d = new Date(); d.setDate(d.getDate() + +b.dataset.o); return pick(d, true); }
@@ -8016,6 +8111,12 @@ async function demo(action, p) {
   }
   new MutationObserver(enhance).observe(document.body, { childList: true, subtree: true });
   enhance();
+  // v2.60.3：規劃頁「出發：現在」時間面板。opt = { when:'now'|'dep'|'arr', time:'YYYY-MM-DDTHH:MM' }，done(v) 收到 { when, time }
+  window.fxPlanWhen = (opt, done) => {
+    const d0 = new Date(Date.now() + 15 * 60000); d0.setMinutes(Math.ceil(d0.getMinutes() / 5) * 5, 0, 0);
+    const fake = { type: 'datetime-local', value: opt && opt.when !== 'now' && opt.time && parse(opt.time, true) > new Date() ? opt.time : fmt(d0, true), min: fmt(new Date(), true), max: '' };
+    open(fake, { mode: opt && opt.when === 'arr' ? 'arr' : 'dep', done });
+  };
 })();
 </script>
 
@@ -8292,7 +8393,8 @@ async function demo(action, p) {
       return h + btns;
     }
     // v2.51.7：每條線每個方向一張大時間卡（多線交會站＝四個方向），下方每個方向只列下一班與下下班；捷運沒有即時的方向改用自有時刻表（標表定）
-    const G = BusDirect.railDirPick(D, { per: 2, lines: r.lines || [] });
+    // v2.60.3：每個方向取三班：大卡＝第 1 班，下方列表＝第 2、3 班（不重複大卡那一班；不足就有幾班列幾班）
+    const G = BusDirect.railDirPick(D, { per: 3, lines: r.lines || [], fill: true });
     const tra = D.kind === 'tra' || D.kind === 'thsr', multi = new Set(G.map(g => g.line)).size > 1;
     const val = t => t.eta != null && !t.time ? (t.eta <= 0 ? '進站中' : `${t.eta}<span class="fx-numsub">分</span>`) : esc(t.time || '—');
     const head = g => `<span class="fx-thead">${multi && g.line ? lineBadge(r.op === 'TRTC' && g.line === 'Y' ? 'NTMC' : r.op, g.line) : ''}${esc(g.label)}</span>`;
@@ -8306,8 +8408,9 @@ async function demo(action, p) {
     h += S.railError ? staleNote() : pupd(S.railAt);   // v2.50.0：車站卡片也標資料更新時間
     // v2.50.1：完整車站頁拿掉；台鐵／高鐵點一班＝看這班車停靠站，其他只顯示
     const row = t => tra && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t)}</button>` : trainRow(D.kind, r.op, t);
-    if (G.length) h += G.map(g => `<div class="fx-rdir">${head(g)}${g.src === 'tt' ? '<small style="margin-left:6px;color:var(--muted)">表定（沒有即時資料）</small>' : ''}</div><div class="fx-rlist">${g.trains.map(row).join('')}</div>`).join('');
-    else h += `<div class="note">目前沒有列車資訊</div>`;
+    const rest = G.filter(g => g.trains.length > 1);
+    if (rest.length) h += rest.map(g => `<div class="fx-rdir">${head(g)}${g.src === 'tt' ? '<small style="margin-left:6px;color:var(--muted)">表定（沒有即時資料）</small>' : g.trains.slice(1, 3).some(t => t.tt) ? '<small style="margin-left:6px;color:var(--muted)">含表定</small>' : ''}</div><div class="fx-rlist fx-rnext">${g.trains.slice(1, 3).map(row).join('')}</div>`).join('');
+    else if (!G.length) h += `<div class="note">目前沒有列車資訊</div>`;
     if (D.note) h += `<div class="fx-rnote">${esc(D.note)}</div>`;
     return h + btns;
   }
@@ -8467,19 +8570,12 @@ async function demo(action, p) {
     });
   }
   const GRAB = '<div class="rp-grab" role="button" aria-label="拖拉調整高度"><i></i></div>';
-  function rpSetup() {
-    const wrap = PG.querySelector(':scope > .rt2-wrap, :scope > .pl2-wrap, :scope > .wrap');
-    if (!wrap) return;
-    if (wrap.classList.contains('rp')) { ttFit(wrap.querySelector('.rp-panel .sttlist, .rp-panel > .rt2-body')); return; }
-    let kind = null;
-    if (wrap.classList.contains('rt2-wrap') && wrap.querySelector('.rt2-map')) kind = 'route';
-    else if (wrap.classList.contains('pl2-wrap') && wrap.querySelector('.pl2-sheet')) kind = 'plan';
-    else if (S.page === 'planDetail' && wrap.querySelector(':scope > #planMapSlot')) kind = 'detail';
-    if (!kind) return;
+  // v2.60.3：把頁面排成「地圖＋浮動面板」（rpSetup 和返回動畫時墊在底下的上一頁共用）
+  function dress(wrap, kind) {
     wrap.classList.add('rp', 'rp-' + kind); wrap.dataset.rp = kind;
     let panel, body, y0 = 0, top;
     if (kind === 'route') {
-      body = wrap.querySelector(':scope > .rt2-body'); const dir = wrap.querySelector('.rt2-dirbar');
+      body = wrap.querySelector(':scope > .rt2-body'); const dir = wrap.querySelector('.rt2-dirrow') || wrap.querySelector('.rt2-dirbar');   // v2.60.3：方向列＋「時刻表」連結一起放進面板
       y0 = body ? body.scrollTop : 0;
       panel = document.createElement('div'); panel.className = 'rp-panel'; panel.innerHTML = GRAB;
       if (dir) panel.appendChild(dir); if (body) panel.appendChild(body);
@@ -8495,12 +8591,27 @@ async function demo(action, p) {
       [...wrap.children].forEach(c => { if (c !== top && c !== slot) body.appendChild(c); });
       panel.appendChild(body); wrap.appendChild(panel);
     }
+    return { panel, body, y0, top };
+  }
+  function rpSetup() {
+    const wrap = PG.querySelector(':scope > .rt2-wrap, :scope > .pl2-wrap, :scope > .wrap');
+    if (!wrap) return;
+    if (wrap.classList.contains('rp')) { ttFit(wrap.querySelector('.rp-panel .sttlist, .rp-panel > .rt2-body')); return; }
+    let kind = null;
+    if (wrap.classList.contains('rt2-wrap') && wrap.querySelector('.rt2-map')) kind = 'route';
+    else if (wrap.classList.contains('pl2-wrap') && wrap.querySelector('.pl2-sheet')) kind = 'plan';
+    else if (S.page === 'planDetail' && wrap.querySelector(':scope > #planMapSlot')) kind = 'detail';
+    if (!kind) return;
+    let { panel, body, y0, top } = dress(wrap, kind);
     PG.scrollTop = 0;
     const tabs = wrap.querySelectorAll('.rt2-tab'), tt = kind === 'route' && tabs.length > 1 && tabs[1].classList.contains('on');
     const res = kind === 'plan' && !!(body && body.querySelector('#planRes'));
     const key = pageKey(), H = heights(wrap);
     let from = null;
-    if (key !== RP.key) { RP.key = key; RP.level = tt || res ? 2 : 1; RP.tt = tt; RP.res = res; RP.scroll = 0; RP.fly = null; RP.fresh = true; }
+    // v2.60.3（第 4 條）：從下一頁返回＝面板回到離開前的高度與捲動位置，不重播進場動畫（以前會把面板從畫面外彈上來、整份重算高度）
+    const back = RP.back; RP.back = null;
+    if (back && back.key === key) { RP.key = key; RP.level = back.level; RP.tt = tt; RP.res = res; RP.scroll = back.scroll || 0; RP.fly = null; RP.fresh = false; }
+    else if (key !== RP.key) { RP.key = key; RP.level = tt || res ? 2 : 1; RP.tt = tt; RP.res = res; RP.scroll = 0; RP.fly = null; RP.fresh = true; }
     else if (tt !== RP.tt || (res && !RP.res)) { from = RP.h; RP.level = tt || res ? 2 : 1; RP.tt = tt; RP.res = res; RP.scroll = res ? RP.scroll : 0; RP.fresh = false; }
     else { RP.fresh = false; RP.res = res; }
     if (top) wrap.style.setProperty('--rp-top', Math.round(top.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top + 6) + 'px');
@@ -8649,6 +8760,21 @@ async function demo(action, p) {
   // 進場：上方按鈕彈下、面板彈上；返回：反向收走
   const TOPSEL = '.rt2-top, .pl2-top, :scope > .ptop', MAPSEL = '.rt2-map, .pl2-hero, :scope > .mapslot';
   let wasOpen = PG.classList.contains('open');
+  // v2.60.3（第 4 條）：進下一頁前記下這一頁面板的狀態；返回時交給 rpSetup 還原，墊在底下的上一頁也照同樣的面板樣子畫
+  const rpSnap = () => { const w = curWrap(); return w && w.dataset.rp ? { key: RP.key, kind: w.dataset.rp, level: RP.level, scroll: RP.scroll, h: RP.h, top: w.style.getPropertyValue('--rp-top') } : null; };
+  const oPush = stackPush;
+  stackPush = function () { const r = rpSnap(), out = oPush.apply(this, arguments), e = S.back && S.back[S.back.length - 1]; if (e && r) e.rp = r; return out; };
+  const oRestore = stackRestore;
+  stackRestore = function (e) { RP.back = (e && e.rp) || null; return oRestore.apply(this, arguments); };
+  window.fxUnderDress = (under, rp) => {
+    if (!under || !rp || rp.kind === 'route') return;
+    const wrap = under.querySelector(':scope > .pl2-wrap, :scope > .wrap'); if (!wrap || wrap.classList.contains('rp')) return;
+    try {
+      const { body } = dress(wrap, rp.kind);
+      if (rp.h) wrap.style.setProperty('--rp-h', rp.h + 'px'); if (rp.top) wrap.style.setProperty('--rp-top', rp.top);
+      under.scrollTop = 0; if (body) body.scrollTop = rp.scroll || 0;
+    } catch (e) {}
+  };
   function enterParts(wrap, noMap) {
     if (RM()) return;
     const top = wrap.querySelector(TOPSEL), panel = wrap.querySelector('.rp-panel'), map = wrap.querySelector(MAPSEL);

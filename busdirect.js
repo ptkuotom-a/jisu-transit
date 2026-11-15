@@ -1298,6 +1298,13 @@
       const line = g.line || tr[0].line || "", k = keyOf(line, g.side, tr[0].via, tr[0].dest);
       if (!out.has(k)) out.set(k, { key: k, line, side: g.side || null, label: g.label || ("往 " + (tr[0].dest || "")), trains: tr, src: "live" });
     }
+    // v2.60.3：opt.fill：即時方向不足 per 班時，用同線同方向的時刻表補後面的班次（比最後一班即時晚 2 分以上，避免把同一班列兩次），補的班次標 tt:true
+    if (opt && opt.fill) for (const g of out.values()) {
+      if (g.trains.length >= per || !g.side) continue;
+      const last = g.trains[g.trains.length - 1].eta ?? 0;
+      const more = (D.tt || []).filter(t => t.eta != null && t.eta >= last + 2 && (t.line || "") === g.line && t.side === g.side).sort((a, b) => a.eta - b.eta);
+      g.trains = g.trains.concat(more.slice(0, per - g.trains.length).map(t => ({ ...t, tt: true })));
+    }
     const tt = new Map();
     for (const t of D.tt || []) {
       if (t.eta == null || t.eta < 0) continue;
