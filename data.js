@@ -3497,6 +3497,8 @@ async function metroBoard(get, st) {
   return b;
 }
 async function metroBoard0(get, st) {
+  // v2.51.8：新北捷運沒有官網即時來源的線（三鶯線 LB 等，環狀線 Y 以外）：不走 TDX LiveBoard，直接用自有官方時刻表（metroBoard 會補 tt，標表定）
+  if (st.op === "NTMC" && !busPlusOK(st)) return { kind: "metro", live: false, trains: [], groups: [], note: null, noLiveSrc: true };
   if (busPlusOK(st)) {
     // v2.47.0：①北捷官網 → ②Bus+ → ③下面的 TDX 即時看板＋時刻表
     const trains = await trtcOfficial(st) || await trtcLive(st);
@@ -7751,6 +7753,7 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
     }));
     req.live += memo.calls.n;
   }
+  all = BusDirect.dedupeSameTrip(all);   // v2.51.7：同一班車只差步行的方案只留走路較短的那條
   const sorted = BusDirect.sortOwn(all, when, when === "arr" && time ? t0 : null);
   sorted.hubs = hubMeta;
   return done(sorted);

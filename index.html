@@ -116,6 +116,15 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .num{background:var(--surface2);border-radius:20px;padding:12px 14px}
 .num b{display:block;font-size:34px;line-height:1;font-weight:800;letter-spacing:-1px}
 .num span{display:block;color:var(--muted);font-size:13px;margin-top:6px}
+.ft-dir2s{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
+.ft-dir2{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:14px;font-weight:700}
+.ft-dir2-t{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ft-dir2-t small{color:var(--muted);font-size:11px;margin-left:4px}
+.ft-dir2-e{color:var(--lime);white-space:nowrap;font-size:13px}
+.num .fx-thead{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.num .fx-thead span{display:inline-flex;margin-top:0;width:auto}
+.num .fx-tinfo{margin-top:2px;color:var(--text);font-size:12px;font-weight:700}
+button.num.fx-ntile{border:0;text-align:left;color:inherit;font:inherit;width:100%}
 .c-ok{color:var(--lime)} .c-warn{color:var(--warn)} .c-bad{color:var(--bad)} .c-off{color:var(--muted)}
 
 /* empty / fav */
@@ -154,6 +163,9 @@ h2 .side-sub{font-size:14px;margin-top:4px}
 .page.open{transform:none}
 .page{overscroll-behavior-y:contain}
 .pupd{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:6px}.pupd i{width:7px;height:7px;border-radius:50%;background:var(--lime);display:inline-block}.pupd.err i{background:var(--bad)}.shd-info .pupd{margin-top:0}
+/* v2.51.7：整頁不跟著手指上下滑（iOS 回彈），只有小卡會收合 */
+html,body{overscroll-behavior:none}
+#routePage{overscroll-behavior:none}
 #main.ptrm{transform:translateY(var(--ptr,0px));transition:transform var(--ptrT,0s) cubic-bezier(.3,.7,.3,1)}
 #routePage.ptrm > *{transform:translateY(var(--ptr,0px));transition:transform var(--ptrT,0s) cubic-bezier(.3,.7,.3,1)}
 .ptr{position:fixed;left:50%;top:0;width:30px;height:30px;z-index:60;display:none;pointer-events:none;transform:translateX(-50%)}
@@ -2051,6 +2063,12 @@ body[data-tab="settings"] #fixedUpd{display:none}
 .hm-upd.has-head .hm-upd-meta,.hm-upd.has-head .ft-status{font-size:10.5px;letter-spacing:-.2px;gap:0}
 .hm-upd.has-head .ft-status i{display:none}
 .hm-upd.has-head .hm-upd-meta:not(:empty)::after{margin-left:0}
+/* v2.51.8：膠囊第二行「範圍・HH:MM更新」：範圍太長先縮（…），時間與「更新」永遠完整，不被刷新鈕蓋住（首頁、公車、YouBike、軌道共用） */
+.hm-upd-col{flex:1 1 auto;overflow:hidden}
+.hm-upd-r2{overflow:hidden}
+.hm-upd.has-head .hm-upd-meta:not(:empty){display:inline-block;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hm-upd .hm-upd-r2 .ft-status{flex:none;overflow:visible}
+.hm-upd-btn{flex:none;position:relative;z-index:1}
 .sttd .seg{flex:1.15}
 .sttd .fx-dt-btn{gap:6px;padding-left:10px;padding-right:8px;font-size:14.5px}
 .sttd .fx-dt-btn .c{display:none}
@@ -2095,7 +2113,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
   <header class="top">
     <div class="brand"><button class="top-gear-btn" data-act="tab" data-v="settings" aria-label="設定" id="topGearBtn"></button><span class="ico" id="titleIco"></span><h1 id="title">極速通勤</h1></div>
     <div class="meta"><span class="live" id="status"><i></i>定位中</span><button class="refresh" id="refreshBtn" aria-label="重新整理"></button></div>
-    <div class="srow" id="searchRow"><label class="search" id="searchBar"><span id="searchIco"></span><input id="q" type="text" enterkeyhint="search" placeholder="搜尋公車路線、站牌、YouBike、車站" autocomplete="off"><button class="clear" id="qClear" hidden>清除</button></label></div>
+    <div class="srow" id="searchRow"><label class="search" id="searchBar"><span id="searchIco"></span><input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="q" name="jisu-q-x" type="text" enterkeyhint="search" placeholder="搜尋公車路線、站牌、YouBike、車站"><button class="clear" id="qClear" hidden>清除</button></label></div>
   </header>
   <main id="main"></main>
 </div>
@@ -2112,7 +2130,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.51.6';   // 要跟 sw.js 的 VERSION（jisu-v2.51.6）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.51.8';   // 要跟 sw.js 的 VERSION（jisu-v2.51.8）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2532,7 +2550,7 @@ const COMPASS = (() => {
     follow = true; btnOn = null; paint(); toast('地圖跟著手機方向');
   }
   document.addEventListener('click', e => {
-    if (e.target.closest('.compass-enable')) request();
+    // v2.51.7：只有點地圖右上角 N（hmNorthToggle → toggleNorth）才詢問方向權限；其他按鈕、開 app、切頁、定位都不詢問
     const button = e.target.closest('.mapnorth');
     if (button && usable && active()) {
       follow = !follow;
@@ -2543,21 +2561,8 @@ const COMPASS = (() => {
   if (supported) {
     if (!needsPermission) {
       setTimeout(request, 0);   // 延到 COMPASS 初始化完成後才執行
-    } else {
-      const arm = () => {
-        document.addEventListener('touchend', onFirstTouch, true);
-        document.addEventListener('click', onFirstTouch, true);
-      };
-      const onFirstTouch = e => {
-        document.removeEventListener('touchend', onFirstTouch, true);
-        document.removeEventListener('click', onFirstTouch, true);
-        if (e.target?.closest?.('.compass-enable, [data-act="hmNorthToggle"]')) return;   // 按鈕自己的 click handler 會詢問
-        request().then(r => { if (r === 'error') arm(); });
-      };
-      // v2.50.1：不再第一次點畫面就跳權限詢問；只有以前同意過（jisu.compassOk=1，iOS 不會再跳視窗）才在第一次點擊時靜默重新取得
-      let ok = false; try { ok = localStorage.getItem(KEY) === '1'; } catch (e) {}
-      if (ok) arm();
     }
+    // v2.51.7：iOS 不再在第一次點畫面時自動詢問（以前同意過也一樣；iOS 網頁每次啟動都會重新跳視窗），只在使用者點 N 時詢問
   }
   queueMicrotask(() => { ready = true; });
   document.addEventListener('visibilitychange', sync);
@@ -2714,11 +2719,35 @@ const LOCF = (() => {
     if (zoom) o.zoom = Math.max(MAP.getZoom(), zoom);
     MAP.easeTo(o);
   }
+  // v2.51.7：走動時圓點用補間動畫移到新位置，跟隨中的地圖每一格跟著圓點平移（jumpTo），不再每次定位跳一下。
+  // 省電：只在補間期間跑（最多約 1 秒、每秒最多 30 格）；移動不到 0.5 公尺不動畫；跳太遠（>300 公尺）或要求減少動態效果就直接移過去
+  let tw = null, lastFixAt = 0;
+  const lerp = (a, b, k) => a + (b - a) * k, ease = k => 1 - Math.pow(1 - k, 3);
+  const distM = (a1, o1, a2, o2) => { const r = Math.PI / 180, x = Math.sin((a2 - a1) * r / 2) ** 2 + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin((o2 - o1) * r / 2) ** 2; return 12742000 * Math.asin(Math.sqrt(x)); };
+  function step(now) {
+    if (!tw) return;
+    if (now - tw.last < 1000 / 30) { tw.raf = requestAnimationFrame(step); return; }
+    tw.last = now;
+    const k = Math.min(1, (now - tw.t0) / tw.dur), e = ease(k), lat = lerp(tw.a[0], tw.b[0], e), lon = lerp(tw.a[1], tw.b[1], e);
+    mark(lat, lon);
+    if (locfOn && visible() && MAP && !mapUserMoved) MAP.jumpTo({ center: [lon, lat], padding: tw.pad, bearing: COMPASS.mapBearing() });
+    tw.frames++;
+    if (k < 1 && !document.hidden) tw.raf = requestAnimationFrame(step); else { window.__locfLast = { frames: tw.frames, dur: tw.dur }; tw = null; }
+  }
+  function glide(lat, lon) {
+    const cur = meMark && meMark._map ? meMark.getLngLat() : null, now = performance.now();
+    const gap = lastFixAt ? now - lastFixAt : 1000; lastFixAt = now;
+    if (tw) { cancelAnimationFrame(tw.raf); tw = null; }
+    const d = cur ? distM(cur.lat, cur.lng, lat, lon) : Infinity;
+    if (!cur || d > 300 || rm() || document.hidden) { mark(lat, lon); if (locfOn && visible()) center(lat, lon, d > 300 && !rm() ? 400 : 0); return; }
+    if (d < 0.5) return;
+    tw = { a: [cur.lat, cur.lng], b: [lat, lon], t0: now, dur: Math.max(300, Math.min(1000, gap * 0.9)), last: 0, frames: 0, pad: MAP ? pad() : undefined };
+    tw.raf = requestAnimationFrame(step);
+  }
   function fix(p) {
     const c = p && p.coords; if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) return;
     GEO_LAST = { lat: c.latitude, lon: c.longitude, t: Date.now() };
-    mark(c.latitude, c.longitude);
-    if (locfOn && visible()) center(c.latitude, c.longitude, 600);
+    glide(c.latitude, c.longitude);
   }
   function sync(recenterNow) {
     const want = locfOn && visible();
@@ -2740,7 +2769,7 @@ const LOCF = (() => {
     }
     sync();
   }
-  return { recenter, sync, onDrag: off, pad };
+  return { recenter, sync, onDrag: off, pad, glide };
 })();
 document.addEventListener('visibilitychange', () => LOCF.sync());
 new MutationObserver(() => LOCF.sync()).observe($('#routePage'), { attributes: true, attributeFilter: ['class'] });
@@ -3001,8 +3030,11 @@ function hmFallbackSvg(d) { return '<div class="hm-fallback-map" aria-hidden="tr
 
 function vHome() {
   const hasQ = !!(S.q && S.q.trim());
+  // v2.51.7：左上膠囊比照其他分頁：功能圖示＋「首頁」，第二行是範圍（附近站牌／YouBike）與更新時間（面板裡的 .ft-head 由 CSS 藏起來，只給膠囊讀）
+  const hd = S.data, hmMeta = `${S.settings.busR}m內${hd ? `・${(hd.busStops || []).length}站牌` : ''}`;   // 要留位置給更新時間
   return `<section class="func-bar">
     ${barGrabHtml()}
+    <div class="ft-head"><div class="ft-title"><span class="ft-ico">${I.home}</span><span>首頁</span></div><div class="ft-meta"><span>${esc(hmMeta)}</span></div></div>
     <div class="hm-default-body" style="margin-top:0;flex:none;height:148px">
       <div class="hm-dock-card">
         <div class="hm-dock-top">
@@ -3015,7 +3047,7 @@ function vHome() {
         <div class="hm-dock-bot hm-bot-search">
           <label class="hm-slot-search">
             <span class="hm-ico-circle">${I.search}</span>
-            <input id="hmQ" type="text" enterkeyhint="search" placeholder="搜尋路線、站牌、YouBike、車站" autocomplete="off" value="${esc(S.q || '')}">
+            <input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="hmQ" name="jisu-hmQ-x" type="text" enterkeyhint="search" placeholder="搜尋路線、站牌、YouBike、車站" value="${esc(S.q || '')}">
             ${hasQ ? `<button type="button" class="hm-q-clear" data-act="hmQClear">清除</button>` : ''}
           </label>
           <button class="hm-quick-sub" data-act="quickPlacesModal">
@@ -3254,7 +3286,7 @@ const BF_PIN = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentC
 function bfBox() {
   const B = S.bf = S.bf || { q:'' };
   if (B.sel) return `<div class="bf"><div class="box on">${BF_PIN}<span class="bfto">到</span><b>${esc(bfLabel(B.sel))}</b>${B.sel.type === 'place' ? `<span class="bfm">附近400公尺</span>` : ''}<button class="xi" data-act="bfClear" aria-label="清除篩選">✕</button></div></div>`;
-  return `<div class="bf"><label class="box">${BF_PIN}<input id="bfq" type="text" enterkeyhint="search" autocomplete="off" placeholder="要去哪？列出會到的路線" value="${esc(B.q || '')}"></label>${B.q ? `<button class="x" data-act="bfCancel">取消</button>` : ''}</div><div id="bfSug">${bfSugHtml()}</div>`;
+  return `<div class="bf"><label class="box">${BF_PIN}<input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="bfq" name="jisu-bfq-x" type="text" enterkeyhint="search" placeholder="要去哪？列出會到的路線" value="${esc(B.q || '')}"></label>${B.q ? `<button class="x" data-act="bfCancel">取消</button>` : ''}</div><div id="bfSug">${bfSugHtml()}</div>`;
 }
 function bfSugHtml() {
   const B = S.bf || {}, q = (B.q || '').trim();
@@ -3373,7 +3405,7 @@ function bikeComboCard(b) {   // v2.50.0：從 vBike 抽出，首頁「離你最
           </button>
           <button class="ft-combo-sub" data-act="bikeSheet" data-i="${reg(b)}">
             <span class="ft-combo-sub-main">
-              <div class="ft-combo-sub-title">可借 <b class="${bikeCls(b.rent, b.status)}">${off ? '暫停' : noLive ? '—' : (b.rent ?? '?')}</b> 台・可還 <b class="${bikeCls(b.ret, b.status)}">${off ? '暫停' : noLive ? '—' : (b.ret ?? '?')}</b> 位</div>
+              <div class="ft-combo-sub-title">可借 <b class="${bikeCls(b.rent, b.status)}">${off ? '暫停' : noLive ? '—' : (b.rent ?? '?')}</b> 台・可還 <b class="${bikeCls(b.ret, b.status)}">${off ? '暫停' : noLive ? '—' : (b.ret ?? '?')}</b> 台</div>
               <div class="ft-combo-sub-desc">${b.address ? esc(b.address) : '點一下查看站點詳情與導航'}</div>
             </span>
             <span class="ft-live-eta">${I.signal}${off ? '暫停' : (b.rent ?? 0) + '台'}</span>
@@ -4148,6 +4180,13 @@ function railComboCard(r) {
   const subDest = firstTrain ? `往${firstTrain.dest}` : `查看 ${r.name} 即時班次與時刻表`;
   const subEta = !firstTrain ? '即時看板' : !fresh ? `${hhmm(cc.at)} 資料` : fEta != null ? (fEta <= 0 ? '進站中' : `${fEta}分鐘`) : '即時看板';
   const etaIco = firstTrain && !fresh ? '' : I.signal;
+  // v2.51.7：兩個方向各列一班（車種＋目的地，例：自強 往臺中、區間 往潮州）；捷運沒即時的方向用時刻表
+  const live2 = e => e >= 0 || e == null;
+  const cut = cached ? { ...cached, groups: (cached.groups || []).map(g => ({ ...g, trains: (g.trains || []).filter(t => live2(etaOf(t))) })), tt: (cached.tt || []).filter(t => t.eta != null && t.eta >= 0) } : null;
+  const picks = cut ? BusDirect.railDirPick(cut, { per: 1, lines: r.lines || [] }).slice(0, 2) : [];
+  const dirRow = g => { const t = g.trains[0], e = etaOf(t), ty = (t.type || '').replace(/\(.*$/, '').trim();
+    const txt = `${ty ? ty + ' ' : ''}往${String(t.dest || '').replace(/^往\s*/, '')}`, et = !fresh ? (t.time || `${hhmm(cc.at)} 資料`) : e != null ? (e <= 0 ? '進站中' : `${e}分鐘`) : (t.time || '');
+    return `<span class="ft-dir2"><span class="ft-dir2-t">${g.line && (r.lines || []).length > 1 ? lineBadge(r.op === 'TRTC' && g.line === 'Y' ? 'NTMC' : r.op, g.line) : ''}${esc(txt)}${g.src === 'tt' ? '<small>表定</small>' : ''}</span><span class="ft-dir2-e">${esc(et)}</span></span>`; };
   return `<div class="ft-combo-card">
     <button class="ft-combo-top" data-act="rail" data-i="${reg(r)}">
       <span class="ft-combo-logo">${sysIcon(r.op)}</span>
@@ -4159,11 +4198,11 @@ function railComboCard(r) {
     </button>
     <button class="ft-combo-sub" data-act="rail" data-i="${reg(r)}">
       ${subBadge}
-      <span class="ft-combo-sub-main">
-        <div class="ft-combo-sub-title">${esc(subDest)}</div>
+      ${picks.length >= 2 ? `<span class="ft-combo-sub-main ft-dir2s">${picks.map(dirRow).join('')}</span>` : `<span class="ft-combo-sub-main">
+        <div class="ft-combo-sub-title">${esc(picks[0] ? (((picks[0].trains[0].type || '').replace(/\(.*$/, '').trim() + ' ') || '').trimStart() + '往' + String(picks[0].trains[0].dest || '').replace(/^往\s*/, '') : subDest)}</div>
         <div class="ft-combo-sub-desc">${esc(r.name)}・${esc(lineNameStr)}</div>
       </span>
-      <span class="ft-live-eta${firstTrain && !fresh ? ' stale' : ''}">${etaIco}${esc(subEta)}</span>
+      <span class="ft-live-eta${firstTrain && !fresh ? ' stale' : ''}">${etaIco}${esc(subEta)}</span>`}
     </button>
   </div>`;
 }
@@ -4919,7 +4958,8 @@ function closeRoute(quiet) {
   if (S.back && S.back.length) { stackPop(quiet); return; }   // 路線規劃的頁面堆疊：回到上一頁
   S.back = [];
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
-  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render(); }
+  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render();
+  setTimeout(() => { if (!S.page && typeof fxMapRelease === 'function') fxMapRelease(); }, 400); }   // v2.51.7：離開規劃頁釋放地圖
 async function loadRoute(scroll, auto) {
   if (!S.route) return;
   const R = S.route, tok = S.routeTok = (S.routeTok || 0) + 1;   // 只採用最新一次請求的結果，避免切換路線時卡在骨架畫面
@@ -5461,6 +5501,7 @@ function mountPlanHeroMap() {
         fadeDuration: 0,
         localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif'
       });
+      fxMapGuard(PL2_MAP, 'pl2');
       PL2_MAP.on('load', () => {
         PL2_MAP.addSource('pl2od', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         PL2_MAP.addLayer({ id: 'pl2-line', type: 'line', source: 'pl2od', filter: ['==', ['get', 'k'], 'line'], paint: { 'line-color': '#C6F135', 'line-width': 4, 'line-dasharray': [1.5, 1.5] }, layout: { 'line-cap': 'round' } });
@@ -5471,10 +5512,35 @@ function mountPlanHeroMap() {
       PL2_MAP.resize();
       if (PL2_MAP.getSource('pl2od')) drawLine();
     }
+    // v2.51.7：掛上後（含換頁滑入動畫結束後）重新量一次大小；建立當下容器還沒排好時，iOS 會畫出整片黑
+    requestAnimationFrame(() => { try { PL2_MAP && PL2_MAP.resize(); } catch (e) {} });
+    setTimeout(() => { try { if (PL2_MAP && $('#planHeroMap')) PL2_MAP.resize(); } catch (e) {} }, 400);
   }).catch(() => {});
+}
+// v2.51.7：地圖保護。iOS 同時開好幾張 MapLibre 地圖（首頁、路線、規劃、詳情…）時，WebGL 可能被系統收回，畫面變成整片黑。
+// 收回後 1.5 秒內沒有恢復就把那張地圖拿掉，下次（或現在畫面上還在時立刻）重新建立；離開規劃頁也把規劃頁的兩張地圖釋放。
+const FX_MAPLOG = [];
+function fxMapGuard(m, kind) {
+  if (!m || m.__fxGuard) return; m.__fxGuard = true;
+  let t = 0;
+  m.on('webglcontextlost', () => {
+    FX_MAPLOG.push({ t: Date.now(), kind, ev: 'lost' });
+    clearTimeout(t); t = setTimeout(() => fxMapRebuild(kind), 1500);
+  });
+  m.on('webglcontextrestored', () => { FX_MAPLOG.push({ t: Date.now(), kind, ev: 'restored' }); clearTimeout(t); try { m.resize(); m.triggerRepaint(); } catch (e) {} });
+}
+function fxMapRebuild(kind) {
+  FX_MAPLOG.push({ t: Date.now(), kind, ev: 'rebuild' });
+  if (kind === 'pl2' && PL2_MAP) { try { PL2_MAP.remove(); } catch (e) {} PL2_MAP = null; if (S.page === 'plan') mountPlanHeroMap(); }
+  else if (kind === 'pm' && PM) { try { PM.remove(); } catch (e) {} PM = null; planMapKey = null; if (S.page === 'planDetail') mountPlanMap(); }
+}
+function fxMapRelease() {   // 離開規劃頁：釋放規劃頁的地圖（WebGL）
+  if (S.page !== 'plan' && PL2_MAP) { try { PL2_MAP.remove(); } catch (e) {} PL2_MAP = null; }
+  if (S.page !== 'planDetail' && PM) { try { PM.remove(); } catch (e) {} PM = null; planMapKey = null; }
 }
 
 function renderPage() {
+  if (typeof fxMapRelease === 'function') fxMapRelease();
   if (!PLAN_PAGES.includes(S.page)) return;
   const pg = $('#routePage'); pg.innerHTML = pageHtml(S.page);
   if (S.page === 'plan') mountPlanHeroMap();
@@ -5877,7 +5943,7 @@ function pickHtml() {
   const K = S.pick || { which:'d', q:'' };
   return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead"><h1 style="font-size:34px">${K.which === 'o' ? '選擇起點' : '選擇終點'}</h1></div>
-    <label class="search psearch">${I.search}<input id="pickQ" type="text" enterkeyhint="search" autocomplete="off" placeholder="車站、站牌、地址或地標" value="${esc(K.q)}"></label></div>
+    <label class="search psearch">${I.search}<input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="pickQ" name="jisu-pickQ-x" type="text" enterkeyhint="search" placeholder="車站、站牌、地標或路名" value="${esc(K.q)}"></label></div>
     <div id="pickRes">${pickResHtml()}</div></div>`;
 }
 const pickRow = (o, icon, title, sub) => `<button class="trow nrow" data-act="pickSel" data-i="${reg(o)}"><span class="pico">${icon}</span><span class="tmain"><div class="td">${esc(title)}</div>${sub ? `<div class="tt">${esc(sub)}</div>` : ''}</span><span class="chev">${I.chev}</span></button>`;
@@ -6254,6 +6320,7 @@ function mountPlanMap() {
     if (!PM) {
       PM = new maplibregl.Map({ container: planMapEl.querySelector('.mapbox'), style: 'https://tiles.openfreemap.org/styles/dark', center: [121.52, 25.05], zoom: 12, minZoom: 4, maxZoom: 19, attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
       PM.touchZoomRotate.disableRotation();
+      fxMapGuard(PM, 'pm');
       PM.on('load', () => {
         const m = planMapEl.querySelector('.mapload'); if (m) m.remove();
         PM.addSource('plan', { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
@@ -7057,17 +7124,20 @@ function setBarExpanded(exp) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       // 水平滑動交給分頁切換
       if (Math.abs(dx) > Math.abs(dy) * 1.1) { st = 0; return; }
-      if (!canStartVerticalDrag(e.target, dy)) { st = 0; return; }
-      st = 2;
-      bar.classList.add('dragging');
+      // v2.51.7：小卡已收到最低（收合）時在小卡上再往下拉＝更新；整頁不動
+      if (dy > 0 && document.body.dataset.barExp !== '1' && e.target.closest('.func-bar') && window.fxPtr) { st = 3; }
+      else if (!canStartVerticalDrag(e.target, dy)) { st = 0; return; }
+      if (st !== 3) { st = 2; bar.classList.add('dragging'); }
     }
     e.preventDefault();
     e.stopPropagation();
+    if (st === 3) { window.fxPtr.move(dy); return; }
     curH = Math.max(minH - 16, Math.min(maxH + 20, h0 - dy));
     bar.style.setProperty('--bar-cur-h', curH + 'px');
   }, { passive: false });
 
   const endDrag = () => {
+    if (st === 3) { st = 0; window.fxPtr && window.fxPtr.end('tab:' + S.tab); return; }
     if (st !== 2 || !bar) { st = 0; return; }
     st = 0;
     bar.classList.remove('dragging');
@@ -7135,7 +7205,7 @@ function setBarExpanded(exp) {
     el.style.opacity = String(spin ? 1 : Math.min(1, p / 30));
     el.style.transform = `translateX(-50%) rotate(${spin ? 0 : pr * 180}deg) scale(${snapped && !spin ? 1.12 : 1})`;
   };
-  const place = (p, anim) => { if (!moved) return; moved.classList.add('ptrm'); moved.style.setProperty('--ptrT', anim ? '.28s' : '0s'); moved.style.setProperty('--ptr', p + 'px'); };
+  const place = () => {};   // v2.51.7：下拉時整頁不再往下移，只顯示轉圈
   const collapse = () => {
     el.classList.remove('spin');
     place(0, true);
@@ -7145,6 +7215,7 @@ function setBarExpanded(exp) {
   const ok = e => {
     if (busy || e.touches.length !== 1 || !$('#sheetWrap').hidden || !liveKey() || (!S.page && S.tab !== 'settings')) return false;
     if (S.page && !$('#routePage').classList.contains('open')) return false;
+    if (S.page && $('#routePage').querySelector(':scope > .rp')) return false;   // v2.51.7：有浮動小卡的頁面由小卡自己判斷（收到最低再往下拉才更新）
     const t = e.touches[0]; if (t.clientX <= 24) return false;   // 左邊緣留給返回手勢
     if (e.target.closest('input,textarea,select,[data-noswipe],.maplibregl-map,#mapSlot,.gmapc,.pmap,#planMapSlot')) return false;   // 地圖：拖曳是平移
     if (scTop() > 0) return false;
@@ -7188,6 +7259,34 @@ function setBarExpanded(exp) {
   };
   document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
   window.ptrState = () => ({ st, pull, busy });
+  // v2.51.7：小卡收到最低後再往下拉＝更新。小卡模組呼叫 fxPtr.move(拉了幾 px)、放手呼叫 fxPtr.end(where)
+  window.__ptrLog = [];
+  let ext = false;
+  const damp = dy => Math.min(MAXP, dy * 0.5 * (1 - Math.min(0.5, dy / 900)));
+  window.fxPtr = {
+    TH,
+    move(dy) {
+      if (busy) return;
+      if (!ext) { ext = true; envT = true; top0 = 8; el.style.display = 'block'; el.style.transition = 'none'; }
+      pull = damp(Math.max(0, dy)); const was = snapped; snapped = pull >= TH;
+      if (snapped !== was && snapped && navigator.vibrate) { try { navigator.vibrate(8); } catch (x) {} }
+      paint(pull, false);
+    },
+    async end(where) {
+      if (!ext) return false; ext = false;
+      const p = pull; pull = 0; swallowClick = Date.now() + 400;
+      if (p < TH) { window.__ptrLog.push({ t: Date.now(), where, refresh: false }); collapse(); return false; }
+      const L = liveState(); if (!L) { collapse(); return false; }
+      window.__ptrLog.push({ t: Date.now(), where, refresh: true }); if (window.__ptrLog.length > 30) window.__ptrLog.shift();
+      console.info('[ptr] 小卡在最低位置再往下拉 → 更新', where);
+      busy = true; clearTimeout(dwellT); snapped = false; paint(HOLD, true);
+      const t0 = Date.now();
+      try { await Promise.race([Promise.resolve(L.run()), new Promise(r => setTimeout(r, 12000))]); } catch (x) {}
+      await new Promise(r => setTimeout(r, Math.max(0, 450 - (Date.now() - t0))));
+      busy = false; collapse(); return true;
+    },
+    get busy() { return busy; }
+  };
 })();
 
 /* ---------- boot ---------- */
@@ -7882,14 +7981,14 @@ async function demo(action, p) {
   W.className = 'sheet-wrap fx-ss'; W.id = 'ssWrap'; W.hidden = true;
   W.innerHTML = `<div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true">
     <div class="grab"></div><h2 class="ss-t"></h2>
-    <label class="ss-box"><span class="ss-ic">${I.search}</span><input id="ssQ" type="text" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" class="ss-x">清除</button></label>
+    <label class="ss-box"><span class="ss-ic">${I.search}</span><input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="ssQ" name="jisu-ssQ-x" type="text" enterkeyhint="search"><button type="button" class="ss-x">清除</button></label>
     <div class="ss-res" id="ssRes"></div></div>`;
   document.body.appendChild(W);
   const sheet = W.querySelector('.sheet'), box = W.querySelector('.ss-box'), inp = W.querySelector('#ssQ'), res = W.querySelector('#ssRes'), ttl = W.querySelector('.ss-t');
   const MODES = {
     home: { t: '搜尋', ph: '路線號碼、站牌、YouBike、車站', hint: '輸入路線號碼、站名、YouBike 或車站', none: q => `找不到「<b>${esc(q)}</b>」<br>試試站名或路線號碼` },
-    bus:  { t: '要去哪？', ph: '站名、地標或地址', hint: '輸入目的地，列出附近會到的公車路線', none: q => `附近沒有會到「<b>${esc(q)}</b>」的路線<br>試試其他站名，或用路線規劃` },
-    pick: { t: '選擇終點', ph: '車站、站牌、地址或地標', hint: '', none: q => `找不到「<b>${esc(q)}</b>」<br>試試車站、站牌或地標名稱` },
+    bus:  { t: '要去哪？', ph: '站名、地標或路名', hint: '輸入目的地，列出附近會到的公車路線', none: q => `附近沒有會到「<b>${esc(q)}</b>」的路線<br>試試其他站名，或用路線規劃` },
+    pick: { t: '選擇終點', ph: '車站、站牌、地標或路名', hint: '', none: q => `找不到「<b>${esc(q)}</b>」<br>試試車站、站牌或地標名稱` },
   };
 
   function fill() {
@@ -8006,6 +8105,26 @@ async function demo(action, p) {
     const up = () => { if (y0 == null) return; y0 = null; sheet.classList.remove('drag'); sheet.style.transform = '';
       if (dy > 90) ssClose(); };
     [W.querySelector('.grab'), ttl].forEach(h => { h.addEventListener('pointerdown', down); h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up); });
+    // v2.51.7：鍵盤開著時在區塊任何地方往下拉（結果清單已在最上面）＝區塊往下收、同時收起鍵盤；整個畫面不會往上跑
+    let t = null;
+    sheet.addEventListener('touchstart', e => {
+      t = null; if (e.touches.length !== 1 || e.target.closest('.grab') || e.target === ttl) return;
+      t = { y: e.touches[0].clientY, x: e.touches[0].clientX, on: false, dy: 0 };
+    }, { passive: true });
+    sheet.addEventListener('touchmove', e => {
+      if (!t) return;
+      const c = e.touches[0], dy = c.clientY - t.y, dx = c.clientX - t.x;
+      if (!t.on) {
+        if (Math.abs(dy) < 8 && Math.abs(dx) < 8) return;
+        const inRes = res.contains(e.target);
+        if (dy <= 0 || Math.abs(dx) > dy || (inRes && res.scrollTop > 0)) { t = null; return; }
+        t.on = true; sheet.classList.add('drag'); inp.blur(); window.__ssLog = (window.__ssLog || []).concat([{ t: Date.now(), ev: 'drag-start-blur' }]);
+      }
+      e.preventDefault();
+      t.dy = Math.max(0, dy); sheet.style.transform = `translateY(${t.dy}px)`;
+    }, { passive: false });
+    const tend = () => { if (!t) return; const x = t; t = null; if (!x.on) return; sheet.classList.remove('drag'); sheet.style.transform = ''; if (x.dy > 90) ssClose(); };
+    sheet.addEventListener('touchend', tend); sheet.addEventListener('touchcancel', tend);
   })();
   // 點了結果：區塊先收起，原本的動作照常執行
   W.addEventListener('click', e => {
@@ -8026,7 +8145,7 @@ async function demo(action, p) {
   vHome = function () {
     const keep = S.q; S.q = '';
     let h; try { h = oHome.apply(this, arguments); } finally { S.q = keep; }
-    return h.replace(/<label class="hm-slot-search">([\s\S]*?)<input id="hmQ"[^>]*>[\s\S]*?<\/label>/, (m, ic) =>
+    return h.replace(/<label class="hm-slot-search">([\s\S]*?)<input[^>]*id="hmQ"[^>]*>[\s\S]*?<\/label>/, (m, ic) =>
       `<button type="button" class="hm-slot-search" data-act="fxSS" data-v="home" aria-label="搜尋">${ic}<span class="ph">搜尋路線、站牌、YouBike、車站</span></button>`);
   };
   // 公車：「要去哪？」變成按鈕
@@ -8035,7 +8154,7 @@ async function demo(action, p) {
     const B = S.bf, keep = B ? B.q : '';
     if (B) B.q = '';
     let h; try { h = oBus.apply(this, arguments); } finally { if (B) B.q = keep; }
-    return h.replace(/<label class="box">([\s\S]*?)<input id="bfq"[^>]*><\/label>/, (m, ic) =>
+    return h.replace(/<label class="box">([\s\S]*?)<input[^>]*id="bfq"[^>]*><\/label>/, (m, ic) =>
       `<button type="button" class="box" data-act="fxSS" data-v="bus">${ic}<span class="ph">要去哪？列出會到的路線</span></button>`).replace('<div id="bfSug"></div>', '');
   };
   // 有非同步結果時（例如車站搜尋）主畫面會重畫：搜尋區塊跟著更新
@@ -8113,22 +8232,22 @@ async function demo(action, p) {
       h += S.railError && !S.railLoading ? `<div class="note">${esc(S.railError)}</div>` : `<div class="rmeta" style="margin:4px 2px">讀取列車資訊中…</div>`;
       return h + btns;
     }
-    const sk = g => g.side === 'up' || g.side === 'd0' ? 0 : g.side === 'dn' || g.side === 'd1' ? 1 : 2;
-    const G = (D.groups || [{ label: '', trains: D.trains || [] }]).filter(g => g.trains && g.trains.length).slice().sort((a, b) => sk(a) - sk(b));
+    // v2.51.7：每條線每個方向一張大時間卡（多線交會站＝四個方向），下方每個方向只列下一班與下下班；捷運沒有即時的方向改用自有時刻表（標表定）
+    const G = BusDirect.railDirPick(D, { per: 2, lines: r.lines || [] });
+    const tra = D.kind === 'tra' || D.kind === 'thsr', multi = new Set(G.map(g => g.line)).size > 1;
     const val = t => t.eta != null && !t.time ? (t.eta <= 0 ? '進站中' : `${t.eta}<span class="fx-numsub">分</span>`) : esc(t.time || '—');
-    const lab = (g, t) => g.label || ('往 ' + (t.dest || ''));
-    const tiles = G.slice(0, 2).map(g => `<div class="num"><b class="c-ok">${val(g.trains[0])}</b><span>${esc(lab(g, g.trains[0]))}</span></div>`);
-    const all = G.flatMap(g => g.trains);
-    if (tiles.length === 1) tiles.push(`<div class="num"><b>${all.length}</b><span>接下來班次</span></div>`);
+    const head = g => `<span class="fx-thead">${multi && g.line ? lineBadge(r.op === 'TRTC' && g.line === 'Y' ? 'NTMC' : r.op, g.line) : ''}${esc(g.label)}</span>`;
+    const trInfo = t => [((t.type || '').replace(/\(.*$/, '').trim()) || (D.kind === 'thsr' ? '高鐵' : ''), t.no ? t.no + ' 次' : '', t.dest ? '往' + String(t.dest).replace(/^往\s*/, '') : ''].filter(Boolean).join(' ');
+    const tiles = G.map(g => {
+      const t = g.trains[0], sub = tra ? `<span class="fx-tinfo">${esc(trInfo(t))}</span>` : (g.src === 'tt' ? '<span class="fx-tinfo">表定</span>' : '');
+      const inner = `<b class="c-ok">${val(t)}</b><span>${head(g)}</span>${sub}`;
+      return tra && t.no ? `<button class="num fx-ntile" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${inner}</button>` : `<div class="num">${inner}</div>`;
+    });
     if (tiles.length) h += `<div class="nums" style="margin:14px 0 8px">${tiles.join('')}</div>`;
     h += S.railError ? staleNote() : pupd(S.railAt);   // v2.50.0：車站卡片也標資料更新時間
-    const key = t => t.eta != null && !t.time ? t.eta : (t.time || '99:99');
-    const srt = a => a.slice().sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0));
     // v2.50.1：完整車站頁拿掉；台鐵／高鐵點一班＝看這班車停靠站，其他只顯示
-    const row = t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t)}</button>` : trainRow(D.kind, r.op, t);
-    // v2.50.1：兩個方向分開列（每個方向最多 3 班），不再混在一起依時間排
-    if (G.length >= 2) h += G.slice(0, 2).map(g => `<div class="fx-rdir">${esc(lab(g, g.trains[0]))}</div><div class="fx-rlist">${srt(g.trains).slice(0, 3).map(row).join('')}</div>`).join('');
-    else if (all.length) h += `<div class="fx-rlist">${srt(all).slice(0, 5).map(row).join('')}</div>`;
+    const row = t => tra && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t)}</button>` : trainRow(D.kind, r.op, t);
+    if (G.length) h += G.map(g => `<div class="fx-rdir">${head(g)}${g.src === 'tt' ? '<small style="margin-left:6px;color:var(--muted)">表定（沒有即時資料）</small>' : ''}</div><div class="fx-rlist">${g.trains.map(row).join('')}</div>`).join('');
     else h += `<div class="note">目前沒有列車資訊</div>`;
     if (D.note) h += `<div class="fx-rnote">${esc(D.note)}</div>`;
     return h + btns;
@@ -8188,7 +8307,7 @@ async function demo(action, p) {
   function maxPanelH() {
     const H = PG.clientHeight || innerHeight, a = safeArea(); let M = H - a.t - a.b - 10 - 12;
     // v2.50.1：有上方按鈕卡（路線、時刻表、車站頁）時，面板最高切齊卡片下緣、留 10px，不鑽到卡片後面
-    const w = curWrap(), top = w && w.querySelector('.rt2-top'), pn = w && w.querySelector('.rp-panel');
+    const w = curWrap(), top = w && (w.querySelector('.rt2-top') || w.querySelector(':scope > .ptop')), pn = w && w.querySelector('.rp-panel');   // v2.51.7：規劃詳情的摘要卡（.ptop）也要避開
     // v2.50.1：規劃頁的外框本身已經扣掉上下 safe area，用面板實際底緣算，頂端才會停在狀態列下方 12px
     if (pn) { const pb = pn.getBoundingClientRect().bottom; if (pb > 0) M = Math.min(M, pb - a.t - 12); }
     if (top) { const tb = top.getBoundingClientRect().bottom, wb = w.getBoundingClientRect().bottom; if (tb > 0) M = Math.min(M, wb - a.b - 10 - tb - 10); }
@@ -8197,7 +8316,12 @@ async function demo(action, p) {
   function heights(wrap) {
     wrap = wrap || curWrap();
     const H = PG.clientHeight || innerHeight, k = wrap ? wrap.dataset.rp : 'route', M = maxPanelH(), c = a => a.map(x => Math.min(x, M));
-    if (k === 'plan') { const od = wrap.querySelector('.pl2-od-card'); return c([od ? Math.min(Math.round(H * 0.42), od.offsetHeight + 60) : 230, Math.round(H * 0.6), Math.round(H * 0.88)]); }
+    if (k === 'plan') {
+      const od = wrap.querySelector('.pl2-od-card'), go = wrap.querySelector('.pgo'), pn = wrap.querySelector('.rp-panel');
+      // v2.51.7：中間那段至少要露出起訖、交通工具與「規劃路線」按鈕（iPhone 有工具列時 60% 不夠，交通工具會被切掉一半）
+      let need = 0; if (go && pn) { const body = pn.querySelector('.rp-body') || pn; need = Math.round(go.getBoundingClientRect().bottom - pn.getBoundingClientRect().top + (body.scrollTop || 0) + 18); }
+      return c([od ? Math.min(Math.round(H * 0.42), od.offsetHeight + 60) : 230, Math.max(Math.round(H * 0.6), need), Math.round(H * 0.88)]);
+    }
     if (k === 'detail') return c([Math.round(H * 0.3), Math.round(H * 0.5), Math.round(H * 0.88)]);
     return c([Math.min(Math.round(H * 0.3), 230), Math.round(H * 0.45), Math.round(H * 0.85)]);
   }
@@ -8346,14 +8470,16 @@ async function demo(action, p) {
     });
     PG.addEventListener('pointermove', e => {
       if (!st) return; const dy = e.clientY - st.y; if (Math.abs(dy) > 4) st.moved = true;
-      const h = Math.max(120, Math.min(maxPanelH(), st.h - dy));
-      st.wrap.style.setProperty('--rp-h', h + 'px'); st.cur = h; st.pull = st.h - dy;   // pull：沒被下限夾住的高度，用來判斷往下拉關閉
+      const H0 = heights(st.wrap)[0], h = Math.max(Math.min(H0, st.h), Math.min(maxPanelH(), st.h - dy));
+      st.wrap.style.setProperty('--rp-h', h + 'px'); st.cur = h; st.pull = st.h - dy;
+      // v2.51.7：已在最低段再往下拉＝更新（整頁不動）
+      if (st.h <= H0 + 4 && st.pull < H0 && window.fxPtr) { st.ptr = true; window.fxPtr.move(H0 - st.pull); }
     });
     const up = () => {
       if (!st) return; const { wrap } = st; wrap.classList.remove('drag'); const H = heights(wrap);
       if (!st.moved) RP.level = RP.level < 2 ? RP.level + 1 : 1;
-      // v2.50.1：在最低段再往下拉超過 90px＝關掉這一頁（跟按返回一樣）
-      else if (st.h <= H[0] + 4 && st.pull != null && st.pull < H[0] - 90) { st = null; closeRoute(); return; }
+      // v2.51.7：在最低段再往下拉＝更新（以前是關掉這一頁）；返回用左上角按鈕或左緣滑動
+      else if (st.ptr) { RP.level = 0; window.fxPtr.end('page:' + S.page); }
       else {
         const h = st.cur ?? st.h, dt = Math.max(1, performance.now() - st.t), vel = (h - st.h) / dt;   // 往上為正
         let best = 0; H.forEach((x, i) => { if (Math.abs(x - h) < Math.abs(H[best] - h)) best = i; });
@@ -8364,6 +8490,39 @@ async function demo(action, p) {
       setH(wrap, H[RP.level]); st = null;
     };
     PG.addEventListener('pointerup', up); PG.addEventListener('pointercancel', up);
+  })();
+  // v2.51.7：在面板內容上往下滑（內容已捲到最上面）＝收合面板；面板到最低段再往下拉＝更新。整頁不跟著動
+  (() => {
+    let d = null;
+    const scrollerOf = t => { for (let x = t; x && !x.classList?.contains('rp-panel'); x = x.parentElement) { if (x.scrollHeight > x.clientHeight + 2) { const o = getComputedStyle(x).overflowY; if (o === 'auto' || o === 'scroll') return x; } } return null; };
+    PG.addEventListener('touchstart', e => {
+      d = null; if (e.touches.length !== 1) return;
+      const t = e.target; if (!t.closest || t.closest('.rp-grab, input, textarea, select, .maplibregl-canvas, .rt2-map') || !t.closest('.rp-panel')) return;
+      if (e.touches[0].clientX <= 24) return;
+      const wrap = t.closest('.rp'); if (!wrap) return;
+      d = { wrap, y: e.touches[0].clientY, x: e.touches[0].clientX, h: RP.h, sc: scrollerOf(t), on: false, ptr: false, t: performance.now() };
+    }, { passive: true });
+    PG.addEventListener('touchmove', e => {
+      if (!d) return;
+      const c = e.touches[0], dy = c.clientY - d.y, dx = c.clientX - d.x;
+      if (!d.on) {
+        if (Math.abs(dy) < 8 && Math.abs(dx) < 8) return;
+        if (dy <= 0 || Math.abs(dx) * 1.3 > dy || (d.sc && d.sc.scrollTop > 0) || e.__fxTab) { d = null; return; }   // 往上＝捲清單；左右＝切分頁
+        d.on = true; d.wrap.classList.add('drag'); d.y0 = c.clientY;
+      }
+      e.preventDefault();
+      const ddy = c.clientY - d.y0, H = heights(d.wrap), h = Math.max(H[0], d.h - ddy);
+      d.wrap.style.setProperty('--rp-h', h + 'px'); d.cur = h;
+      if (d.h - ddy < H[0] && d.h <= H[0] + 4 && window.fxPtr) { d.ptr = true; window.fxPtr.move(H[0] - (d.h - ddy)); }
+    }, { passive: false });
+    const up = () => {
+      if (!d) return; const x = d; d = null; if (!x.on) return;
+      x.wrap.classList.remove('drag'); const H = heights(x.wrap);
+      if (x.ptr) { RP.level = 0; window.fxPtr.end('page:' + S.page); }
+      else { const h = x.cur ?? x.h; let best = 0; H.forEach((v, i) => { if (Math.abs(v - h) < Math.abs(H[best] - h)) best = i; }); if (h < x.h - 40) best = Math.min(best, Math.max(0, RP.level - 1)); RP.level = best; }
+      setH(x.wrap, H[RP.level]);
+    };
+    PG.addEventListener('touchend', up); PG.addEventListener('touchcancel', up);
   })();
   // v2.50.1：在下方面板左右滑動＝切換「路線／時刻表」（公車路線、軌道路線、車站頁都適用；地圖上的滑動照樣是移動地圖）
   (() => {

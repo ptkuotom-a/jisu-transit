@@ -1257,7 +1257,66 @@
     return { route: R, changed, recatch };
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, liveFixRoute, mergeBusAlts, sameBusSeg, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
+  // ===== v2.51.7：同一班車、同樣上下車時間、只差步行的方案合併成一條（留走路較短的） =====
+  // 每一段車：種類、名稱、上車時間（分）相同，下車時間差 ≤2 分；整條出發、抵達也各差 ≤2 分
+  function dedupeSameTrip(list) {
+    const src = (list || []).slice(), out = [];
+    const m = t => Math.floor((parseTpe(t) || 0) / 60000);
+    const tr = r => (r.legs || []).filter(l => l.kind === "transit");
+    const walk = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? (l.dur || 0) : 0), 0);
+    const same = (A, B) => {
+      const a = tr(A), b = tr(B);
+      if (!a.length || a.length !== b.length) return false;
+      if ((A.legs || []).some(l => l.kind === "bike") !== (B.legs || []).some(l => l.kind === "bike")) return false;
+      if (Math.abs(Math.floor(A.start / 60000) - Math.floor(B.start / 60000)) > 2 || Math.abs(Math.floor(A.end / 60000) - Math.floor(B.end / 60000)) > 2) return false;
+      return a.every((x, k) => { const y = b[k]; return x.mode === y.mode && nm2(x.name) === nm2(y.name) && m(x.from.time) === m(y.from.time) && Math.abs(m(x.to.time) - m(y.to.time)) <= 2; });
+    };
+    const better = (a, b) => (walk(a) - walk(b)) || (a.end - b.end) || (b.start - a.start);
+    for (const r of src) {
+      const i = out.findIndex(x => same(x, r));
+      if (i < 0) { out.push(r); continue; }
+      if (better(r, out[i]) < 0) out[i] = r;
+    }
+    return out;
+  }
+
+  // ===== v2.51.7：車站各方向接下來 N 班（車站小卡大時間卡、列表、附近車站卡片共用）=====
+  // 台鐵／高鐵：依看板的方向分組（順行／逆行、南下／北上）。
+  // 捷運／輕軌：依「路線＋方向」分組（多線交會站＝每條線兩個方向）；有即時用即時，沒有即時的方向改用自有時刻表（src:"tt"，畫面標表定）。
+  function railDirPick(D, opt) {
+    const per = (opt && opt.per) || 2, lines = (opt && opt.lines) || [];
+    if (!D) return [];
+    const ok = t => t && (t.eta == null || t.eta >= 0);
+    if (D.kind === "tra" || D.kind === "thsr") {
+      return (D.groups || []).map(g => ({ key: "d" + g.dir, label: g.label, dir: g.dir, trains: (g.trains || []).filter(ok).slice(0, per), src: "live" })).filter(g => g.trains.length);
+    }
+    const keyOf = (line, side, via, dest) => (line || "") + "|" + (side || ("x" + (dest || ""))) + "|" + (via || "");
+    const out = new Map();
+    for (const g of D.groups || []) {
+      const tr = (g.trains || []).filter(ok).slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999)).slice(0, per);
+      if (!tr.length) continue;
+      const line = g.line || tr[0].line || "", k = keyOf(line, g.side, tr[0].via, tr[0].dest);
+      if (!out.has(k)) out.set(k, { key: k, line, side: g.side || null, label: g.label || ("往 " + (tr[0].dest || "")), trains: tr, src: "live" });
+    }
+    const tt = new Map();
+    for (const t of D.tt || []) {
+      if (t.eta == null || t.eta < 0) continue;
+      const k = keyOf(t.line, t.side, t.via, t.dest);
+      if (out.has(k)) continue;   // 這個方向有即時就用即時
+      if (!tt.has(k)) tt.set(k, { key: k, line: t.line || "", side: t.side || null, trains: [], src: "tt" });
+      tt.get(k).trains.push(t);
+    }
+    for (const [k, g] of tt) {
+      g.trains.sort((a, b) => a.eta - b.eta); g.trains = g.trains.slice(0, per);
+      g.label = "往 " + [...new Set(g.trains.map(t => t.dest).filter(Boolean))].join("／") + (g.trains[0].via ? "（" + g.trains[0].via + "）" : "");
+      out.set(k, g);
+    }
+    const rank = l => { const i = lines.indexOf(l); return i < 0 ? 50 + (String(l || "").charCodeAt(0) || 0) : i; };
+    const sk = x => x === "up" || x === "d0" ? 0 : x === "dn" || x === "d1" ? 1 : 2;
+    return [...out.values()].sort((a, b) => rank(a.line) - rank(b.line) || sk(a.side) - sk(b.side) || a.key.localeCompare(b.key));
+  }
+
+  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, liveFixRoute, mergeBusAlts, sameBusSeg, railDirPick, dedupeSameTrip, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = e => {
