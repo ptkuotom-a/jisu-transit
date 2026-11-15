@@ -2112,7 +2112,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.51.4';   // 要跟 sw.js 的 VERSION（jisu-v2.51.4）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.51.5';   // 要跟 sw.js 的 VERSION（jisu-v2.51.5）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -5987,11 +5987,11 @@ async function planFillShape(i) {
   const P = S.plan, r = P && P.res && P.res[i];
   if (!r || r.shapeDone || r.src === 'google' || r.src === 'tdx') return;
   r.shapeDone = true;
-  // v2.51.4：打開詳情才查；步行與 YouBike 段依序排隊，一個方案最多 3 段；結果存手機 7 天
+  // v2.51.4：打開詳情才查；步行與 YouBike 段依序排隊，一個方案最多 3 段；結果存手機 7 天；v2.51.5：有回傳距離或時間就寫回分段與整趟時刻
   for (const l of BusDirect.shapeLegs(r, 3)) {
     const pts = [[l.from.lat, l.from.lon], [l.to.lat, l.to.lon]];
     const res = await api('walkRoute', { mode: l.kind === 'bike' ? 'bike' : 'foot', pts }).catch(() => null);
-    if (res && res.ok) l.shape = { roads: res.roads || [], parts: res.parts || 1, coords: Array.isArray(res.coords) ? res.coords : [] };
+    if (res && res.ok) BusDirect.applyWalkShape(r, l, res);
   }
   r.shapeFilled = true;
   if (S.page === 'planDetail' && P.sel === i) { planMapKey = null; renderPage(); }
@@ -6128,9 +6128,10 @@ function xXfer(A, B, mid, LA, LB) {
   const gates = mid.map(l => l.gate).filter(Boolean);
   if (gates.length) ds += ` <span class="m">（經 ${esc(gates.join('、'))}）</span>`;
   let h = `<div class="xsg xf"><div class="rl"><div class="rg">${I.xf}</div></div><div class="by"><div class="xtt">轉乘 ${gap}分${tags.join('')}</div><div class="xds">${ds}</div>`;
-  if (walks.length || bikes.length) {
+  if (walks.length || bikes.length || (gap > 0 && mid.some(l => l.kind === 'wait'))) {
     const mv = wk + bk, wait = Math.max(0, gap - mv), ap = walks.some(l => l.approx);
-    h += `<div class="xds">${bikes.length ? I.bike : I.walk}${bikes.length ? `YouBike約${bk}分` : ''}${bikes.length && walks.length ? '<span class="m">＋</span>' : ''}${walks.length ? `步行約${wk}分${len ? `<span class="m">・${distTxt(Math.round(len / 10) * 10)}</span>` : ''}` : ''}${wait ? ` <span class="m">＋</span> 等車${wait}分` : ''}${ap ? '<span class="m">（步行為估算）</span>' : ''}</div>`;
+    const mvTxt = `${bikes.length ? `YouBike約${bk}分` : ''}${bikes.length && walks.length ? '<span class="m">＋</span>' : ''}${walks.length ? `步行約${wk}分${len ? `<span class="m">・${distTxt(Math.round(len / 10) * 10)}</span>` : ''}` : ''}`;
+    h += `<div class="xds">${bikes.length ? I.bike : walks.length ? I.walk : I.clock}${mvTxt}${mvTxt && wait ? ' <span class="m">＋</span> ' : ''}${wait ? `等車${wait}分` : ''}${ap ? '<span class="m">（步行為估算）</span>' : ''}</div>`;
     if (gap > 0) h += `<div class="xbar"><i class="w" style="width:${Math.min(100, Math.round(mv / gap * 100))}%"></i><i class="q" style="width:${Math.max(0, 100 - Math.round(mv / gap * 100))}%"></i></div>`;
   }
   return h + `</div></div>`;

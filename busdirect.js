@@ -93,6 +93,17 @@
     return [...new Set(out)];
   }
 
+  const UID_CITY = {
+    TPE: "Taipei", NWT: "NewTaipei", KEE: "Keelung", TAO: "Taoyuan",
+    HSZ: "Hsinchu", HSQ: "HsinchuCounty", MIA: "MiaoliCounty",
+    TXG: "Taichung", CHA: "ChanghuaCounty", NAN: "NantouCounty",
+    YUN: "YunlinCounty", CYI: "Chiayi", CYQ: "ChiayiCounty",
+    TNN: "Tainan", KHH: "Kaohsiung", PIF: "PingtungCounty",
+    ILA: "YilanCounty", HUA: "HualienCounty", TTT: "TaitungCounty",
+    PEN: "PenghuCounty", KIN: "KinmenCounty", LIE: "LienchiangCounty",
+    THB: "InterCity"
+  };
+
   function placePt(p, time, kind) {
     return { time, place: { name: p && p.name || "", type: kind || "location", location: p && p.lat != null ? { lat: p.lat, lng: p.lon } : {} } };
   }
@@ -105,14 +116,17 @@
     else if (r.confidence === "timetable") rideSrc = "schedule";
     else if (r.confidence === "s2s" || (r.rideSrc && (r.rideSrc === "s2s" || r.rideSrc.ride === "s2s"))) rideSrc = "s2s";
     else if (r.confidence === "schedule" || (r.rideSrc && (r.rideSrc === "schedule" || r.rideSrc.ride === "schedule"))) rideSrc = "schedule";
-    const stop = s => ({ time: s.time, place: { name: s.name, type: "stop", location: s.pos ? { lat: s.pos[0], lng: s.pos[1] } : {} } });
+    const stop = s => ({ time: s.time, place: { name: s.name, type: "stop", ...(s && s.uid ? { stopUID: s.uid } : {}), location: s.pos ? { lat: s.pos[0], lng: s.pos[1] } : {} } });
+    const uid = r.routeUID || "";
+    const pfx = uid.slice(0, 3).toUpperCase();
+    const city = r.city || UID_CITY[pfx] || "";
     return {
       source: "self",
       start_time: r.startIso,
       end_time: r.endIso,
       sections: [
         { type: "pedestrian", timeSrc: wsrc(r.walkO), departure: placePt(o, r.startIso), arrival: stop(r.from), travelSummary: { duration: (r.walkO && r.walkO.min || 0) * 60, length: r.walkO && r.walkO.m || 0 } },
-        { type: "transit", timeSrc: rideSrc, transport: { mode: "bus", name: r.name, headsign: r.to && r.to.name || "", ...(r.confidence === "live" ? { liveDep: true } : rideSrc === "schedule" ? {} : { est: true }) }, agency: { agency_id: "bus", name: "公車" }, departure: stop(r.from), arrival: stop(r.to), travelSummary: { duration: (r.ride || 0) * 60 } },
+        { type: "transit", timeSrc: rideSrc, transport: { mode: "bus", name: r.name, headsign: r.to && r.to.name || "", ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(r.dir != null ? { dir: r.dir === 1 ? 1 : 0 } : {}), ...(r.confidence === "live" ? { liveDep: true } : rideSrc === "schedule" ? {} : { est: true }) }, agency: { agency_id: uid || "bus", name: "公車" }, departure: stop(r.from), arrival: stop(r.to), travelSummary: { duration: (r.ride || 0) * 60 } },
         { type: "pedestrian", timeSrc: wsrc(r.walkD), departure: stop(r.to), arrival: placePt(d, r.endIso), travelSummary: { duration: (r.walkD && r.walkD.min || 0) * 60, length: r.walkD && r.walkD.m || 0 } }
       ]
     };
@@ -149,11 +163,132 @@
   function joinRoutes(bus, rail, opt) {
     if (!bus || !rail || !Array.isArray(bus.sections) || !Array.isArray(rail.sections)) return null;
     const b = bus.sections.slice();
-    const r = rail.sections.slice();
     const keepTail = !!(opt && opt.keepTail);
     if (!keepTail && b.length && b[b.length - 1].type === "pedestrian") b.pop();
+    const isUrban = s => s && s.type === "transit" && /^(mrt|metro|subway|lrt|light)$/i.test(String(s.transport && s.transport.mode || ""));
+    const isLong = s => s && s.type === "transit" && /^(tra|thsr|hsr|rail|train)$/i.test(String(s.transport && s.transport.mode || ""));
+    const firstTr = secs => (secs || []).find(s => s && s.type === "transit");
+    const hasLong = secs => (secs || []).some(isLong);
+    const bEndMs = parseTpe((b.length && b[b.length - 1].arrival && b[b.length - 1].arrival.time) || bus.end_time);
+    let chosenRail = rail;
+    const baseT0 = firstTr(rail.sections);
+    if (bEndMs != null && baseT0 && isUrban(baseT0) && hasLong(rail.sections)) {
+      const wait0 = parseTpe(baseT0.departure && baseT0.departure.time) - bEndMs;
+      if (wait0 > 10 * 60000 && opt && Array.isArray(opt.railCandidates)) {
+        const baseEndMs = parseTpe(rail.end_time);
+        const early = opt.railCandidates.filter(c => {
+          if (!c || !Array.isArray(c.sections)) return false;
+          const c0 = firstTr(c.sections);
+          if (!c0 || !isUrban(c0) || !hasLong(c.sections)) return false;
+          const dep0 = parseTpe(c0.departure && c0.departure.time);
+          const arrEnd = parseTpe(c.end_time);
+          return dep0 != null && dep0 >= bEndMs && (baseEndMs == null || arrEnd == null || arrEnd <= baseEndMs);
+        }).sort((x, y) => {
+          const dx = parseTpe(firstTr(x.sections).departure.time);
+          const dy = parseTpe(firstTr(y.sections).departure.time);
+          return dx - dy;
+        })[0];
+        if (early && parseTpe(firstTr(early.sections).departure.time) < parseTpe(baseT0.departure.time)) {
+          chosenRail = early;
+        }
+      }
+    }
+    const r = chosenRail.sections.slice();
     if (r.length && r[0].type === "pedestrian") r.shift();
-    return { source: "self", start_time: bus.start_time, end_time: rail.end_time, sections: b.concat(r) };
+    if (chosenRail !== rail) {
+      const outR = [];
+      for (let i = 0; i < r.length; i++) {
+        const cur = r[i];
+        if (isLong(cur) && i > 0) {
+          const prev = outR[outR.length - 1];
+          const pEnd = parseTpe(prev && prev.arrival && prev.arrival.time);
+          const cDep = parseTpe(cur.departure && cur.departure.time);
+          if (prev && prev.type !== "waiting" && pEnd != null && cDep != null && cDep - pEnd >= 60000) {
+            outR.push({ type: "waiting", departure: { time: isoTpe(pEnd), place: prev.arrival.place }, arrival: { time: isoTpe(cDep), place: cur.departure.place }, travelSummary: { duration: Math.round((cDep - pEnd) / 1000) } });
+          }
+        }
+        outR.push(cur);
+      }
+      return { source: "self", start_time: bus.start_time, end_time: chosenRail.end_time, sections: b.concat(outR) };
+    }
+    return { source: "self", start_time: bus.start_time, end_time: chosenRail.end_time, sections: b.concat(r) };
+  }
+
+  function syncRouteTimes(r) {
+    if (!r || !Array.isArray(r.legs)) return r;
+    const legs = r.legs;
+    const setT = (endObj, ms) => { if (endObj) endObj.time = isoTpe(ms); };
+    const trIdx = [];
+    for (let i = 0; i < legs.length; i++) if (legs[i] && legs[i].kind === "transit") trIdx.push(i);
+    if (trIdx.length) {
+      let cur = parseTpe(legs[trIdx[0]].from && legs[trIdx[0]].from.time);
+      if (cur != null) {
+        for (let i = trIdx[0] - 1; i >= 0; i--) {
+          setT(legs[i].to, cur);
+          cur -= Math.round((legs[i].dur || 0) * 1000);
+          setT(legs[i].from, cur);
+        }
+        r.start = cur;
+      }
+      for (let t = 0; t < trIdx.length - 1; t++) {
+        const a = trIdx[t], b = trIdx[t + 1];
+        let mc = parseTpe(legs[a].to && legs[a].to.time);
+        const endC = parseTpe(legs[b].from && legs[b].from.time);
+        if (mc == null) continue;
+        for (let k = a + 1; k < b; k++) {
+          const lg = legs[k];
+          if (lg.kind === "wait" && k === b - 1 && endC != null) {
+            setT(lg.from, mc);
+            setT(lg.to, endC);
+            lg.dur = Math.max(0, Math.round((endC - mc) / 1000));
+            mc = endC;
+          } else {
+            setT(lg.from, mc);
+            mc += Math.round((lg.dur || 0) * 1000);
+            setT(lg.to, mc);
+          }
+        }
+      }
+      let fcur = parseTpe(legs[trIdx[trIdx.length - 1]].to && legs[trIdx[trIdx.length - 1]].to.time);
+      if (fcur != null) {
+        for (let i = trIdx[trIdx.length - 1] + 1; i < legs.length; i++) {
+          setT(legs[i].from, fcur);
+          fcur += Math.round((legs[i].dur || 0) * 1000);
+          setT(legs[i].to, fcur);
+        }
+        r.end = fcur;
+      }
+    } else {
+      let cur = Number.isFinite(r.start) ? r.start : parseTpe(legs[0] && legs[0].from && legs[0].from.time);
+      if (cur != null) {
+        r.start = cur;
+        for (const lg of legs) {
+          setT(lg.from, cur);
+          cur += Math.round((lg.dur || 0) * 1000);
+          setT(lg.to, cur);
+        }
+        r.end = cur;
+      }
+    }
+    if (Number.isFinite(r.start) && Number.isFinite(r.end)) {
+      r.dur = Math.max(1, Math.round((r.end - r.start) / 60000));
+    }
+    r.approx = legs.some(x => !!x.approx);
+    return r;
+  }
+
+  function applyWalkShape(r, l, res) {
+    if (!l || !res || !res.ok) return false;
+    l.shape = { roads: res.roads || [], parts: res.parts || 1, coords: Array.isArray(res.coords) ? res.coords : [] };
+    const newLen = typeof res.distance === "number" && isFinite(res.distance) && res.distance > 0 ? Math.round(res.distance) : l.len;
+    const newDur = typeof res.duration === "number" && isFinite(res.duration) && res.duration > 0 ? Math.round(res.duration) : l.dur;
+    const changed = (newLen != null && newLen !== l.len) || (newDur != null && newDur !== l.dur) || l.timeSrc !== "osrm";
+    if (newLen != null) l.len = newLen;
+    if (newDur != null) l.dur = newDur;
+    l.timeSrc = "osrm";
+    l.approx = false;
+    if (changed && r) syncRouteTimes(r);
+    return changed;
   }
 
   function sortOwn(list, when, limit) {
@@ -949,7 +1084,47 @@
     return out;
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, sortOwn, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, planBranches, shapeLegs };
+  // Opus（v2.51.5 審查）：多個起點各自要查一組點時，整組整組塞進同一批 table（每批最多 maxPts 點），
+  // 不再一個轉乘站打一次。groups：[{ src:[lat,lon], dsts:[[lat,lon],…] }]；同一組不拆開（太大的組才自己分段）。
+  function walkGroupBatches(groups, maxPts) {
+    const cap = maxPts || 25, out = [];
+    let cur = null;
+    const flush = () => { if (cur && cur.items.length) out.push(cur); cur = null; };
+    const pieces = [];
+    for (const g of groups || []) {
+      if (!g || !g.src || !Array.isArray(g.dsts) || !g.dsts.length) continue;
+      for (let s = 0; s < g.dsts.length; s += cap - 1) pieces.push({ src: [+g.src[0], +g.src[1]], dsts: g.dsts.slice(s, s + cap - 1).map(q => [+q[0], +q[1]]) });
+    }
+    for (const pc of pieces) {
+      const n = 1 + pc.dsts.length;
+      if (!cur || cur.n + n > cap) { flush(); cur = { n: 0, items: [] }; }
+      cur.items.push(pc); cur.n += n;
+    }
+    flush();
+    return out.map(b => {
+      const pts = [], src = [], dst = [], pairs = [];
+      for (const it of b.items) {
+        const si = pts.length; pts.push(it.src); src.push(si);
+        for (const q of it.dsts) { const di = pts.length; pts.push(q); dst.push(di); pairs.push({ src: it.src, q, si, di }); }
+      }
+      return { pts, src, dst, pairs };
+    });
+  }
+  // 拆回每一對（起點→點）的公尺、秒。distances[i][j]：第 i 個 src、第 j 個 dst。
+  function walkGroupParse(batch, res) {
+    const out = [];
+    if (!batch || !res || !res.ok || !Array.isArray(res.distances)) return out;
+    const num = v => typeof v === "number" && isFinite(v);
+    const D = res.distances, T = res.durations || [];
+    for (const p of batch.pairs) {
+      const i = batch.src.indexOf(p.si), j = batch.dst.indexOf(p.di);
+      const m = D[i] && D[i][j], s = T[i] && T[i][j];
+      if (num(m)) out.push({ src: p.src, q: p.q, m: Math.round(m), s: num(s) ? s : null });
+    }
+    return out;
+  }
+
+  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = e => {
