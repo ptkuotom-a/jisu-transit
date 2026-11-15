@@ -2075,6 +2075,18 @@ body[data-tab="settings"] #fixedUpd{display:none}
 /* v2.50.1：設定頁不顯示大標題，只留返回鈕的高度 */
 .set-fixed-head h1{display:none!important}
 .set-fixed-head{height:70px!important;padding-top:0!important;padding-bottom:0!important}   /* 外層已在動態島下方，不再加 safe-top；只留返回鈕位置 */
+/* v2.60.0：門牌／最近號／路段／概略位置精度徽章 */
+.geo-badge{display:inline-flex;align-items:center;font-size:11px;font-weight:700;padding:1px 7px;border-radius:99px;margin-right:6px;line-height:1.45;vertical-align:1px}
+.geo-badge.g-exact{background:rgba(198,241,53,.18);color:var(--lime)}
+.geo-badge.g-near{background:rgba(255,180,0,.18);color:#FFB400}
+.geo-badge.g-road{background:rgba(130,180,255,.18);color:#8ab4ff}
+.geo-badge.g-coarse{background:var(--surface2);color:var(--muted)}
+.geo-badge.g-multi{background:rgba(198,241,53,.18);color:var(--lime)}
+.tmain .tt{min-width:0}
+.tmain .tt .tt-line{display:flex;align-items:center;min-width:0;overflow:hidden}
+.tmain .tt .tt-txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tmain .tt .tt-note{display:block;margin-top:2px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 </style>
 </head>
 <body>
@@ -2125,12 +2137,13 @@ body[data-tab="settings"] #fixedUpd{display:none}
 <script src="config.js"></script>
 <script src="s2stime.js"></script>
 <script src="busdirect.js"></script>
+<script src="geocode.js"></script>
 <script src="data.js"></script>
 <script>
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.51.8';   // 要跟 sw.js 的 VERSION（jisu-v2.51.8）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.1';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -3298,28 +3311,39 @@ function bfSugHtml() {
   const rail = B.railQ === q ? (B.rail || []).slice(0, 3) : [];
   h += rail.map(r => { const nm = r.name + (r.kind === 'metro' || /站$/.test(r.name) ? '' : '站'); return item({ type:'place', name:nm, lat:r.lat, lon:r.lon }, nm, `${r.sys}・找附近400公尺內的站牌`, '車站'); }).join('');
   const geo = B.geoQ === q ? (B.geo || []).slice(0, 3) : [];
-  h += geo.map(g => item({ type:'place', name:g.name, lat:g.lat, lon:g.lon }, g.name, `${g.area || g.addr || '地點'}・找附近400公尺內的站牌`, '地點')).join('');
-  const waiting = B.sugQ !== q || (q.length >= 2 && B.geoQ !== q);
+  const gk = geoKindOf(q);
+  h += geo.map(g => item({ type:'place', name:g.name, lat:g.lat, lon:g.lon }, g.name, `${g.area || g.addr || '地點'}${g.note ? '・' + g.note : ''}・找附近400公尺內的站牌`, g.precisionLabel || '地點')).join('');
+  if (gk.missing && B.geoQ !== q && !B.geoLoading) h += `<button class="it" data-act="geoManualBf"><span>按 Enter 或點此搜尋概略位置<small>${esc(q)}・無門牌資料縣市，不提供自動完成</small></span><span class="tag">概略位置</span></button>`;
+  const waiting = B.sugQ !== q || B.geoLoading || (!gk.missing && q.length >= 2 && B.geoQ !== q);
   if (B.sugErr && B.sugQ === q) h += `<div class="wait">${esc(B.sugErr)}</div>`;
   if (!h && !waiting) h = `<div class="wait">附近路線沒有經過「${esc(q)}」的站（不含轉乘）。</div>`;
   return `<div class="bfsug"><div class="hd">選一個目的地（站牌只列附近路線會經過的）</div>${h}${waiting ? `<div class="wait">搜尋中…</div>` : ''}</div>`;
 }
 function bfRefresh() { const el = $('#bfSug'); if (el && S.tab === 'bus') el.innerHTML = bfSugHtml(); }
 let bfT = 0, bfGeoT = 0;
+function runBfGeo(B, q, act) {
+  if (!B || (B.q || '').trim() !== q || q.length < 2) return;
+  B.geoLoading = true; bfRefresh();
+  const useAct = act || geoKindOf(q).act;
+  api(useAct, { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
+    .then(g => { if (B.q.trim() === q) { B.geo = Array.isArray(g) ? g : []; B.geoQ = q; } })
+    .catch(() => { if (B.q.trim() === q) { B.geo = []; B.geoQ = q; } })
+    .finally(() => { if (B.q.trim() === q) { B.geoLoading = false; bfRefresh(); } });
+}
 function bfInput(v) {
   const B = S.bf = S.bf || { q:'' }; B.q = v; const q = v.trim();
   clearTimeout(bfT); clearTimeout(bfGeoT);
   const x = document.querySelector('.bf .x'); if (!!q !== !!x) { const box = document.querySelector('.bf'); if (box) { if (q) box.insertAdjacentHTML('beforeend', '<button class="x" data-act="bfCancel">取消</button>'); else x.remove(); } }
-  if (!q) { bfRefresh(); return; }
+  if (!q) { B.geoLoading = false; bfRefresh(); return; }
   bfT = setTimeout(() => {
     const stops = S.data?.busStops || [];
     api('busDest', { stops, q }).then(j => { if (B.q.trim() === q) { B.sug = j.sug || []; B.sugErr = null; B.sugQ = q; bfRefresh(); } })
       .catch(e => { if (B.q.trim() === q) { B.sug = []; B.sugErr = '目的地清單暫時讀不到：' + e.message; B.sugQ = q; bfRefresh(); } });
     api('railSearch', { q, lat:S.data?.lat, lon:S.data?.lon, noHeal:true }).then(r => { if (B.q.trim() === q) { B.rail = r || []; B.railQ = q; bfRefresh(); } }).catch(() => {});
   }, 300);
-  // 地址／地標：停止輸入0.7秒後才查（Nominatim，不是 TDX）
-  if (q.length >= 2) bfGeoT = setTimeout(() => api('geoSearch', { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
-    .then(g => { if (B.q.trim() === q) { B.geo = Array.isArray(g) ? g : []; B.geoQ = q; bfRefresh(); } }).catch(() => { if (B.q.trim() === q) { B.geo = []; B.geoQ = q; bfRefresh(); } }), 700);
+  // 台灣地址分片（/geocode）或一般地標（/geoSearch）；缺資料縣市不自動完成，等 Enter 或按鈕查詢
+  const gk = geoKindOf(q); B.geoLoading = false;
+  if (q.length >= 2 && !gk.missing) bfGeoT = setTimeout(() => runBfGeo(B, q, gk.act), 700);
   bfRefresh();
 }
 function bfSel(o) {
@@ -5776,8 +5800,21 @@ function planCard(r, i) {
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
+const GEO_PREC_CLS = { '門牌':'g-exact', '同號多棟':'g-multi', '最近號':'g-near', '路段':'g-road', '概略':'g-coarse', '概略位置':'g-coarse' };
+function geoKindOf(q) {
+  const G = window.Geocode;
+  if (!G || !G.isTwAddressQuery(q)) return { act: 'geoSearch', missing: false, parsed: null };
+  const p = G.parseTwAddress(q);
+  return { act: 'geocode', missing: !!(p && p.missingCounty), parsed: p };
+}
+function geoBadgeHtml(g) {
+  const lbl = g && (g.precisionLabel || g.precision);
+  if (!lbl) return '';
+  const cls = GEO_PREC_CLS[g.precision || lbl] || 'g-coarse';
+  return `<span class="geo-badge ${cls}">${esc(lbl)}</span>`;
+}
 function geoSub(g) {
-  const k = GEO_KIND[g.type], parts = [k, g.addr || g.area].filter(Boolean);
+  const k = GEO_KIND[g.type], parts = [k, g.area || g.addr].filter(Boolean);
   if (g.span) parts.push(`範圍約${g.span}公里，以中心點規劃`);
   return parts.join('・');
 }
@@ -5946,7 +5983,7 @@ function pickHtml() {
     <label class="search psearch">${I.search}<input autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" id="pickQ" name="jisu-pickQ-x" type="text" enterkeyhint="search" placeholder="車站、站牌、地標或路名" value="${esc(K.q)}"></label></div>
     <div id="pickRes">${pickResHtml()}</div></div>`;
 }
-const pickRow = (o, icon, title, sub) => `<button class="trow nrow" data-act="pickSel" data-i="${reg(o)}"><span class="pico">${icon}</span><span class="tmain"><div class="td">${esc(title)}</div>${sub ? `<div class="tt">${esc(sub)}</div>` : ''}</span><span class="chev">${I.chev}</span></button>`;
+const pickRow = (o, icon, title, sub, badgeHtml = '', note = '') => `<button class="trow nrow" data-act="pickSel" data-i="${reg(o)}"><span class="pico">${icon}</span><span class="tmain"><div class="td">${esc(title)}</div>${(sub || badgeHtml || note) ? `<div class="tt"><div class="tt-line">${badgeHtml}<span class="tt-txt">${esc(sub || '')}</span></div>${note ? `<div class="tt-note">${esc(note)}</div>` : ''}</div>` : ''}</span><span class="chev">${I.chev}</span></button>`;
 function pickResHtml() {
   const K = S.pick; if (!K) return '';
   const q = K.q.trim();
@@ -5964,14 +6001,25 @@ function pickResHtml() {
   for (const c of placeCities()) { const P = (S.place || {})[c]; if (!P) continue; for (const x of P.stops) if (x[0].toLowerCase().includes(ql)) stops.push({ c, x }); }
   stops.sort((a, b) => (a.x[0].toLowerCase() === ql ? 0 : a.x[0].toLowerCase().startsWith(ql) ? 1 : 2) - (b.x[0].toLowerCase() === ql ? 0 : b.x[0].toLowerCase().startsWith(ql) ? 1 : 2));
   if (stops.length) h += `<div class="tgrp">公車站牌</div><div class="board">` + stops.slice(0, 6).map(({ c, x }) => pickRow({ name:x[0], lat:x[1], lon:x[2], sub:'公車站牌・' + (CITY_ZH[c] || c) }, I.busFill, x[0], '公車站牌・' + (CITY_ZH[c] || c))).join('') + `</div>`;
+  const gk = geoKindOf(q);
   const geo = K.geoQ === q ? K.geo : null;
-  if (geo && geo.length) h += `<div class="tgrp">地址・地標</div><div class="board">` + geo.map(g => { const sub = geoSub(g); return pickRow({ name:g.name, lat:g.lat, lon:g.lon, sub:g.area || g.addr }, I.pin, g.name, sub); }).join('') + `</div>`;
-  if (K.geoLoading || (q.length >= 2 && K.geoQ !== q)) h += `<div class="sub" style="margin-top:12px">搜尋地址・地標中…</div>`;
+  if (geo && geo.length) h += `<div class="tgrp">地址・地標</div><div class="board">` + geo.map(g => { const sub = geoSub(g); return pickRow({ name:g.name, lat:g.lat, lon:g.lon, sub:g.area || g.addr, note:g.note || '' }, I.pin, g.name, sub, geoBadgeHtml(g), g.note || ''); }).join('') + `</div>`;
+  if (K.geoLoading || (!gk.missing && q.length >= 2 && K.geoQ !== q)) h += `<div class="sub" style="margin-top:12px">搜尋地址・地標中…</div>`;
+  else if (gk.missing && !geo && !K.geoLoading) h += `<div class="tgrp">概略地址搜尋</div><div class="board"><button class="trow nrow" data-act="geoManualPick"><span class="pico">${I.pin}</span><span class="tmain"><div class="td">按 Enter 或點此搜尋概略位置</div><div class="tt">${esc(q)}（無門牌開放資料縣市，不提供即時自動完成）</div></span><span class="chev">${I.chev}</span></button></div>`;
   else if (K.geoErr) h += `<div class="sub" style="margin-top:12px">${esc(K.geoErr)}</div>`;
   if (!h) h = `<div class="note" style="margin-top:8px">${q.length < 2 ? '再多打一個字…' : `找不到「${esc(q)}」。`}</div>`;
   return h;
 }
 let pickRailT = 0, pickGeoT = 0;
+function runPickGeo(K, q, act) {
+  if (!K || (K.q || '').trim() !== q || q.length < 2) return;
+  K.geoLoading = true; K.geoErr = null; pickRefresh();
+  const useAct = act || geoKindOf(q).act;
+  api(useAct, { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
+    .then(g => { if (S.pick === K && K.q.trim() === q) { K.geo = Array.isArray(g) ? g : []; K.geoQ = q; } })
+    .catch(e => { if (S.pick === K) { K.geoErr = '地址搜尋暫時無法使用：' + e.message; K.geoQ = q; K.geo = []; } })
+    .finally(() => { if (S.pick === K) { K.geoLoading = false; pickRefresh(); } });
+}
 function pickInput(v) {
   const K = S.pick; if (!K) return; K.q = v;
   const q = v.trim();
@@ -5979,16 +6027,11 @@ function pickInput(v) {
   S.place = S.place || {}; S.placeBusy = S.placeBusy || {};
   for (const c of placeCities()) if (!S.place[c] && !S.placeBusy[c]) { S.placeBusy[c] = true; api('placeIndex', { city:c }).then(j => { if (j) S.place[c] = j; }).catch(() => {}).finally(() => { S.placeBusy[c] = false; pickRefresh(); }); }
   clearTimeout(pickRailT); clearTimeout(pickGeoT);
-  if (!q) { K.rail = null; pickRefresh(); return; }
+  if (!q) { K.rail = null; K.geoLoading = false; pickRefresh(); return; }
   pickRailT = setTimeout(() => api('railSearch', { q, lat:S.data?.lat, lon:S.data?.lon }).then(r => { if (S.pick === K && K.q.trim() === q) { K.rail = r; pickRefresh(); } }).catch(() => {}), 200);
-  // 地址／地標：停止輸入0.7秒後才查（Nominatim 每秒最多1次；Worker 端也會排隊與快取）
-  if (q.length >= 2) pickGeoT = setTimeout(() => {
-    K.geoLoading = true; K.geoErr = null; pickRefresh();
-    api('geoSearch', { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
-      .then(g => { if (S.pick === K && K.q.trim() === q) { K.geo = Array.isArray(g) ? g : []; K.geoQ = q; } })
-      .catch(e => { if (S.pick === K) { K.geoErr = '地址搜尋暫時無法使用：' + e.message; K.geoQ = q; K.geo = []; } })
-      .finally(() => { if (S.pick === K) { K.geoLoading = false; pickRefresh(); } });
-  }, 700);
+  // 台灣地址分片（/geocode）或一般地標（/geoSearch）；缺資料縣市不提供自動完成，須按 Enter 或點鈕才查
+  const gk = geoKindOf(q); K.geoLoading = false;
+  if (q.length >= 2 && !gk.missing) pickGeoT = setTimeout(() => runPickGeo(K, q, gk.act), 700);
   pickRefresh();
 }
 // v2.29.0 選地點頁的預設車站（依目前位置；只用手機存的車站清單，不另呼叫 TDX）
@@ -6597,6 +6640,8 @@ document.addEventListener('click', e => {
     case 's2sLClearAll': s2sLClearAll(); break;
     case 'planOpen': if (o) openPlanDetail(o.i); break;
     case 'pickSel': if (o) pickSel(o); break;
+    case 'geoManualPick': if (S.pick) { clearTimeout(pickGeoT); runPickGeo(S.pick, (S.pick.q || '').trim(), 'geocode'); } break;
+    case 'geoManualBf': if (S.bf) { clearTimeout(bfGeoT); runBfGeo(S.bf, (S.bf.q || '').trim(), 'geocode'); } break;
     case 'bfSel': if (o) bfSel(o); break;
     case 'bfClear': if (S.bf) { S.bf.sel = null; S.bf.res = null; S.bf.q = ''; } render(); break;
     case 'bfCancel': if (S.bf) S.bf.q = ''; { const i = $('#bfq'); if (i) { i.value = ''; i.blur(); } } bfInput(''); break;
@@ -7507,6 +7552,14 @@ async function demo(action, p) {
     { name: '台北101', addr: '臺北市信義區信義路五段7號', area: '臺北市信義區', lat: 25.0339, lon: 121.5645, type: 'attraction' },
     { name: '臺北車站', addr: '臺北市中正區北平西路3號', area: '臺北市中正區', lat: 25.0478, lon: 121.5170, type: 'station' }
   ];
+  if (action === 'geocode') {
+    const q = (p && p.q) || '';
+    const parsed = window.Geocode && window.Geocode.parseTwAddress(q);
+    if (parsed && parsed.missingCounty) {
+      return [{ name: parsed.road || q, addr: q, area: parsed.county + parsed.dist, lat: 23.966, lon: 120.968, type: 'address', precision: '概略', precisionLabel: '概略位置', source: 'nominatim' }];
+    }
+    return [{ name: parsed ? (parsed.road + parsed.laneAlley + (parsed.numKey ? parsed.numKey + '號' : '')) : q, addr: q, area: parsed ? (parsed.county + parsed.dist) : '臺北市信義區', lat: 25.0375, lon: 121.5638, type: 'address', precision: '門牌', precisionLabel: '門牌', source: 'r2' }];
+  }
   if (action === 'planRoutes') {
     const nowMs = Date.now(), lt = ms => localIso(new Date(nowMs + ms)).slice(0, 16) + ':00';
     return [
@@ -8010,15 +8063,15 @@ async function demo(action, p) {
   function fxBf(v) {
     const B = S.bf = S.bf || { q: '' }; B.q = v; const q = v.trim();
     clearTimeout(bfT); clearTimeout(bfGeoT);
-    if (!q) { bfRefresh(); return; }
+    if (!q) { B.geoLoading = false; bfRefresh(); return; }
     bfT = setTimeout(() => {
       const stops = S.data?.busStops || [];
       api('busDest', { stops, q }).then(j => { if (B.q.trim() === q) { B.sug = j.sug || []; B.sugErr = null; B.sugQ = q; bfRefresh(); } })
         .catch(e => { if (B.q.trim() === q) { B.sug = []; B.sugErr = '目的地清單暫時讀不到：' + e.message; B.sugQ = q; bfRefresh(); } });
       api('railSearch', { q, lat: S.data?.lat, lon: S.data?.lon, noHeal: true }).then(r => { if (B.q.trim() === q) { B.rail = r || []; B.railQ = q; bfRefresh(); } }).catch(() => {});
     }, 300);
-    if (q.length >= 2) bfGeoT = setTimeout(() => api('geoSearch', { q, near: S.data?.lat ? `${S.data.lat.toFixed(2)},${S.data.lon.toFixed(2)}` : '' })
-      .then(g => { if (B.q.trim() === q) { B.geo = Array.isArray(g) ? g : []; B.geoQ = q; bfRefresh(); } }).catch(() => { if (B.q.trim() === q) { B.geo = []; B.geoQ = q; bfRefresh(); } }), 700);
+    const gk = geoKindOf(q); B.geoLoading = false;
+    if (q.length >= 2 && !gk.missing) bfGeoT = setTimeout(() => runBfGeo(B, q, gk.act), 700);
     bfRefresh();
   }
 
@@ -8093,7 +8146,13 @@ async function demo(action, p) {
   if (VV) { VV.addEventListener('resize', kb); VV.addEventListener('scroll', kb); }
 
   inp.addEventListener('input', onInput);
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const q = inp.value.trim();
+    if (q.length >= 2 && SS.mode === 'pick' && S.pick) { clearTimeout(pickGeoT); runPickGeo(S.pick, q, geoKindOf(q).act); }
+    else if (q.length >= 2 && SS.mode === 'bus' && S.bf) { clearTimeout(bfGeoT); runBfGeo(S.bf, q, geoKindOf(q).act); }
+    inp.blur();
+  });
   W.querySelector('.ss-x').addEventListener('click', e => { e.preventDefault(); inp.value = ''; onInput(); inp.focus(); });
   W.querySelector('.scrim').addEventListener('click', () => ssClose());
   addEventListener('keydown', e => { if (SS.open && e.key === 'Escape') ssClose(); });
@@ -8130,7 +8189,7 @@ async function demo(action, p) {
   W.addEventListener('click', e => {
     const el = e.target.closest('[data-act]'); if (!el || !res.contains(el)) return;
     const act = el.dataset.act;
-    if (act === 'pickSel') return;   // pickSel 自己收
+    if (act === 'pickSel' || act === 'geoManualPick' || act === 'geoManualBf') return;   // pickSel／手動地址搜尋不先關閉
     ssClose(act === 'mapPick' ? 'map' : 'act');
   }, true);
   // 入口：首頁、公車的搜尋按鈕

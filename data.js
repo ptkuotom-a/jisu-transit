@@ -8619,6 +8619,7 @@ async function gmapImg({ poly, o, d, x }) {
   } catch (e) { return null; }
 }
 const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`);
+const geocodeAddress = ({ q, near }) => authedGet(`/geocode?q=${enc(q)}${near ? "&near=" + near : ""}`);
 const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
 
 // ---------- 對回 App 的資料：車站（名稱＋座標）、公車路線（名稱＋營運縣市＋站序） ----------
@@ -8968,6 +8969,7 @@ const dataApi0 = async (action, p = {}) => {
     case "liveFavs": return liveFavs(p.favs || {}, p.fresh);
     case "gmapImg": return gmapImg(p || {});
     case "geoSearch": return geoSearch(p);
+    case "geocode": return geocodeAddress(p);
     case "geoReverse": return geoReverse(p);
     case "locate": return locate();
     case "placeIndex": return placeIndex(p || {});
