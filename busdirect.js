@@ -986,36 +986,63 @@
   }
 
 
-  // v2.51.4：步行查詢工具（前端與測試共用）。
-  // walkQueue：所有 /walk 依序送，上一個不是快取時間隔 gap 毫秒；收到 429 busy 或 502 就隔 gap 再試一次，仍失敗才丟錯。
+  // v2.60.5：步行查詢工具（前端與測試共用）。
+  // walkQueue：每筆開始時間相隔至少 gap 毫秒（不等上一筆回來）；Worker 回 cached 不佔間隔；在途最多 maxInFlight 筆；429 busy 或 502 隔 gap 重試一次。
   function walkQueue(get, opt) {
+    // v2.60.5（Opus 審查修正）：每一筆「沒有被 Worker 快取」的請求，開始時間相隔至少 gap 毫秒，不必等上一筆回來；同時在途最多 maxInFlight 筆。
+    // 回 cached 的那筆事後從間隔計算拿掉（不佔間隔），但不會清掉其他還在路上那筆的間隔。
+    // 429 busy 或 502：從失敗那一刻再隔 gap 重試一次（和 v2.51.4 起相同），仍失敗才丟錯。不會多送任何一筆。
     const o = opt || {};
-    const gap = o.gap || 1100;
+    const gap = o.gap || 1100, maxInFlight = o.maxInFlight || 3;
     const sleep = o.sleep || (ms => new Promise(r => setTimeout(r, ms)));
-    const now = o.now || (() => Date.now());
-    const stat = { calls: 0, out: 0, retries: 0, fails: 0 };
-    let chain = Promise.resolve(), lastAt = -Infinity;
+    const now = o.now || (() => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()));   // 量間隔用單調時鐘（系統時間被調整也不影響）
+    const stat = { calls: 0, out: 0, retries: 0, fails: 0, maxInFlight: 0 };
     const retryable = e => !!e && (e.status === 502 || (e.status === 429 && e.code === "busy"));
+    const starts = [];   // { t, cached, done }
+    let inFlight = 0, wake = null, gate = Promise.resolve();
+    const waiters = [];
+    const anchor = () => { let m = -Infinity; for (const x of starts) if (!x.cached && x.t > m) m = x.t; return m; };
+    const prune = () => { const lim = now() - gap; for (let i = starts.length - 1; i >= 0; i--) if (starts[i].cached || (starts[i].done && starts[i].t < lim)) starts.splice(i, 1); };
+    const acquire = async () => { while (inFlight >= maxInFlight) await new Promise(r => waiters.push(r)); inFlight++; if (inFlight > stat.maxInFlight) stat.maxInFlight = inFlight; };
+    const release = () => { inFlight--; const w = waiters.shift(); if (w) w(); };
+    // 依送出順序一筆一筆決定開始時間（先來先送）
+    const begin = () => {
+      const p = gate.then(async () => {
+        for (;;) {
+          const w = anchor() + gap - now();
+          if (w <= 0) break;
+          await new Promise(r => { let d = false; const f = () => { if (!d) { d = true; if (wake === f) wake = null; r(); } }; wake = f; sleep(w).then(f); });
+        }
+        const x = { t: now(), cached: false, done: false };
+        starts.push(x);
+        return x;
+      });
+      gate = p.catch(() => {});
+      return p;
+    };
     const one = async (path, ms) => {
-      const w = lastAt + gap - now();
-      if (w > 0) await sleep(w);
+      await acquire();
+      const x = await begin();
       stat.calls++;
       try {
         const j = await get(path, ms);
-        if (j && j.cached) lastAt = -Infinity; else { lastAt = now(); stat.out++; }
+        x.done = true;
+        if (j && j.cached) { x.cached = true; if (wake) wake(); } else stat.out++;
         return j;
-      } catch (e) { lastAt = now(); throw e; }
+      } catch (e) {
+        x.done = true;
+        if (retryable(e)) x.t = Math.max(x.t, now());   // 重試要從失敗那一刻再隔 gap
+        throw e;
+      } finally { release(); prune(); }
     };
-    const run = async (path, ms) => {
+    const call = async (path, ms) => {
       try { return await one(path, ms); }
       catch (e) {
         if (!retryable(e)) { stat.fails++; throw e; }
         stat.retries++;
-        lastAt = Math.max(lastAt, now());
         try { return await one(path, ms); } catch (e2) { stat.fails++; throw e2; }
       }
     };
-    const call = (path, ms) => { const p = chain.then(() => run(path, ms)); chain = p.catch(() => {}); return p; };
     call.stat = stat;
     return call;
   }
@@ -1323,12 +1350,354 @@
     return [...out.values()].sort((a, b) => rank(a.line) - rank(b.line) || sk(a.side) - sk(b.side) || a.key.localeCompare(b.key));
   }
 
-  const api = { plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, liveFixRoute, mergeBusAlts, sameBusSeg, railDirPick, dedupeSameTrip, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs };
+  // v2.60.4：站牌格子索引（約 500 公尺一格）。stopsNear(pt) 回傳 radius 內最近的 limit 個站牌 { uid, lat, lon, dist }，
+  // 結果（含同距離時的先後）和逐一掃描 coords 全部站牌、依距離穩定排序完全相同
+  function stopGrid(coords, hav, radius, limit) {
+    const CLAT = 0.0045, CLON = 0.005, cells = new Map();
+    let i = 0;
+    for (const [uid, p] of Object.entries(coords || {})) {
+      const idx = i++;
+      if (!p || p[0] == null || p[1] == null) continue;
+      const k = Math.floor(p[0] / CLAT) + "," + Math.floor(p[1] / CLON);
+      let c = cells.get(k); if (!c) cells.set(k, c = []);
+      c.push([uid, p, idx]);
+    }
+    return pt => {
+      if (!pt || pt.lat == null || pt.lon == null) return [];
+      const la = +pt.lat, lo = +pt.lon;
+      const nLat = Math.ceil(radius / (CLAT * 111000)) + 1, nLon = Math.ceil(radius / (CLON * 111000 * Math.max(0.2, Math.cos(la * Math.PI / 180)))) + 1;
+      const a0 = Math.floor(la / CLAT), b0 = Math.floor(lo / CLON), arr = [];
+      for (let a = a0 - nLat; a <= a0 + nLat; a++) for (let b = b0 - nLon; b <= b0 + nLon; b++) {
+        for (const [uid, p, idx] of cells.get(a + "," + b) || []) {
+          const dist = hav(pt.lat, pt.lon, p[0], p[1]);
+          if (dist <= radius) arr.push({ uid, lat: p[0], lon: p[1], dist, _i: idx });
+        }
+      }
+      arr.sort((x, y) => x.dist - y.dist || x._i - y._i);
+      return arr.slice(0, limit).map(({ uid, lat, lon, dist }) => ({ uid, lat, lon, dist }));
+    };
+  }
+
+  // v2.60.5：軌道班次背景掃描（可於主執行緒或 Web Worker 執行）
+  const havRound = (lat1, lon1, lat2, lon2) => Math.round(hav(lat1, lon1, lat2, lon2));
+  const RP_LINE_ZH = {
+    TRTC: { BL: "板南線", BR: "文湖線", R: "淡水信義線", G: "松山新店線", O: "中和新蘆線", Y: "環狀線", RA: "新北投支線", GA: "小碧潭支線" },
+    NTMC: { Y: "環狀線", LB: "三鶯線" },
+    KRTC: { R: "紅線", O: "橘線", C: "環狀輕軌" },
+    TMRT: { G: "綠線" },
+    KLRT: { C: "環狀輕軌" },
+    TYMC: { A: "機場線" },
+    NTDLRT: { V: "淡海輕軌" },
+    NTALRT: { K: "安坑輕軌" }
+  };
+  const RP_LRT = { KLRT: 1, NTDLRT: 1, NTALRT: 1 };
+  const RP_CHG = () => 3;
+  const RP_K = 4, RP_FP = 800, RP_MS = 60000, RP_WALK_ST = 800, RP_WSPD = 75;
+  const rpBig = op => op === "TRA" || op === "THSR";
+  const rpWalk = m => Math.ceil(m / 100);
+  const pn = x => String(x || "").replace(/臺/g, "台").toLowerCase().replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
+  const rpSameSt = (a, b, d) => a.op === b.op && d < 150 && pn(a.name) === pn(b.name);
+  const rpXfer = (a, b, d) => rpSameSt(a, b, d) ? 3 : 3 + rpWalk(d);
+  const rpTight = (a, b, d) => rpSameSt(a, b, d) ? 1 : Math.max(1, rpWalk(d));
+  const shortType = s => (s || "").replace(/\(.*?\)|（.*?）/g, "").trim();
+  const TRA_TYPE = t => { t = shortType(t); return /^(自強|莒光|復興)$/.test(t) ? t + "號" : t === "區間" ? "區間車" : t; };
+  const rpLabel = t => rpBig(t.op) ? (t.op === "THSR" ? `高鐵${t.no}次` : `${TRA_TYPE(t.type || "").replace(/號$/, "")}${t.no}次`) : ((RP_LINE_ZH[t.op] || {})[t.line] || t.line || "");
+  const rpLL = (lat, lon) => (+lat).toFixed(4) + "," + (+lon).toFixed(4);
+  const tms = s => s ? Date.parse(s + "+08:00") : null;
+
+  function prepareRailPack(net, stations, footData) {
+    const info = new Map(), cell = new Map(), ck = (a, b) => Math.floor(a / 0.004) + "," + Math.floor(b / 0.004);
+    for (const s of (stations || [])) {
+      const k = s.key || (s.op + ":" + s.id);
+      info.set(k, { key: k, op: s.op, id: s.id, name: s.name, lat: s.lat, lon: s.lon });
+      const c = ck(s.lat, s.lon);
+      if (!cell.has(c)) cell.set(c, []);
+      cell.get(c).push(k);
+    }
+    const near = (lat, lon, r) => {
+      const out = [], a = Math.floor(lat / 0.004), b = Math.floor(lon / 0.004);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const k of cell.get((a + i) + "," + (b + j)) || []) {
+          const s = info.get(k), d = havRound(lat, lon, s.lat, s.lon);
+          if (d <= r) out.push([s, d]);
+        }
+      }
+      return out;
+    };
+    const foot = footData instanceof Map ? footData : new Map(footData || []);
+    const S = { info, near, foot };
+    return { net, S };
+  }
+
+  const toWMap = w => {
+    if (!w) return null;
+    if (w instanceof Map) return w;
+    if (Array.isArray(w)) return new Map(w);
+    if (typeof w === "object") return new Map(Object.entries(w));
+    return null;
+  };
+  function rpWalkM(W, p, lat, lon) {
+    const s = havRound(p.lat, p.lon, lat, lon);
+    const m = toWMap(W);
+    const v = m ? m.get(rpLL(lat, lon)) : null;
+    return v != null && v <= s * 4 + 200 ? Math.max(v, s) : s * 1.3;
+  }
+  function rpWalkSrc(W, p, lat, lon) {
+    const s = havRound(p.lat, p.lon, lat, lon);
+    const m = toWMap(W);
+    const v = m ? m.get(rpLL(lat, lon)) : null;
+    return v != null && v <= s * 4 + 200 ? "osrm" : "line";
+  }
+  function rpEnds(S, p) {
+    const out = new Map(), nm = pn(p.name || "");
+    for (const [s, d] of S.near(p.lat, p.lon, RP_FP)) {
+      const same = pn(s.name) === nm && d <= 300;
+      const m = same ? 0 : rpWalk(d) + 3;
+      if (!out.has(s.key) || out.get(s.key) > m) out.set(s.key, m);
+    }
+    return out;
+  }
+  function rpAccess(S, o, isSt, bus, t0, live, W) {
+    const src = new Map(), how = new Map(), put = (k, m, h) => { if (!src.has(k) || src.get(k) > m) { src.set(k, m); how.set(k, h); } };
+    if (isSt) for (const [k, m] of rpEnds(S, o)) put(k, m, { type: "walk", m });
+    else for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+    for (const b of (bus || [])) {
+      const ready = t0 + b.walk * RP_MS, dep = b.dep, lv = b.live;
+      const m = Math.ceil((dep + (b.ride + b.stWalk) * RP_MS - t0) / RP_MS);
+      put(b.key, m, { type: "bus", m, opt: b, dep, live: lv, alts: b.alts || [] });
+    }
+    return { src, how };
+  }
+  function rpEgress(S, d, isSt, bus, W) {
+    const dst = new Map(), how = new Map(), put = (k, m, h) => { if (!dst.has(k) || dst.get(k) > m) { dst.set(k, m); how.set(k, h); } };
+    if (isSt) for (const [k, m] of rpEnds(S, d)) put(k, m, { type: "walk", m });
+    else for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+    for (const b of (bus || [])) {
+      const w = b.wait || 5, m = b.stWalk + w + b.ride + b.walk;
+      put(b.key, m, { type: "bus", m, opt: b, alts: b.alts || [], wait: w });
+    }
+    return { dst, how };
+  }
+  function rpScan(net, S, src, dst, t0, tMax, arriveBy) {
+    const { C, trips } = net, K = RP_K;
+    const R = Array.from({ length: K + 1 }, () => new Map());
+    const A = Array.from({ length: K + 1 }, () => new Map());
+    const T = new Map();
+    for (const [k, m] of src) R[0].set(k, { t: t0 + m * RP_MS, src: m });
+    const best = new Array(K + 1).fill(Infinity);
+    let lo = 0, hi = C.length; while (lo < hi) { const md = (lo + hi) >> 1; if (C[md][0] < t0) lo = md + 1; else hi = md; }
+    const upd = (j, k, lab) => { const o = R[j].get(k); if (!o || lab.t < o.t) R[j].set(k, lab); };
+    for (let i = lo; i < C.length; i++) {
+      const c = C[i]; if (c[0] > tMax) break;
+      const minB = Math.min(...best);
+      if (arriveBy > 0) { if (c[0] > arriveBy) break; }
+      else if (c[0] > minB + 180 * RP_MS) break;
+      const tr = trips[c[2]], from = tr.pts[c[3]][0], to = tr.pts[c[3] + 1][0];
+      let st = T.get(c[2]);
+      for (let j = 0; j < K; j++) {
+        if (!st || !st[j]) { const r = R[j].get(from); if (r && r.t <= c[0]) { if (!st) { st = new Array(K).fill(null); T.set(c[2], st); } st[j] = { at: c[3], prev: r, j }; } }
+        if (!st || !st[j]) continue;
+        let pm = Infinity; for (let q = 1; q <= j + 1; q++) if (best[q] < pm) pm = best[q];
+        if (c[1] >= pm) continue;
+        const o = A[j + 1].get(to); if (o && o.t <= c[1]) continue;
+        const lab = { t: c[1], ti: c[2], b: st[j], a: c[3] + 1, node: to };
+        A[j + 1].set(to, lab);
+        const eg = dst.get(to); if (eg != null && c[1] + eg * RP_MS < best[j + 1]) { best[j + 1] = c[1] + eg * RP_MS; lab.goal = true; }
+        if (j + 1 < K) {
+          upd(j + 1, to, { t: c[1] + RP_CHG(tr.op) * RP_MS, ride: lab, node: to });
+          for (const [w, m] of S.foot.get(to) || []) upd(j + 1, w, { t: c[1] + m * RP_MS, ride: lab, node: w, walk: m });
+        }
+      }
+    }
+    const out = []; let lastT = Infinity;
+    for (let k = 1; k <= K; k++) {
+      if (!(best[k] < lastT)) continue;
+      let pick = null, pt = Infinity;
+      for (const [node, lab] of A[k]) { const eg = dst.get(node); if (eg == null) continue; const t = lab.t + eg * RP_MS; if (t < pt) { pt = t; pick = lab; } }
+      if (!pick) continue;
+      const rides = []; let lab = pick, startWalk = 0;
+      while (lab) {
+        rides.unshift({ ti: lab.ti, b: lab.b.at, a: lab.a, walkTo: 0 });
+        const prev = lab.b.prev;
+        if (prev.src != null) { startWalk = prev.src; break; }
+        if (prev.walk) rides[0].walkFrom = prev.walk;
+        lab = prev.ride;
+      }
+      out.push({ rides, startWalk, endWalk: dst.get(pick.node), arr: pt });
+      lastT = pt;
+    }
+    return out;
+  }
+  function rpTightNote(net, S, J, dst) {
+    const { trips } = net;
+    for (let i = 1; i < J.rides.length; i++) {
+      const p = J.rides[i - 1], P = trips[p.ti].pts[p.a], a = S.info.get(P[0]); if (!a) continue;
+      const src = new Map([[P[0], 1]]);
+      for (const [x, d] of S.near(a.lat, a.lon, RP_FP)) if (x.key !== P[0]) src.set(x.key, rpTight(a, x, d));
+      const res = rpScan(net, S, src, dst, P[1], P[1] + 6 * 3600000);
+      const b = res.sort((x, y) => x.arr - y.arr)[0];
+      if (!b || b.arr > J.arr - 3 * RP_MS) continue;
+      const f = b.rides[0], ft = trips[f.ti], dep = ft.pts[f.b][2], bx = S.info.get(ft.pts[f.b][0]), st = (bx || {}).name || "", slack = Math.round((dep - P[1]) / RP_MS);
+      const rule = ft.pts[f.b][0] === P[0] ? 3 : bx ? rpXfer(a, bx, havRound(a.lat, a.lon, bx.lat, bx.lon)) : 3;
+      if (slack >= rule) continue;
+      return `轉乘提醒：${st} ${hmTpe(dep)} 的${rpLabel(ft)}（下車後只有 ${slack} 分鐘${ft.pts[f.b][0] === P[0] || (bx && rpSameSt(a, bx, 0)) ? "" : "，要出站走過去"}），趕得上可以早 ${Math.round((J.arr - b.arr) / RP_MS)} 分到（${hmTpe(b.arr)}）`;
+    }
+    return null;
+  }
+  function rpRoute(net, S, J, o, d) {
+    const { trips } = net, sec = [], isoT = ms => isoTpe(ms);
+    const stOf = k => S.info.get(k) || { name: k.split(":")[1], lat: null, lon: null };
+    const place = (k, t) => { const s = stOf(k); return { time: isoT(t), place: { name: s.name, type: "station", location: s.lat != null ? { lat: s.lat, lng: s.lon } : {} } }; };
+    const free = (p, t) => ({ time: isoT(t), place: { name: p.name || null, type: "location", location: { lat: p.lat, lng: p.lon } } });
+    const r0 = J.rides[0], t0 = trips[r0.ti], dep0 = t0.pts[r0.b][2];
+    let start = dep0 - J.startWalk * RP_MS;
+    if (J.startWalk) sec.push({ type: "pedestrian", timeSrc: (J.acc && J.acc.src) || "line", departure: free(o, start), arrival: place(t0.pts[r0.b][0], dep0), travelSummary: { duration: J.startWalk * 60, ...(J.acc && J.acc.len ? { length: J.acc.len } : {}) } });
+    let lastArr = null;
+    J.rides.forEach((r, i) => {
+      const t = trips[r.ti], A = t.pts[r.b], B = t.pts[r.a], dep = A[2], arr = B[1];
+      if (i > 0) {
+        const p = J.rides[i - 1], pt = trips[p.ti], P = pt.pts[p.a];
+        const sa = stOf(P[0]), sb = stOf(A[0]);
+        let walkEnd = P[1];
+        if (r.walkFrom && !(sa.op && sa.op === sb.op && pn(sa.name) === pn(sb.name))) {
+          walkEnd = P[1] + r.walkFrom * RP_MS;
+          sec.push({ type: "pedestrian", timeSrc: "line", departure: place(P[0], P[1]), arrival: place(A[0], walkEnd), travelSummary: { duration: r.walkFrom * 60 } });
+        }
+        if (J.earlyUrban && rpBig(t.op) && dep - walkEnd >= 60000) {
+          sec.push({ type: "waiting", departure: place(A[0], walkEnd), arrival: place(A[0], dep), travelSummary: { duration: Math.round((dep - walkEnd) / 1000) } });
+        }
+      }
+      const big = rpBig(t.op);
+      const transport = big
+        ? { mode: t.op, name: t.start && t.dest ? t.start + "-" + t.dest : t.op === "TRA" ? "台鐵" : "高鐵", headsign: t.dest, number: t.no, ...(t.op === "TRA" && t.type ? { trainType: t.type } : {}) }
+        : { mode: RP_LRT[t.op] ? "lrt" : "metro", name: (RP_LINE_ZH[t.op] || {})[t.line] || t.line, headsign: t.dest || "", ...(t.est ? { est: true } : {}) };
+      sec.push({ type: "transit", timeSrc: t.est ? "headway" : "schedule", transport, agency: { agency_id: t.op, name: t.op },
+        departure: place(A[0], dep), arrival: place(B[0], arr),
+        intermediateStops: t.pts.slice(r.b + 1, r.a).map(x => ({ departure: place(x[0], x[2]) })),
+        stopCount: r.a - r.b, travelSummary: { duration: Math.round((arr - dep) / 1000) } });
+      lastArr = { k: B[0], t: arr };
+    });
+    let end = lastArr.t + J.endWalk * RP_MS;
+    if (J.endWalk) sec.push({ type: "pedestrian", timeSrc: (J.egr && J.egr.src) || "line", departure: place(lastArr.k, lastArr.t), arrival: free(d, end), travelSummary: { duration: J.endWalk * 60, ...(J.egr && J.egr.len ? { length: J.egr.len } : {}) } });
+    return { source: "self", start_time: isoT(start), end_time: isoT(end), sections: sec, ...(J.tightNote ? { tightNote: J.tightNote } : {}) };
+  }
+
+  function railPlan(input) {
+    const { net, S, o, d, when, time, fromBus, busReadyMs } = input;
+    const Wo = toWMap(input.Wo);
+    const Wd = toWMap(input.Wd);
+    if (!o || !d || o.lat == null || d.lat == null || !net || !net.C || !net.C.length) return [];
+    const oSt = !!(o && o.st);
+    const dSt = !!(d && d.st);
+    const E = rpEgress(S, d, dSt, [], Wd), dst = E.dst;
+    const accAt = t => rpAccess(S, o, oSt, [], t, when === "now", Wo);
+    {
+      const a0 = accAt(Date.now());
+      if (!a0.src.size || !dst.size) return [];
+      for (const k of a0.src.keys()) {
+        if (dst.has(k) && a0.how.get(k).type === "walk" && E.how.get(k).type === "walk") return [];
+      }
+    }
+    const arrBy = when === "arr" && time ? tms(time) : null;
+    const ref = when === "dep" && time ? tms(time) : (arrBy ? arrBy - 6 * 3600000 : Date.now());
+    const sig = J => J.rides.map(r => r.ti + "." + r.b + "." + r.a).join("|");
+    const got = new Map();
+    let t0 = ref;
+    const bKey = J => net.trips[J.rides[0].ti].pts[J.rides[0].b][0];
+    const aKey = J => { const L = J.rides[J.rides.length - 1]; return net.trips[L.ti].pts[L.a][0]; };
+    const depOf = J => J.acc && J.acc.type === "bus" ? J.acc.dep - J.acc.opt.walk * RP_MS : net.trips[J.rides[0].ti].pts[J.rides[0].b][2] - J.startWalk * RP_MS;
+
+    if (arrBy) {
+      const found = searchArrive({
+        arrBy,
+        lookbackMs: 6 * 3600000,
+        scan(t0s) {
+          const A0 = accAt(t0s);
+          const res = rpScan(net, S, A0.src, dst, t0s, arrBy + 30 * RP_MS, arrBy);
+          return res.map(J => {
+            J.acc = A0.how.get(bKey(J));
+            J.egr = E.how.get(aKey(J));
+            return { dep: depOf(J), arr: J.arr, raw: J, key: sig(J) + "|" + (J.acc && J.acc.type === "bus" ? J.acc.opt.uid + J.acc.dep : "w") };
+          });
+        }
+      });
+      for (const x of found.list) if (x.raw) got.set(x.key, x.raw);
+    } else {
+      for (let n = 0; n < 8; n++) {
+        const A0 = accAt(t0);
+        const res = rpScan(net, S, A0.src, dst, t0, t0 + 10 * 3600000);
+        if (!res.length) break;
+        for (const J of res) {
+          J.acc = A0.how.get(bKey(J));
+          J.egr = E.how.get(aKey(J));
+          got.set(sig(J) + "|" + (J.acc && J.acc.type === "bus" ? J.acc.opt.uid + J.acc.dep : "w"), J);
+        }
+        const dep = Math.min(...res.map(depOf));
+        t0 = Math.max(t0 + RP_MS, dep + RP_MS);
+      }
+    }
+
+    const byLast = new Map(), firstByLast = new Map();
+    for (const J of got.values()) {
+      const L = J.rides[J.rides.length - 1], k = L.ti + "." + L.a + "|" + J.arr;
+      const oL = byLast.get(k); if (!oL || depOf(J) > depOf(oL)) byLast.set(k, J);
+      const oF = firstByLast.get(k); if (!oF || depOf(J) < depOf(oF)) firstByLast.set(k, J);
+    }
+
+    for (const [k, late] of byLast.entries()) {
+      const isFromBus = !!(fromBus || busReadyMs != null || (late.acc && late.acc.type === "bus"));
+      if (!isFromBus) continue;
+      const r0 = late.rides && late.rides[0], t0r = r0 && net.trips[r0.ti];
+      if (!t0r || rpBig(t0r.op) || !late.rides.slice(1).some(r => rpBig(net.trips[r.ti].op))) continue;
+      const readyAtSt = (late.acc && late.acc.type === "bus")
+        ? late.acc.dep + (late.acc.opt.ride + late.acc.opt.stWalk) * RP_MS
+        : (Number.isFinite(busReadyMs) ? busReadyMs : ref) + (late.startWalk || 0) * RP_MS;
+      const waitMs = t0r.pts[r0.b][2] - readyAtSt;
+      const early = firstByLast.get(k);
+      if (waitMs > 10 * RP_MS && early && early.arr <= late.arr && depOf(early) < depOf(late)) {
+        early.earlyUrban = true;
+        byLast.set(k, early);
+      }
+    }
+
+    let list = [...byLast.values()];
+    list = list.filter(J => !list.some(Y => Y !== J && Y.rides.length < J.rides.length && Y.arr <= J.arr + 5 * RP_MS && depOf(Y) >= depOf(J) - 5 * RP_MS));
+    list = arrBy ? list.sort((a, b) => depOf(b) - depOf(a) || a.arr - b.arr).slice(0, 6) : list.sort((a, b) => a.arr - b.arr).slice(0, 6);
+    for (const J of list) { try { J.tightNote = rpTightNote(net, S, J, dst); } catch (e) {} }
+    return list.map(J => rpRoute(net, S, J, o, d));
+  }
+
+  const api = { stopGrid, plan, assemble, parseTpe, isoTpe, hmTpe, serviceBit, walkChunks, citiesFor, sectionsFromBus, walkOnlyRoute, bikeRoute, joinRoutes, syncRouteTimes, applyWalkShape, sortOwn, liveFixRoute, mergeBusAlts, sameBusSeg, railDirPick, dedupeSameTrip, searchArrive, transferHubs, chooseTransfer, walkQueue, walkBatches, walkParse, walkGroupBatches, walkGroupParse, planBranches, shapeLegs, prepareRailPack, railPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.BusDirect = api;
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
+    // v2.60.4：大資料（records／stops／sor）只收一次（cmd "pack"），之後的計算用 packRef 指到那份，不再每次複製
+    const packs = new Map();
+    // v2.60.5：大資料（net／stations／foot）只收一次（cmd "railPack"），之後的計算用 railPackRef 指到那份
+    const railPacks = new Map();
     root.onmessage = e => {
+      const m = e.data || {};
+      if (m.cmd === "pack") { packs.set(m.key, { records: m.records, stops: m.stops, sor: m.sor }); while (packs.size > 4) packs.delete(packs.keys().next().value); return; }
+      if (m.cmd === "railPack") { railPacks.set(m.key, prepareRailPack(m.net, m.stations, m.foot)); while (railPacks.size > 4) railPacks.delete(railPacks.keys().next().value); return; }
+      if (m.cmd === "railPlan" || m.railPackRef) {
+        let out;
+        try {
+          const RP = m.railPackRef ? railPacks.get(m.railPackRef) : null;
+          if (m.railPackRef && !RP) throw new Error("軌道背景資料遺失");
+          const net = RP ? RP.net : m.net;
+          const S = RP ? RP.S : m.S;
+          out = { status: "ok", routes: railPlan({ ...m, net, S }) };
+        } catch (x) {
+          out = { status: "error", message: String(x && x.message || x), routes: [] };
+        }
+        root.postMessage({ id: e.data && e.data.id, out });
+        return;
+      }
       let out;
-      try { out = plan(e.data); }
+      try {
+        const P = m.packRef ? packs.get(m.packRef) : null;
+        if (m.packRef && !P) throw new Error("背景資料遺失");
+        out = plan(P ? { ...m, records: P.records, stops: P.stops, sor: P.sor } : m);
+      }
       catch (x) { out = { status: "error", message: String(x && x.message || x), routes: [] }; }
       root.postMessage({ id: e.data && e.data.id, out });
     };

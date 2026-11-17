@@ -3621,42 +3621,97 @@ function bdOpts(u) {
   for (const [k, [lo, hi]] of Object.entries(BD_LIM)) if (u && u[k] != null && u[k] !== "") { const v = +u[k]; if (!(isFinite(v) && v >= lo && v <= hi)) throw new Error(`${k} 要在 ${lo}～${hi} 之間`); o[k] = v; }
   return o;
 }
-async function bdCity(city, metaAll, signal) {
+// v2.60.4：/bus/sch/meta 同一分鐘內共用一次（公車直達與轉乘兩段各讀一次以前會打兩次）
+let schMetaMem = null;
+function schMetaGet() {
+  if (schMetaMem && Date.now() - schMetaMem.t < 60000) return schMetaMem.p;
+  const p = authedGet("/bus/sch/meta"); schMetaMem = { t: Date.now(), p };
+  p.catch(() => { if (schMetaMem && schMetaMem.p === p) schMetaMem = null; });
+  return p;
+}
+// v2.60.4：讀過的縣市班表留在記憶體（同一版本），公車直達讀過的，轉乘那段直接用，不再從手機資料庫重讀、重組
+const bdCityMem = new Map();
+function bdCity(city, metaAll, signal) {
+  const meta = metaAll && metaAll[city];
+  if (!meta || !(meta.n >= 1) || meta.bytes > BD_MAX_BYTES) return bdCityLoad(city, metaAll, signal);
+  const k = city + "|" + meta.t + "|" + meta.n;
+  if (bdCityMem.has(k)) return bdCityMem.get(k);
+  const p = bdCityLoad(city, metaAll, signal).then(x => { if (!x || !x.recs) bdCityMem.delete(k); return x; }, e => { bdCityMem.delete(k); throw e; });
+  bdCityMem.set(k, p);
+  const tm = setTimeout(() => { if (bdCityMem.get(k) === p) bdCityMem.delete(k); }, 10 * 60000);   // 留 10 分鐘（和站序快取一樣），之後放掉記憶體
+  if (tm && tm.unref) tm.unref();
+  for (const key of [...bdCityMem.keys()]) if (key.startsWith(city + "|") && key !== k) bdCityMem.delete(key);   // 換版就丟舊的
+  return p;
+}
+async function bdCityLoad(city, metaAll, signal) {
   const meta = metaAll && metaAll[city];
   if (!meta || !(meta.n >= 1)) return { city, recs: null, why: "雲端沒有" + city + "的公車時刻表" };
   if (meta.bytes > BD_MAX_BYTES) return { city, recs: null, why: city + "的時刻表太大，試行版不下載" };
   const key = "bd|" + city, c = await IDB.get(key).catch(() => null);
   if (c && c.t === meta.t && c.n === meta.n && Array.isArray(c.recs)) return { city, recs: c.recs, t: meta.t, cached: true };
   const proxy = getProxy(), sess = getSession(); if (!proxy) throw new Error("NO_PROXY"); if (!sess) throw new Error("請重新登入");
-  const shards = [], hdrT = [];
-  for (let k = 0; k < meta.n; k++) {
-    if (signal && signal.aborted) throw new Error("已取消");
+  // v2.60.4：各分片同時下載（以前一片等一片），組裝時照分片順序
+  if (signal && signal.aborted) throw new Error("已取消");
+  const got = await Promise.all(Array.from({ length: meta.n }, async (_, k) => {
     let r;
     try { r = await fetchT(proxy + "/bus/sch/shard?c=" + enc(city) + "&k=" + k, BD_SHARD_MS, { headers: { "x-session": sess.token } }); }
     catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
     if (!r.ok) { const j = await r.json().catch(() => null); throw new Error(r.status === 401 ? "請重新登入" : (j && j.message) || ("時刻表分片 " + r.status)); }
-    hdrT.push(r.headers.get("x-sch-t"));
+    const t = r.headers.get("x-sch-t");
     const buf = new Uint8Array(await r.arrayBuffer());
     if (buf[0] !== 31 || buf[1] !== 139) throw new Error("時刻表分片不是 gzip");
-    shards.push(JSON.parse(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text()));
-  }
+    return [t, JSON.parse(await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text())];
+  }));
+  const hdrT = got.map(x => x[0]), shards = got.map(x => x[1]);
   const recs = BusDirect.assemble(meta, shards, { city, hdrT });   // 換版／不一致整包拒用，不混版；舊的快取也不拿來混
   await IDB.set(key, { t: meta.t, n: meta.n, recs }).catch(() => {});
   return { city, recs, t: meta.t };
 }
-let bdWorker = null, bdSeq = 0;
-function bdRun(msg) {
-  if (typeof Worker === "undefined") return Promise.resolve(BusDirect.plan(msg));
-  if (!bdWorker) bdWorker = new Worker("./busdirect.js");
+let bdWorker = null, bdSeq = 0, bdPacks = new Set(), bdRailPacks = new Set(), rpWorker = null;   // v2.60.5：rpWorker＝軌道專用背景執行緒
+// v2.60.4：pack＝{ key, records, stops, sor }：大資料只傳給背景執行緒一次（之後的計算只帶 packRef），不再每站複製一次
+function bdRun(msg, pack) {
+  if (typeof Worker === "undefined") return Promise.resolve(BusDirect.plan(pack ? { ...msg, records: pack.records, stops: pack.stops, sor: pack.sor } : msg));
+  if (!bdWorker) { bdWorker = new Worker("./busdirect.js"); bdPacks = new Set(); }
   const id = ++bdSeq, w = bdWorker;
+  if (pack) {
+    if (!bdPacks.has(pack.key)) { w.postMessage({ cmd: "pack", key: pack.key, records: pack.records, stops: pack.stops, sor: pack.sor }); bdPacks.add(pack.key); }
+    msg = { ...msg, packRef: pack.key };
+  }
   return new Promise((res, rej) => {
     let tm = null;
     const done = () => { clearTimeout(tm); w.removeEventListener("message", on); w.removeEventListener("error", er); };
     const on = e => { if (!e.data || e.data.id !== id) return; done(); res(e.data.out); };
-    const er = () => { done(); bdWorker = null; try { w.terminate(); } catch (x) {} rej(new Error("背景計算失敗")); };
-    tm = setTimeout(() => { done(); bdWorker = null; try { w.terminate(); } catch (x) {} rej(new Error("計算逾時")); }, BD_CALC_MS);
+    const er = () => { done(); bdWorker = null; bdPacks = new Set(); try { w.terminate(); } catch (x) {} rej(new Error("背景計算失敗")); };
+    tm = setTimeout(() => { done(); bdWorker = null; bdPacks = new Set(); try { w.terminate(); } catch (x) {} rej(new Error("計算逾時")); }, BD_CALC_MS);
     w.addEventListener("message", on); w.addEventListener("error", er);
     w.postMessage({ ...msg, id });
+  });
+}
+// v2.60.5：軌道班次背景計算（大資料 net／stations／foot 只傳一次）
+function rpRailRun(msg, railPack) {
+  if (typeof Worker === "undefined") return Promise.reject(new Error("NO_WORKER"));
+  if (!rpWorker) { rpWorker = new Worker("./busdirect.js"); bdRailPacks = new Set(); }   // 軌道另開一個背景執行緒，和公車背景計算同時跑
+  const id = ++bdSeq, w = rpWorker;
+  if (railPack && railPack.key) {
+    if (!bdRailPacks.has(railPack.key)) {
+      w.postMessage({ cmd: "railPack", key: railPack.key, net: railPack.net, stations: railPack.stations, foot: railPack.foot });
+      bdRailPacks.add(railPack.key);
+    }
+    msg = { ...msg, railPackRef: railPack.key };
+  }
+  return new Promise((res, rej) => {
+    let tm = null;
+    const done = () => { clearTimeout(tm); w.removeEventListener("message", on); w.removeEventListener("error", er); };
+    const on = e => {
+      if (!e.data || e.data.id !== id) return;
+      done();
+      if (e.data.out && e.data.out.status === "error") rej(new Error(e.data.out.message || "背景計算失敗"));
+      else res(e.data.out);
+    };
+    const er = () => { done(); rpWorker = null; bdRailPacks = new Set(); try { w.terminate(); } catch (x) {} rej(new Error("背景計算失敗")); };
+    tm = setTimeout(() => { done(); rpWorker = null; bdRailPacks = new Set(); try { w.terminate(); } catch (x) {} rej(new Error("計算逾時")); }, BD_CALC_MS);
+    w.addEventListener("message", on); w.addEventListener("error", er);
+    w.postMessage({ ...msg, cmd: "railPlan", id });
   });
 }
 const bsorMem = new Map();
@@ -3705,7 +3760,15 @@ function bsorDecode(shards) {
   }
   return { byRoute, stops, oneStop };
 }
-async function bsorCity(city, signal) {
+// v2.60.4：同一個縣市的站序同時只讀一次（公車直達與轉乘兩段同時要時共用）
+const bsorFlight = new Map();
+function bsorCity(city, signal) {
+  if (bsorFlight.has(city)) return bsorFlight.get(city);
+  const p = bsorCityLoad(city, signal).finally(() => { if (bsorFlight.get(city) === p) bsorFlight.delete(city); });
+  bsorFlight.set(city, p);
+  return p;
+}
+async function bsorCityLoad(city, signal) {
   const now = Date.now();
   const mem = bsorMem.get(city);
   if (mem && now >= mem.checkedAt && now - mem.checkedAt < 600000 && mem.byRoute) {
@@ -3835,14 +3898,17 @@ async function busDirectPlan({ o, d, when, time, opts, signal }) {
   if (!o || !d || o.lat == null || d.lat == null) throw new Error("請先選好起點和終點");
   const P = bdOpts(opts);
   const w = when === "arr" ? "arr" : "dep", t = when === "now" || !time ? BusDirect.isoTpe(Date.now()).slice(0, 16) : time;
-  const metaAll = await authedGet("/bus/sch/meta");
+  const metaAll = await schMetaGet();
   const cities = [], miss = [];
   const wantCities = BusDirect.citiesFor(o, d);
-  for (const c of wantCities) { const x = await bdCity(c, metaAll, signal); if (x.recs) cities.push(x); else miss.push(x.why); }
+  // v2.60.4：各縣市的班表、站序同時下載；結果照縣市順序組，和以前相同
+  const cityX = await Promise.all(wantCities.map(c => bdCity(c, metaAll, signal)));
+  for (const x of cityX) { if (x.recs) cities.push(x); else miss.push(x.why); }
   const recs = cities.flatMap(x => x.recs), stops = {}, sorMap = {}, bsorMeta = [];
   let bsorLoaded = false, sorOneStop = 0;
-  for (const x of cities) {
-    const b = await bsorCity(x.city, signal).catch(() => null);
+  const bsorAll = await Promise.all(cities.map(x => bsorCity(x.city, signal).catch(() => null)));
+  for (const [ci, x] of cities.entries()) {
+    const b = bsorAll[ci];
     if (b && b.byRoute) {
       bsorLoaded = true;
       sorOneStop += b.oneStop || 0;
@@ -6870,7 +6936,8 @@ async function authedGet(path, ms = 30000) {
 }
 // v2.51.4：所有 /walk 走同一條佇列（busdirect.js walkQueue）：間隔 ≥1.1 秒，429 busy／502 隔 1.1 秒重試一次
 let walkQ = null;
-function walkGet(path, ms = 9000) { if (!walkQ) walkQ = BusDirect.walkQueue(authedGet, { gap: 1100 }); return walkQ(path, ms); }
+// v2.60.5：步行查詢的開始時間相隔 1.1 秒、不等上一筆回來；同時最多 3 筆
+function walkGet(path, ms = 9000) { if (!walkQ) walkQ = BusDirect.walkQueue(authedGet, { gap: 1100, maxInFlight: 3 }); return walkQ(path, ms); }
 const walkStat = () => (walkQ ? { ...walkQ.stat } : { calls: 0, out: 0, retries: 0, fails: 0 });
 if (typeof window !== "undefined") window.walkStat = walkStat;
 const PLAN_MODE = s => { const m = ((s.transport || {}).mode || "") + " " + ((s.transport || {}).category || "");
@@ -6945,6 +7012,21 @@ const planIsStation = p => !!p && !p.here && (!!p.st || /北捷|新北捷|機捷
 // 出站轉乘依直線距離：3 分＋每 100 公尺 1 分（200 公尺 5 分、300 公尺 6 分…，最遠 800 公尺）。
 // 轉乘時間內就開走、但趕得上會更早到的車：另外算一次，在路線上用小字提醒（tightNote）。
 const RP_OPS = { 4: ["TRA"], 3: ["THSR"], 6: ["TRTC", "NTMC", "TYMC", "KRTC", "TMRT"], 7: ["KLRT", "NTDLRT", "NTALRT"] };
+// v2.60.4：規劃時只下載、只算起訖點附近會用到的系統：台鐵、高鐵一定要（跨縣市）；捷運、輕軌要起點或終點 30 公里內有它的車站
+// （例：臺北出發、臺北抵達不抓高雄捷運、台中捷運、高雄輕軌）。ownPlan 開始時決定，這次規劃（含轉乘站、即時校正改接）都用同一組；車站清單讀不到就不篩
+const RP_REGION_M = 30000;
+let RP_REGION = null;
+async function rpRegionOf(o, d) {
+  const all = await loadRailStations().catch(() => null);
+  if (!all || !all.length) return null;
+  const ops = new Set(["TRA", "THSR"]);
+  for (const s of all) if (s && s.op && !ops.has(s.op) && s.lat != null && (haversine(o.lat, o.lon, s.lat, s.lon) <= RP_REGION_M || haversine(d.lat, d.lon, s.lat, s.lon) <= RP_REGION_M)) ops.add(s.op);
+  return { ops };
+}
+function rpOpsOf(modes) {
+  const ops = [...new Set((modes || []).flatMap(m => RP_OPS[m] || []))];
+  return RP_REGION && RP_REGION.ops ? ops.filter(op => RP_REGION.ops.has(op)) : ops;
+}
 const RP_LINE_ZH = { TRTC: { BL: "板南線", BR: "文湖線", R: "淡水信義線", G: "松山新店線", O: "中和新蘆線", Y: "環狀線", RA: "新北投支線", GA: "小碧潭支線" }, NTMC: { Y: "環狀線", LB: "三鶯線" },
   KRTC: { R: "紅線", O: "橘線", C: "環狀輕軌" }, TMRT: { G: "綠線" }, KLRT: { C: "環狀輕軌" }, TYMC: { A: "機場線" }, NTDLRT: { V: "淡海輕軌" }, NTALRT: { K: "安坑輕軌" } };
 const RP_LRT = { KLRT: 1, NTDLRT: 1, NTALRT: 1 };
@@ -6987,9 +7069,13 @@ function rpDay(ops, day) {
   const key = ops.join(",") + "|" + isoDay(day); if (rpDayMem[key]) return rpDayMem[key];
   return rpDayMem[key] = (async () => {
     const base = tpeMid(day), C = [], trips = [];
-    for (const op of ops) {
+    // v2.60.4：各系統的時刻表同時下載（以前一個等一個）；組班次時仍照 ops 的順序，結果和以前相同
+    const pre = ops.map(op => rpBig(op) ? railTrains(op, day).catch(() => null)
+      : Promise.all([rpHwTrips(op, day).catch(() => []), tripIdx(op).catch(() => null).then(async X => X ? { X, ok: await tripDayGroups(X, day) } : null)]));
+    pre.forEach(p => p.catch(() => {}));
+    for (const [oi, op] of ops.entries()) {
       if (rpBig(op)) {
-        const P = await railTrains(op, day).catch(() => null); if (!P) continue;
+        const P = await pre[oi]; if (!P) continue;
         for (const t of P.trains) {
           if (t.pts.length < 2) continue;
           const ti = trips.length;
@@ -6997,13 +7083,14 @@ function rpDay(ops, day) {
           for (let k = 0; k + 1 < t.pts.length; k++) C.push([base + t.pts[k][2] * RP_MS, base + t.pts[k + 1][1] * RP_MS, ti, k]);
         }
       } else {
-        for (const h of await rpHwTrips(op, day).catch(() => [])) {   // 只有班距的線：估算班次
+        const [hwList, XO] = await pre[oi];
+        for (const h of hwList) {   // 只有班距的線：估算班次
           const ti = trips.length;
           trips.push({ op, line: h.line, dest: h.dest, est: true, pts: h.p.map(p => [op + ":" + p[0], base + p[1] * RP_MS, base + p[1] * RP_MS, true]) });
           for (let k = 0; k + 1 < h.p.length; k++) C.push([base + h.p[k][1] * RP_MS, base + h.p[k + 1][1] * RP_MS, ti, k]);
         }
-        const X = await tripIdx(op).catch(() => null); if (!X) continue;
-        const ok = await tripDayGroups(X, day);
+        if (!XO) continue;
+        const { X, ok } = XO;
         for (const t of X.trips) {
           if (!ok.has(t.g.sd) || t.p.length < 2) continue;
           const ti = trips.length;
@@ -7130,6 +7217,9 @@ async function walkCacheGet(k) {
   if (!v || !Number.isFinite(v.t) || Date.now() - v.t >= WALK_TTL || !Number.isFinite(v.m)) return null;
   return v;
 }
+// v2.60.4：YouBike 那兩個矩陣查詢的原始結果（durations／distances），和步行快取一樣存 7 天
+function ybLegGet(k) { return IDB.get("wy|" + k).then(v => v && Number.isFinite(v.t) && Date.now() - v.t < WALK_TTL && v.r && v.r.ok ? v.r : null).catch(() => null); }
+function ybLegSet(k, r) { IDB.set("wy|" + k, { t: Date.now(), r: { ok: true, durations: r.durations, distances: r.distances } }).catch(() => {}); }
 function walkCacheSet(k, m, s) { return IDB.set("wk|" + k, { t: Date.now(), m, ...(Number.isFinite(s) ? { s } : {}) }).catch(() => {}); }
 // p：起點 {lat,lon}；pts：[[lat,lon]] → Map(「lat,lon」→ 公尺）
 async function rpWalkMap(p, pts) {
@@ -7394,7 +7484,7 @@ async function railPlan(p) {
   const dSt = planIsStation(d);
   if (oSt && dSt) return railPlanRail(p).catch(e => { console.warn("railPlanRail", e); return []; });
   // 起訖點不是車站：先抓附近公車＋車站，問實際步行距離（OSRM），再排路線
-  const ops = [...new Set((modes || []).flatMap(m => RP_OPS[m] || []))];
+  const ops = rpOpsOf(modes);
   const [S, Bo, Bd] = await Promise.all([ops.length ? rpStations(ops).catch(() => null) : null, !oSt && useBus ? rpBusNear(o).catch(() => null) : null, !dSt && useBus ? rpBusNear(d).catch(() => null) : null]);
   const WB = await rpWalkBoth(o, d, oSt ? [] : rpWalkPts(S, o, Bo), dSt ? [] : rpWalkPts(S, d, Bd).concat(Bo && when !== "arr" ? rpWalkPts(null, o, Bo, d) : []), !!p.wctx).catch(() => null);
   const Wo = oSt || !WB ? null : WB.Wo, Wd = dSt || !WB ? null : WB.Wd;
@@ -7404,10 +7494,18 @@ async function railPlan(p) {
   if (Bo && when !== "arr" && !p.skipDirect) { try { direct = rpDirect(Bo, o, d, when === "dep" && time ? tms(time) : Date.now(), when === "now", Wo, Wd); } catch (e) { console.warn("rpDirect", e); } }
   return rail.concat(direct);
 }
-async function railPlanRail({ o, d, modes, when, time, Bo: Bo0, Bd: Bd0, Wo, Wd, fromBus, busReadyMs }) {
-  const ops = [...new Set((modes || []).flatMap(m => RP_OPS[m] || []))]; if (!ops.length) return [];
+async function railPlanRail({ o, d, modes, when, time, Bo: Bo0, Bd: Bd0, Wo, Wd, fromBus, busReadyMs, railPack }) {
+  const ops = rpOpsOf(modes); if (!ops.length) return [];
   if (o.lat == null || d.lat == null) return [];
   const oSt = planIsStation(o), dSt = planIsStation(d), useBus = (modes || []).includes(5) && !arguments[0].skipBus;
+  if (!useBus && typeof Worker !== "undefined" && railPack) {
+    try {
+      const res = await rpRailRun({ o: { lat: +o.lat, lon: +o.lon, name: o.name, st: oSt }, d: { lat: +d.lat, lon: +d.lon, name: d.name, st: dSt }, when, time, Wo: Wo ? (Wo instanceof Map ? Array.from(Wo.entries()) : Wo) : null, Wd: Wd ? (Wd instanceof Map ? Array.from(Wd.entries()) : Wd) : null, fromBus, busReadyMs }, railPack);
+      if (res && res.routes) return res.routes;
+    } catch (e) {
+      console.warn("rpRailRun fallback to main thread", e);
+    }
+  }
   const S = await rpStations(ops);
   const [Bo, Bd] = await Promise.all([!oSt && useBus ? (Bo0 !== undefined ? Bo0 : rpBusNear(o).catch(() => null)) : null, !dSt && useBus ? (Bd0 !== undefined ? Bd0 : rpBusNear(d).catch(() => null)) : null]);
   const accBus = Bo ? rpBusOpts(Bo, S, o, true, Wo) : [], E = rpEgress(S, d, dSt, Bd ? rpBusOpts(Bd, S, d, false, Wd) : [], Wd), dst = E.dst;
@@ -7498,9 +7596,28 @@ async function ownWalkRoute(o, d, t0, wctx) {
   }
   return BusDirect.walkOnlyRoute(o, d, isoTpe(t0), isoTpe(t0 + sec * 1000), Math.round(sec), Math.round(meters || 0), src);
 }
+// v2.60.4：規劃用的 YouBike 站點清單（全台約 6.4MB）同一段時間只抓一次、大家共用：10 分鐘內用記憶體或手機資料庫裡那份。
+// 規劃只用站名與座標；首頁 YouBike 的車位數照舊由 youbikeFeed 依原本的來源與頻率更新
+const YB_LIST_TTL = 10 * 60000;
+let ybListMem = null, ybListP = null;
+function ybListSlim(list) { return (list || []).map(s => s ? { lat: s.lat, lng: s.lng, name_tw: s.name_tw } : s); }
+async function ybPlanList() {
+  const now = Date.now();
+  if (ybFeedSnap && now - ybFeedSnap.t < YB_LIST_TTL && Array.isArray(ybFeedSnap.list)) return ybFeedSnap.list;
+  if (ybListMem && now - ybListMem.t < YB_LIST_TTL) return ybListMem.list;
+  if (ybListP) return ybListP;
+  return ybListP = (async () => {
+    const c = await IDB.get("ybst").catch(() => null);
+    if (c && Number.isFinite(c.t) && Date.now() - c.t < YB_LIST_TTL && Array.isArray(c.list)) { ybListMem = c; return c.list; }
+    await youbikeFeed(false);
+    const list = (ybFeedSnap && ybFeedSnap.list) || [];
+    if (list.length) { ybListMem = { t: ybFeedSnap.t, list }; IDB.set("ybst", { t: ybFeedSnap.t, list: ybListSlim(list) }).catch(() => {}); }
+    return list;
+  })().finally(() => { ybListP = null; });
+}
 async function ownBikeRoute(o, d, t0, req, wctx) {
   let list = [];
-  try { req.bikeFeed++; await youbikeFeed(false); list = (ybFeedSnap && ybFeedSnap.list) || []; }
+  try { req.bikeFeed++; list = (await ybPlanList()) || []; }
   catch (e) { console.warn("own bike feed", e); return null; }
   const near = (p) => (list || []).filter(s => s && s.lat != null && s.lng != null && haversine(p.lat, p.lon, +s.lat, +s.lng) <= 800)
     .sort((a, b) => haversine(p.lat, p.lon, +a.lat, +a.lng) - haversine(p.lat, p.lon, +b.lat, +b.lng));
@@ -7512,14 +7629,21 @@ async function ownBikeRoute(o, d, t0, req, wctx) {
   let walkO = line(o, { lat: +A.lat, lon: +A.lng }), walkD = line(d, { lat: +B.lat, lon: +B.lng }), ride = bikeLine(A, B);
   if (getSession()) {
     const r4 = n => Number(n).toFixed(4);
-    const foot = await walkGet(`/walk?mode=foot&q=table&pts=${r4(o.lat)},${r4(o.lon)};${r4(A.lat)},${r4(A.lng)};${r4(B.lat)},${r4(B.lng)};${r4(d.lat)},${r4(d.lon)}&src=0,2&dst=1,3`, 9000).catch(() => null);
+    // v2.60.4：步行（起點→借車站、還車站→終點）和騎車兩個查詢同時送（步行佇列的 1.1 秒節流照舊）；查到的結果用座標小數 4 位（約 10 公尺）當鍵存在手機，
+    // 下次同一組（或只差幾公尺）直接用，不再排隊。存的是原值，結果和重查相同
+    const kF = `${rpLL(o.lat, o.lon)};${rpLL(A.lat, A.lng)};${rpLL(B.lat, B.lng)};${rpLL(d.lat, d.lon)}`, kB = `${rpLL(A.lat, A.lng)};${rpLL(B.lat, B.lng)}`;
+    const [cF, cB] = await Promise.all([ybLegGet("f|" + kF), ybLegGet("b|" + kB)]);
+    const [foot, bk] = await Promise.all([
+      cF ? Promise.resolve(cF) : walkGet(`/walk?mode=foot&q=table&pts=${r4(o.lat)},${r4(o.lon)};${r4(A.lat)},${r4(A.lng)};${r4(B.lat)},${r4(B.lng)};${r4(d.lat)},${r4(d.lon)}&src=0,2&dst=1,3`, 9000).catch(() => null),
+      cB ? Promise.resolve(cB) : walkGet(`/walk?mode=bike&q=table&pts=${r4(A.lat)},${r4(A.lng)};${r4(B.lat)},${r4(B.lng)}&src=0&dst=1`, 9000).catch(() => null)]);
+    if (!cF && foot && foot.ok) ybLegSet("f|" + kF, foot);
+    if (!cB && bk && bk.ok) ybLegSet("b|" + kB, bk);
     const cell = (row, col) => foot && foot.ok && foot.durations && foot.durations[row] && foot.durations[row][col];
     const dist = (row, col) => foot && foot.distances && foot.distances[row] && foot.distances[row][col];
     if (typeof cell(0, 0) === "number") walkO = { sec: cell(0, 0), m: typeof dist(0, 0) === "number" ? dist(0, 0) : walkO.m, src: "osrm" };
     if (typeof cell(1, 1) === "number") walkD = { sec: cell(1, 1), m: typeof dist(1, 1) === "number" ? dist(1, 1) : walkD.m, src: "osrm" };
     // v2.51.4：同一個矩陣裡已有起點→終點（sources 0 × destinations 3），只步行直接用，不另外打
     if (wctx && !wctx.od && typeof cell(0, 1) === "number" && Number.isFinite(cell(0, 1)) && typeof dist(0, 1) === "number" && Number.isFinite(dist(0, 1))) wctx.od = { s: cell(0, 1), m: Math.round(dist(0, 1)) };
-    const bk = await walkGet(`/walk?mode=bike&q=table&pts=${r4(A.lat)},${r4(A.lng)};${r4(B.lat)},${r4(B.lng)}&src=0&dst=1`, 9000).catch(() => null);
     const bd = bk && bk.ok && bk.durations && bk.durations[0] && bk.durations[0][0];
     const bm = bk && bk.distances && bk.distances[0] && bk.distances[0][0];
     if (typeof bd === "number") ride = { sec: bd, m: typeof bm === "number" ? bm : ride.m, src: "osrm" };
@@ -7527,15 +7651,13 @@ async function ownBikeRoute(o, d, t0, req, wctx) {
   return BusDirect.bikeRoute(o, d, { name: A.name_tw || "YouBike", lat: +A.lat, lon: +A.lng }, { name: B.name_tw || "YouBike", lat: +B.lat, lon: +B.lng }, { startIso: isoTpe(t0), walkO, ride, walkD });
 }
 async function bdPack(o, d) {
-  const metaAll = await authedGet("/bus/sch/meta");
-  const cities = [];
-  for (const c of BusDirect.citiesFor(o, d)) {
-    const x = await bdCity(c, metaAll);
-    if (x.recs) cities.push(x);
-  }
+  // v2.60.4：公車直達已讀過的 meta、各縣市班表與站序直接共用（記憶體），不重讀；沒讀過的同時下載
+  const metaAll = await schMetaGet();
+  const cities = (await Promise.all(BusDirect.citiesFor(o, d).map(c => bdCity(c, metaAll)))).filter(x => x.recs);
   const recs = cities.flatMap(x => x.recs), stops = {}, sorMap = {};
-  for (const x of cities) {
-    const b = await bsorCity(x.city).catch(() => null);
+  const bsorAll = await Promise.all(cities.map(x => bsorCity(x.city).catch(() => null)));
+  for (const [ci, x] of cities.entries()) {
+    const b = bsorAll[ci];
     if (b && b.byRoute) {
       for (const [uid, pos] of Object.entries(b.stops || {})) if (!stops[uid]) stops[uid] = [pos[0], pos[1], pos[2] || ""];
       for (const [ruid, list] of Object.entries(b.byRoute)) sorMap[ruid] = (sorMap[ruid] || []).concat(list);
@@ -7583,17 +7705,8 @@ async function ownBusRail(o, d, modes, when, time, wctx) {
     const sl = pack.sorMap && (pack.sorMap[r.u] || pack.sorMap[r.n]);
     if (Array.isArray(sl)) for (const x of sl) for (const s of (x && x.Stops) || []) if (s && s.StopUID && s.P && !stopCoords[s.StopUID]) stopCoords[s.StopUID] = s.P;
   }
-  const stopsNear = pt => {
-    if (!pt || pt.lat == null || pt.lon == null) return [];
-    const arr = [];
-    for (const [uid, p] of Object.entries(stopCoords)) {
-      if (!p || p[0] == null || p[1] == null) continue;
-      const dist = haversine(pt.lat, pt.lon, p[0], p[1]);
-      if (dist <= 800) arr.push({ uid, lat: p[0], lon: p[1], dist });
-    }
-    return arr.sort((a, b) => a.dist - b.dist).slice(0, 24);
-  };
-  const ops = [...new Set(railModes.flatMap(m => RP_OPS[m] || []))];
+  const stopsNear = BusDirect.stopGrid(stopCoords, haversine, 800, 24);   // v2.60.4：格子索引（約 500 公尺一格），結果和逐一掃描全部站牌相同
+  const ops = rpOpsOf(railModes);
   const S = ops.length ? await rpStations(ops).catch(() => null) : null;
   const oSt = planIsStation(o), dSt = planIsStation(d);
   const oNearSt = (!oSt && S) ? S.near(o.lat, o.lon, RP_WALK_ST).map(([x]) => [x.lat, x.lon]) : [];
@@ -7641,11 +7754,13 @@ async function ownBusRail(o, d, modes, when, time, wctx) {
     if (ms != null) probeTime = BusDirect.isoTpe(ms - 2 * 3600000).slice(0, 16);
   }
   const opts = { walkRadiusM: 800, walkMpm: 70, walkFactor: 1.3, freqPolicy: "halfHeadway", maxResults: 1, holidays: pack.holidays };
+  // v2.60.4：各轉乘站用的班表都一樣：只篩一次，只傳給背景執行緒一次（packRef），不再每站複製 stopCoords／sorMap
+  const uids = new Set(hubs.access.concat(hubs.egress).map(h => h.uid).filter(Boolean));
+  const recsU = uids.size ? pack.recs.filter(r => uids.has(r.u)) : pack.recs;
+  const bdP = { key: "br" + (++bdSeq) + "|" + Date.now(), records: recsU.length ? recsU : pack.recs, stops: stopCoords, sor: pack.sorMap };
   const busTo = async (from, to, t, nFrom = N_OD, nTo = N_HUB) => {
-    const uids = new Set(hubs.access.concat(hubs.egress).map(h => h.uid).filter(Boolean));
-    const recs = uids.size ? pack.recs.filter(r => uids.has(r.u)) : pack.recs;
     const wt = await walkTable(from, to, stopsNear(from).slice(0, nFrom), stopsNear(to).slice(0, nTo), false).catch(() => null);
-    const out = await bdRun({ records: recs.length ? recs : pack.recs, stops: stopCoords, o: { lat: +from.lat, lon: +from.lon, name: from.name }, d: { lat: +to.lat, lon: +to.lon, name: to.name }, when: "dep", time: t, opts, sor: pack.sorMap, walkTable: wt, live: null, nowMs: Date.now() });
+    const out = await bdRun({ o: { lat: +from.lat, lon: +from.lon, name: from.name }, d: { lat: +to.lat, lon: +to.lon, name: to.name }, when: "dep", time: t, opts, walkTable: wt, live: null, nowMs: Date.now() }, bdP);
     return out && out.routes && out.routes[0];
   };
   const cand = [];
@@ -7659,23 +7774,60 @@ async function ownBusRail(o, d, modes, when, time, wctx) {
     cand.push({ id: via, end: cleaned.end, transfers: cleaned.transfers || 0, walkMax, route: cleaned, via });
     meta.tried.push(via);
   };
-  for (const h of hubs.access.slice(0, 6)) {
+  // v2.60.5：大資料 net／stations／foot 在主執行緒算好一次，只傳給背景執行緒一次（railPack）
+  let railPack = null;
+  if (typeof rpDay === "function" && typeof rpStations === "function" && typeof rpMerge === "function" && ops && ops.length) {
+    try {
+      const parseT = typeof tms === "function" ? tms : (s => s ? Date.parse(s + "+08:00") : null);
+      const refTime = when === "dep" && time ? parseT(time) : (when === "arr" && time ? parseT(time) - 6 * 3600000 : Date.now());
+      const day = typeof tpeSvcDay === "function" ? tpeSvcDay(refTime) : null;
+      if (day) {
+        const late = new Date(refTime + 8 * 3600000).getUTCHours();
+        const needNext = late >= 19 || late < 3 || when === "arr";
+        const dayStr = typeof isoDay === "function" && day instanceof Date ? isoDay(day) : String(day);
+        const key = "rp|" + ops.join(",") + "|" + dayStr + (needNext ? "+1" : "");
+        const nextDay = typeof dayAdd === "function" ? dayAdd(day, 1) : null;
+        const [S, A, B] = await Promise.all([
+          rpStations(ops),
+          rpDay(ops, day),
+          needNext && nextDay ? rpDay(ops, nextDay) : null
+        ]);
+        if (S && A) {
+          const net = rpMerge(A, B);
+          railPack = { key, net, stations: Array.from(S.info.values()), foot: Array.from(S.foot.entries()) };
+        }
+      }
+    } catch (e) {}
+  }
+  // v2.60.4：10 個轉乘站同時算（以前一站等一站）；結果照原本的站序放進候選，挑選結果和以前相同
+  const accessP = hubs.access.slice(0, 6).map(async h => {
     const dest = stPoint(h.station);
     const br = await busTo(o, dest, probeTime).catch(() => null);
-    if (!br) continue;
+    if (!br) return null;
     br._o = o; br._d = dest;
-    const rail = await railPlanRail({ o: dest, d, modes: railModes, when: "dep", time: String(br.endIso || probeTime).slice(0, 16), Wo: WB ? WB.Wo : null, Wd: WB ? WB.Wd : null, fromBus: true, busReadyMs: br.end, skipBus: true }).catch(() => []);
+    const rail = await railPlanRail({ o: dest, d, modes: railModes, when: "dep", time: String(br.endIso || probeTime).slice(0, 16), Wo: WB ? WB.Wo : null, Wd: WB ? WB.Wd : null, fromBus: true, busReadyMs: br.end, skipBus: true, railPack }).catch(() => []);
+    return { h, dest, br, rail };
+  });
+  const egressP = hubs.egress.slice(0, 4).map(async h => {
+    const from = stPoint(h.station);
+    const rail = await railPlanRail({ o, d: from, modes: railModes, when: when === "arr" ? "arr" : "dep", time: when === "arr" ? busTime : probeTime, Wo: WB ? WB.Wo : null, Wd: WB ? WB.Wd : null, skipBus: true, railPack }).catch(() => []);
+    const rr = rail && rail[0];
+    if (!rr) return null;
+    const br = await busTo(from, d, String(rr.end_time || probeTime).slice(0, 16), N_HUB, N_OD).catch(() => null);
+    return { h, from, rr, br };
+  });
+  const [accR, egrR] = await Promise.all([Promise.all(accessP), Promise.all(egressP)]);
+  for (const x of accR) {
+    if (!x) continue;
+    const { h, br, rail } = x;
     for (const rr of (rail || []).slice(0, 2)) {
       const leadWalk = rr.sections && rr.sections[0] && rr.sections[0].type === "pedestrian";
       pushJoined(br, rr, h.station.name, !leadWalk);
     }
   }
-  for (const h of hubs.egress.slice(0, 4)) {
-    const from = stPoint(h.station);
-    const rail = await railPlanRail({ o, d: from, modes: railModes, when: when === "arr" ? "arr" : "dep", time: when === "arr" ? busTime : probeTime, Wo: WB ? WB.Wo : null, Wd: WB ? WB.Wd : null, skipBus: true }).catch(() => []);
-    const rr = rail && rail[0];
-    if (!rr) continue;
-    const br = await busTo(from, d, String(rr.end_time || probeTime).slice(0, 16), N_HUB, N_OD).catch(() => null);
+  for (const x of egrR) {
+    if (!x) continue;
+    const { h, from, rr, br } = x;
     if (!br) continue;
     br._o = from; br._d = d;
     const tailWalk = br && true;
@@ -7696,7 +7848,7 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
   if (!o || !d || o.lat == null || d.lat == null) return [];
   const prevNo = typeof window !== "undefined" ? window.JISU_NO_TDX : 0;
   if (typeof window !== "undefined") window.JISU_NO_TDX = 1;
-  const w0 = walkStat();
+  const w0 = walkStat(), prevRegion = RP_REGION;
   try {
   const modesA = modes || [];
   const t0 = when === "dep" && time ? tms(time) : when === "arr" && time ? tms(time) : Date.now();
@@ -7710,6 +7862,7 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
     sorted.walkOnly = true;
     return done(sorted);
   }
+  RP_REGION = await rpRegionOf(o, d);   // v2.60.4：這次規劃只下載、只算起訖點附近會用到的軌道系統
   const wctx = { od: null };
   const railP = br.rail
     ? railPlan({ o, d, modes: modesA, when, time, skipDirect: true, skipBus: true, wctx }).then(l => planClean(l, !!yb).map(rpTag)).catch(e => { console.warn("own rail", e); return []; })
@@ -7724,32 +7877,37 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
       return planClean((B.routes || []).map(r => BusDirect.sectionsFromBus(r, o, d)), false);
     }).catch(e => { console.warn("own bus", e); return []; })
     : Promise.resolve([]);
-  const [rail, bus] = await Promise.all([railP, busP]);
+  // v2.60.4：公車↔軌道轉乘、YouBike 和軌道、公車直達同時開始算（以前一段等一段）
+  const stitchP = br.stitch ? ownBusRail(o, d, modesA, when, time, wctx).catch(e => { console.warn("own stitch", e); return null; }) : Promise.resolve(null);
+  const bikeP = br.bike ? ownBikeRoute(o, d, t0, req, wctx).catch(e => { console.warn("own bike", e); return null; }) : Promise.resolve(null);
+  const [rail, bus, sr] = await Promise.all([railP, busP, stitchP]);
   let stitched = [], hubMeta = null;
-  if (br.stitch) {
-    try {
-      const sr = await ownBusRail(o, d, modesA, when, time, wctx);
-      stitched = sr.routes || [];
-      hubMeta = sr.meta;
-    } catch (e) { console.warn("own stitch", e); }
+  if (sr) { stitched = sr.routes || []; hubMeta = sr.meta; }
+  // v2.60.4：即時校正不等 YouBike／步行。YouBike、步行方案沒有公車段，不會被挑去校正，只可能把公車方案擠出前 8 名；
+  // 所以先對「不含 YouBike／步行時」前 6 條要校正的方案開始查（一定包含最後真正要校正的那幾條），等全部方案到齊再照原規則挑，只採用挑中的
+  const near = r => (r.legs || []).some(l => l.kind === "transit" && l.mode === "bus" && (tms(l.from.time) - Date.now()) <= 90 * 60000 && (tms(l.from.time) - Date.now()) > -3 * 60000);
+  const rides = BusDirect.mergeBusAlts(rail.concat(bus, stitched));
+  const memo = new Map(); memo.calls = { n: 0 };
+  const spec = new Map();
+  if (when === "now") for (const r of BusDirect.sortOwn(rides.slice(), when, null).filter(near).slice(0, 6)) {
+    const p = planLiveFix({ route: r, modes: modesA, memo }).then(x => ({ route: x.route }), e => ({ err: e }));
+    spec.set(r, p);
   }
   let bike = [];
-  if (br.bike) {   // YouBike 先查：它的步行矩陣順便帶回起點→終點，只步行就不用再打
-    const raw = await ownBikeRoute(o, d, t0, req, wctx).catch(e => { console.warn("own bike", e); return null; });
-    if (raw) bike = planClean([raw], true);
-  }
+  const rawBike = await bikeP;
+  if (rawBike) bike = planClean([rawBike], true);
   const walkRaw = await ownWalkRoute(o, d, t0, wctx).catch(() => null);
   const walkL = walkRaw ? planClean([walkRaw], false) : [];
   // v2.51.6：同一段公車有多條路線能到就合併成一條方案；現在出發時，90 分內要搭的公車用即時校正出發時間（只查公車、同一路線只打一次），再依校正後的抵達排序
   let all = BusDirect.mergeBusAlts(rail.concat(bus, stitched, bike, walkL));
   if (when === "now") {
-    const memo = new Map(); memo.calls = { n: 0 };
-    const near = r => (r.legs || []).some(l => l.kind === "transit" && l.mode === "bus" && (tms(l.from.time) - Date.now()) <= 90 * 60000 && (tms(l.from.time) - Date.now()) > -3 * 60000);
     const pre = BusDirect.sortOwn(all.slice(), when, null);
     const pick = new Set(pre.filter(near).slice(0, 6));
     all = await Promise.all(all.map(async r => {
       if (!pick.has(r)) return r;
-      try { const x = await planLiveFix({ route: r, modes: modesA, memo }); return x.route; } catch (e) { if (isRate(e)) throw e; console.warn("live fix", e); return r; }
+      const x = spec.has(r) ? await spec.get(r) : await planLiveFix({ route: r, modes: modesA, memo }).then(v => ({ route: v.route }), e => ({ err: e }));
+      if (x.err) { if (isRate(x.err)) throw x.err; console.warn("live fix", x.err); return r; }
+      return x.route;
     }));
     req.live += memo.calls.n;
   }
@@ -7759,6 +7917,7 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
   return done(sorted);
   } finally {
     if (typeof window !== "undefined") window.JISU_NO_TDX = prevNo;
+    RP_REGION = prevRegion;
   }
 }
 async function planRoutes({ o, d, modes, yb, walk, when, time, onLive, more }) {
@@ -8819,7 +8978,7 @@ function rpDayLoaded(ops, ms) {
 async function liveRecatch(R, rc, modes) {
   const l = R.legs[rc.at];
   if (!l || l.kind !== "transit" || l.mode === "bus") return { ok: false, why: "bus" };
-  const railModes = (modes || []).filter(m => m !== 5), ops = [...new Set(railModes.flatMap(m => RP_OPS[m] || []))];
+  const railModes = (modes || []).filter(m => m !== 5), ops = rpOpsOf(railModes);
   if (!ops.length || !rpDayLoaded(ops, rc.readyMs)) return { ok: false, why: "not-loaded" };
   const last = R.legs[R.legs.length - 1], dEnd = last && last.to;
   if (!dEnd || dEnd.lat == null || l.from.lat == null) return { ok: false, why: "no-coord" };
