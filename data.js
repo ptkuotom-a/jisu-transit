@@ -6934,6 +6934,16 @@ async function authedGet(path, ms = 30000) {
   if (!r.ok) { const m = j && (j.message || j.Message); const er = new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); er.status = r.status; er.code = j && j.err; throw er; }
   return j;
 }
+// v2.60.6：登入後的 POST（目前只有 /otp/plan）；錯誤格式和 authedGet 相同
+async function authedPost(path, body, ms = 30000) {
+  const proxy = getProxy(); if (!proxy) throw new Error("NO_PROXY");
+  const s = getSession();
+  let r, j = null;
+  try { r = await fetchT(nt(proxy + path), ms, { method: "POST", headers: { "content-type": "application/json", ...(s ? { "x-session": s.token } : {}) }, body: JSON.stringify(body) }); j = await r.json().catch(() => null); }
+  catch (e) { throw new Error(e && e.name === "AbortError" ? TIMEOUT_MSG : "連不到伺服器，請確認網路"); }
+  if (!r.ok) { const m = j && (j.message || j.Message); const er = new Error(r.status === 401 ? "請重新登入" : m || ("錯誤 " + r.status)); er.status = r.status; throw er; }
+  return j;
+}
 // v2.51.4：所有 /walk 走同一條佇列（busdirect.js walkQueue）：間隔 ≥1.1 秒，429 busy／502 隔 1.1 秒重試一次
 let walkQ = null;
 // v2.60.5：步行查詢的開始時間相隔 1.1 秒、不等上一筆回來；同時最多 3 筆
@@ -6954,12 +6964,12 @@ function planClean(routes, yb) {
     for (const s of r.sections || []) {
       const from = pPlace(s.departure), to = pPlace(s.arrival), dur = (s.travelSummary && s.travelSummary.duration) || Math.max(0, (tms(to.time) - tms(from.time)) / 1000) || 0;
       const len = (s.travelSummary && s.travelSummary.length) || 0;
-      let kind = s.type === "transit" ? "transit" : s.type === "waiting" ? "wait" : s.type === "cycle" && yb ? "bike" : "walk";
-      const fake = s.type === "drive" || (s.type === "cycle" && !yb);
+      let kind = s.type === "transit" ? "transit" : s.type === "waiting" ? "wait" : s.type === "cycle" && (yb || s.rental) ? "bike" : "walk";
+      const fake = s.type === "drive" || (s.type === "cycle" && !yb && !s.rental);   // v2.60.6：OTP 的 YouBike 段帶 rental（借車站、還車站）
       if (kind === "walk" || kind === "bike") {
         const d = fake || !len ? (from.lat != null && to.lat != null ? haversine(from.lat, from.lon, to.lat, to.lon) * 1.3 : len) : len;
         const timeSrc = s.timeSrc || (fake ? "line" : undefined);
-        const leg = { kind, from, to, dur: fake ? Math.round(d / 1.2) : dur, len: Math.round(d), approx: fake, ...(timeSrc ? { timeSrc } : {}) };
+        const leg = { kind, from, to, dur: fake ? Math.round(d / 1.2) : dur, len: Math.round(d), approx: fake, ...(timeSrc ? { timeSrc } : {}), ...(kind === "bike" && s.rental ? { rent: s.rental.from || from.name || "", ret: s.rental.to || to.name || "", bikes: s.rental.bikes ?? null, docks: s.rental.docks ?? null } : {}) };
         if (fake) approx = true;
         const prev = legs[legs.length - 1];
         if (kind === "walk" && prev && prev.kind === "walk") {   // 走到出入口＋進站合成一段，記下出入口名稱
@@ -6993,7 +7003,7 @@ function planClean(routes, yb) {
     } else if (approx) end = start + legs.reduce((a, l) => a + l.dur * 1000, 0);
     const sig = legs.map(l => l.kind === "transit" ? l.name + "@" + l.from.name + ">" + l.to.name + "@" + l.from.time : l.kind).join("|");
     if (out.some(o => o.sig === sig)) continue;   // 同一班車、只差頭尾接駁方式的重複結果
-    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : r.source === "timetable" ? "tt" : r.source === "self" ? "self" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}), ...(r.tightNote ? { tightNote: r.tightNote } : {}), ...(r.busNote ? { busNote: r.busNote } : {}) });
+    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : r.source === "timetable" ? "tt" : r.source === "self" ? "self" : r.source === "otp" ? "otp" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}), ...(r.tightNote ? { tightNote: r.tightNote } : {}), ...(r.busNote ? { busNote: r.busNote } : {}) });
   }
   return out.filter(r => !r.approx).concat(out.filter(r => r.approx));
 }
@@ -7920,12 +7930,30 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
     RP_REGION = prevRegion;
   }
 }
+// v2.60.6：OpenTripPlanner（經 Worker POST /otp/plan，要登入）：全國時刻表＋YouBike 即時車位。
+// 有路線就直接用，不再問 Google／TDX；沒登入、指定抵達、OTP 沒設定（503）、找不到（404）、逾時（15 秒）或任何錯誤都回 null，照原本流程規劃
+const OTP_MS = 15000;
+async function otpPlanTry({ o, d, modes, yb, when, time }) {
+  if (!getSession() || when === "arr" || !o || !d || o.lat == null || d.lat == null) return null;
+  const t = when === "dep" && time ? String(time).slice(0, 16) : isoTpe(Date.now()).slice(0, 16);
+  let j;
+  try { j = await authedPost("/otp/plan", { o: { lat: +o.lat, lon: +o.lon }, d: { lat: +d.lat, lon: +d.lon }, time: t, yb: !!yb, t: (modes || []).map(String), oName: o.name || "", dName: d.name || "" }, OTP_MS); }
+  catch (e) { console.warn("otp plan", e && (e.status || e.message)); return null; }
+  if (!j || j.result !== "success" || !j.data || !Array.isArray(j.data.routes)) return null;
+  const out = planClean(j.data.routes, yb).filter(r => !r.approx);
+  if (!out.length) return null;
+  const walkOf = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
+  out.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
+  return out;
+}
 async function planRoutes({ o, d, modes, yb, walk, when, time, onLive, more }) {
   // v2.33.0：「目前位置」座標取到小數第4位（約10公尺）再送 /plan：Worker 快取鍵用收到的座標，站著不動重查、換交通工具再換回來都能共用快取
   const r4 = p => p && p.here && p.lat != null ? { ...p, lat: +(+p.lat).toFixed(4), lon: +(+p.lon).toFixed(4) } : p;
   o = r4(o); d = r4(d);
   if (walk && !(modes || []).length && !yb) return await ownPlan({ o, d, modes: [], yb: false, walk: true, when, time });   // 只步行：不往 Google／TDX
   if (!more) {
+    const otp = await otpPlanTry({ o, d, modes, yb, when, time });
+    if (otp && otp.length) return otp;   // v2.60.6：OTP 有路線：不跑 ownPlan、不打 /plan（Google／TDX）
     const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
     if (own && own.length) return own;
   }

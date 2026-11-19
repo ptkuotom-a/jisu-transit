@@ -2162,7 +2162,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.5';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.6';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -5722,7 +5722,7 @@ function planHtml() {
     if (P.res.some(r => r.src === 'self') && !P.moreUsed) h += `<button class="btn sec2" data-act="planMore" style="margin-top:10px">更多選擇</button>`;
     if (P.res.some(r => r.approx)) h += `<div class="sub" style="margin-top:8px">標「≈」的步行段是把計程車接駁換成步行估算的時間。</div>`;
   }
-  const has = s => !!(P.res && P.res.some(r => r.src === s)), srcs = [has('tdx') && '交通部 TDX 公共運輸旅運規劃', has('google') && 'Google 地圖', has('tt') && '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）', has('self') && '自有規劃（全臺公車與軌道一起排，最多轉乘 3 次；YouBike 預設開；步行經公開路網，失敗標直線估算）'].filter(Boolean);
+  const has = s => !!(P.res && P.res.some(r => r.src === s)), srcs = [has('tdx') && '交通部 TDX 公共運輸旅運規劃', has('google') && 'Google 地圖', has('tt') && '台鐵／高鐵官方時刻表（深夜 TDX 查不到路線時，列出起訖車站間的直達車）', has('self') && '自有規劃（全臺公車與軌道一起排，最多轉乘 3 次；YouBike 預設開；步行經公開路網，失敗標直線估算）', has('otp') && 'OpenTripPlanner（全國公共運輸時刻表＋YouBike 即時車位）'].filter(Boolean);
   return h + `<div class="sub" style="margin-top:18px">路線來源：${srcs.length ? srcs.join('、') : '自有規劃'}；路線資料 © OpenStreetMap 貢獻者・<a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">修正地圖</a></div></div></div></div>`;
 }
 const minTxt = m => m >= 60 ? `${Math.floor(m / 60)}小時${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
@@ -5839,13 +5839,15 @@ function segBar(r) {
   }
   return `<div class="sflow">` + parts.map((p, i) => `<span class="sg">${segItem(p)}${i < parts.length - 1 ? '<span class="sep">›</span>' : ''}</span>`).join('') + `</div>`;
 }
+// v2.60.6：OTP 的 YouBike 段：路線卡在路段列下面寫「借車站 借車 → 還車站 還車」（可借、可還數有給就附上）
+const ybRentNote = r => r.legs.filter(l => l.kind === 'bike' && l.rent && l.ret).map(l => `<div class="sub pnote ybrr"><span style="color:${SEG_BIKE}">YouBike</span> ${esc(l.rent)} 借車${l.bikes != null ? `（可借${l.bikes}）` : ''} → ${esc(l.ret)} 還車${l.docks != null ? `（可還${l.docks}）` : ''}</div>`).join('');
 function planCard(r, i) {
   const tr = r.legs.filter(l => l.kind === 'transit'), walk = Math.round(r.legs.filter(l => l.kind === 'walk').reduce((a, l) => a + l.dur, 0) / 60);
   const first = tr[0];
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
     <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
-    ${segBar(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${r.connWarn ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.connWarn)}</div>` : ''}${planSrcLine(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
+    ${segBar(r)}${ybRentNote(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${r.connWarn ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.connWarn)}</div>` : ''}${planSrcLine(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
 const GEO_KIND = { national_park:'國家公園', park:'公園', nature_reserve:'自然保留區', protected_area:'保護區', station:'車站', bus_station:'轉運站', stop:'站', halt:'車站', aerodrome:'機場', university:'大學', college:'學校', school:'學校', hospital:'醫院', clinic:'診所', attraction:'景點', viewpoint:'觀景點', museum:'博物館', zoo:'動物園', hotel:'旅館', place_of_worship:'宮廟', temple:'寺廟', marketplace:'市場', mall:'商場', administrative:'行政區', city:'城市', town:'鄉鎮', village:'村里', suburb:'地區', neighbourhood:'社區', peak:'山峰', mountain_range:'山', residential:'住宅', commercial:'商業區' };
@@ -5872,7 +5874,7 @@ const PLAN_SRC = { osrm:'路網', line:'直線估算', live:'即時', livefix:'�
 const busNames = (l, max = 4) => { const n = Array.isArray(l.alts) && l.alts.length > 1 ? l.alts.map(a => a.name).filter(Boolean) : [l.name || '公車']; return n.slice(0, max).join('／') + (n.length > max ? '等' : ''); };
 function planSrcLine(r) {
   const tags = [...new Set((r.legs || []).map(l => l.timeSrc).filter(Boolean))].map(s => PLAN_SRC[s] || s);
-  const head = r.suggestWalk ? '建議步行' : r.src === 'google' ? '路線資料：Google 地圖' : r.src === 'tt' ? '路線資料：官方時刻表' : r.src === 'self' ? '自有規劃' : '';
+  const head = r.suggestWalk ? '建議步行' : r.src === 'google' ? '路線資料：Google 地圖' : r.src === 'tt' ? '路線資料：官方時刻表' : r.src === 'self' ? '自有規劃' : r.src === 'otp' ? '路線資料：OpenTripPlanner' : '';
   const txt = [head, tags.join('・')].filter(Boolean).join('・');
   return txt ? `<div class="sub pnote${r.src === 'google' ? ' gsrc' : ''}">${esc(txt)}</div>` : '';
 }
@@ -6145,7 +6147,7 @@ function openPlanDetail(i) {
 }
 async function planFillShape(i) {
   const P = S.plan, r = P && P.res && P.res[i];
-  if (!r || r.shapeDone || r.src === 'google' || r.src === 'tdx') return;
+  if (!r || r.shapeDone || r.src === 'google' || r.src === 'tdx' || r.src === 'otp') return;   // v2.60.6：OTP 路線不另外查步行／騎車路形
   r.shapeDone = true;
   // v2.51.4：打開詳情才查；步行與 YouBike 段依序排隊，一個方案最多 3 段；結果存手機 7 天；v2.51.5：有回傳距離或時間就寫回分段與整趟時刻
   for (const l of BusDirect.shapeLegs(r, 3)) {
@@ -6232,7 +6234,7 @@ function xStation(time, name, lab, sq, color, cls = '') {
 function xWalkRow(l) {
   const m = Math.max(1, Math.round(l.dur / 60));
   const line = l.timeSrc === 'line';
-  const txt = l.kind === 'wait' ? `等車${m}分` : `${l.kind === 'bike' ? 'YouBike' : '步行'}${l.approx || line ? '約' : ''}${m}分${l.len ? `・${distTxt(Math.round(l.len / 10) * 10)}` : ''}`;
+  const txt = l.kind === 'wait' ? `等車${m}分` : `${l.kind === 'bike' ? (l.rent && l.ret ? `YouBike ${l.rent} 借車 → ${l.ret} 還車・` : 'YouBike') : '步行'}${l.approx || line ? '約' : ''}${m}分${l.len ? `・${distTxt(Math.round(l.len / 10) * 10)}` : ''}`;   // v2.60.6：OTP 的 YouBike 段寫借車站、還車站
   const roads = l.shape && l.shape.roads && l.shape.roads.length ? `<small class="gate">經 ${esc(l.shape.roads.join(' → '))}</small>` : '';
   const pr = S.plan && S.plan.res && S.plan.res[S.plan.sel];
   const sketch = l.kind !== 'wait' && S.page === 'planDetail' && pr && pr.shapeFilled && !(l.shape && l.shape.coords && l.shape.coords.length >= 2) ? '<small class="gate">地圖為直線示意</small>' : '';
@@ -6349,7 +6351,7 @@ function detailHtml() {
     });
     if (i1 < legs.length - 1) { legs.slice(i1 + 1).forEach(l => { h += xWalkRow(l); }); h += xStation(hmOf(r.end), P.d?.name || '終點', '', '到', null, 'xo'); }
   }
-  return h + `</div>${r.busNote ? `<div class="sub pnote" style="margin-top:14px">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="margin-top:14px;color:var(--warn)">${esc(r.tightNote)}</div>` : ''}<div class="sub" style="margin-top:14px">${r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : r.src === 'self' ? '路線資料：依台鐵、高鐵、捷運、輕軌官方時刻表自己排出（文湖線、台中捷運沒有時刻表，依班距估計；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；公車接駁的等車與行駛時間為估計，第一段公車有即時預估就用即時）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
+  return h + `</div>${r.busNote ? `<div class="sub pnote" style="margin-top:14px">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="margin-top:14px;color:var(--warn)">${esc(r.tightNote)}</div>` : ''}<div class="sub" style="margin-top:14px">${r.src === 'otp' ? '時刻為 OpenTripPlanner 規劃結果（全國公共運輸時刻表＋YouBike 即時車位）' : r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : r.src === 'self' ? '路線資料：依台鐵、高鐵、捷運、輕軌官方時刻表自己排出（文湖線、台中捷運沒有時刻表，依班距估計；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；公車接駁的等車與行駛時間為估計，第一段公車有即時預估就用即時）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
