@@ -2162,7 +2162,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.6';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.7';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -5735,6 +5735,7 @@ const legBr = l => l && (l.mode === 'mrt' || l.mode === 'metro') ? BR_LEG[String
 // v2.28.0：公車改綠色（和台鐵藍分開）；台鐵、高鐵、公車一律用系統色（不吃 TDX/Google 的路線色）
 const MODE_C = { bus:'#16A86B', tra:'#2B5BA8', thsr:'#F47A20', lrt:'#7CBD52', mrt:'#6E7A86' };
 function legColor(l) {
+  if (l.kind === 'bike') return SEG_BIKE;
   if (l.mode === 'bus' || l.mode === 'tra' || l.mode === 'thsr') return MODE_C[l.mode];
   const br = legBr(l); if (br) return LINE_COLOR.TRTC[br];
   const ln = NAME2LINE[l.name] || NAME2LINE[(l.name || '').replace(/線$/, '') + '線'];
@@ -6167,7 +6168,7 @@ async function planLoadLive(auto) {
     if (tok === P.liveTok) {
       P.live = L; P.liveAt = Date.now(); P.liveErr = null;
       // v2.51.6：用剛查到的公車即時校正這條方案的出發時間，後段跟著改；列表也換成同一個物件，兩邊一致
-      if (r.src === 'self' && r.legs.some(l => l.mode === 'bus')) {
+      if ((r.src === 'self' || r.src === 'otp') && r.legs.some(l => l.mode === 'bus')) {
         const modes = PLAN_MODES.filter(([k]) => P.modes[k]).map(x => x[2]);
         const fx = await api('planLiveFix', { route:r, live:L, modes, auto:auto === true }).catch(() => null);
         if (fx && fx.route && fx.changed && tok === P.liveTok && P.res && P.res[P.sel] === r) {
@@ -6215,11 +6216,12 @@ const stNorm = n => String(n || '').replace(/臺/g, '台').replace(/\s/g, '').re
 // 捷運／輕軌路段的 [營運單位, 路線代碼]（支線優先）
 const legLine = l => { const br = legBr(l); if (br) return ['TRTC', br]; return NAME2LINE[l.name] || NAME2LINE[(l.name || '').replace(/線$/, '') + '線'] || null; };
 // 系統代號：台鐵／高鐵／公車用 mode；捷運輕軌用營運單位（對不到就用即時資料對到的車站）
-const legSys = (l, L) => l.mode === 'bus' || l.mode === 'tra' || l.mode === 'thsr' ? l.mode : (legLine(l) || [])[0] || (L && L.open && L.open.r && L.open.r.op) || l.mode;
-const SYS_ZH = { bus:'公車', tra:'台鐵', thsr:'高鐵', TRTC:'北捷', NTMC:'新北捷運', TYMC:'桃園機捷', TMRT:'中捷', KRTC:'高捷', KLRT:'高雄輕軌', NTDLRT:'淡海輕軌', NTALRT:'安坑輕軌', mrt:'捷運', lrt:'輕軌' };
+const legSys = (l, L) => l.kind === 'bike' ? 'bike' : l.mode === 'bus' || l.mode === 'tra' || l.mode === 'thsr' ? l.mode : (legLine(l) || [])[0] || (L && L.open && L.open.r && L.open.r.op) || l.mode;
+const SYS_ZH = { bus:'公車', tra:'台鐵', thsr:'高鐵', TRTC:'北捷', NTMC:'新北捷運', TYMC:'桃園機捷', TMRT:'中捷', KRTC:'高捷', KLRT:'高雄輕軌', NTDLRT:'淡海輕軌', NTALRT:'安坑輕軌', mrt:'捷運', lrt:'輕軌', bike:'YouBike' };
 const xRound = (op, code, cls = 'rd') => { const c = (LINE_COLOR[op] || {})[code] || '#4A4D4A'; return `<span class="${cls}" style="background:${c};color:${darkText(c) || hexLum(c) > 0.62 ? '#111' : '#fff'}">${esc((LINE_LABEL[op] || {})[code] || code)}</span>`; };
 // 車站列的小字：台鐵／高鐵／公車站；捷運用即時資料對到的站號（只留這條線的）
 function xStLab(l, end, L) {
+  if (l.kind === 'bike') return 'YouBike';
   if (l.mode === 'bus') return '公車站';
   if (l.mode === 'tra' || l.mode === 'thsr') return MODE_ZH[l.mode];
   const g = L && (end === 'from' ? L.open && L.open.r : L.to), ln = legLine(l);
@@ -6277,8 +6279,28 @@ function xAlts(l) {
 }
 function xLeg(l, i, L, c) {
   const P = S.plan, m = Math.max(1, Math.round(l.dur / 60)), stops = l.stops || [], open2 = P.open[i];
+  if (l.kind === 'bike') {
+    const ic = `<span class="ic" style="color:${SEG_BIKE}">${I.bike}</span>`;
+    const title = 'YouBike';
+    const dir = `到 ${l.ret || (l.to && l.to.name) || ''}`;
+    const xmt = (l.bikes != null || l.docks != null)
+      ? `<span class="xc o" style="--c:${SEG_BIKE}">可借 ${l.bikes ?? '-'}・可還 ${l.docks ?? '-'}</span>`
+      : `<span class="xc o" style="--c:${SEG_BIKE}">YouBike 微笑單車</span>`;
+    return `<div class="xsg" style="--c:${c}"><div class="rl"></div><div class="by">
+      <div class="xln">${ic}<span class="nmx">${esc(title)}</span><span class="dr">${esc(dir)}</span></div>
+      <div class="xmt">${xmt}</div>
+      <div class="lstp" style="cursor:default">騎乘${m}分${l.len ? `・${distTxt(Math.round(l.len / 10) * 10)}` : ''}</div>
+    </div></div>`;
+  }
   let ic, title;
-  if (l.mode === 'tra' || l.mode === 'thsr') { const ti = trainIco(l); ic = `<span class="ic">${ti ? `<img src="icons/train/${ti}.svg" alt="">` : I.trainG}</span>`; const ty = l.mode === 'thsr' ? '高鐵' : (l.trainType || '').replace(/[(（].*$/, '') || '台鐵'; title = l.number ? `${ty} ${l.number}次` : MODE_ZH[l.mode]; }
+  if (l.mode === 'tra' || l.mode === 'thsr') {
+    const ti = trainIco(l);
+    ic = `<span class="ic">${ti ? `<img src="icons/train/${ti}.svg" alt="">` : I.trainG}</span>`;
+    const num = l.number || (L && (L.no || (L.pill && L.pill.no))) || '';
+    const tType = l.trainType || (L && L.trainType) || '';
+    const ty = l.mode === 'thsr' ? '高鐵' : (tType || '').replace(/[(（].*$/, '') || '台鐵';
+    title = num ? `${ty} ${num}次` : (tType || MODE_ZH[l.mode]);
+  }
   else if (l.mode === 'bus') { ic = `<span class="ic">${I.busG}</span>`; title = busNames(l, 6); }
   else { const ln = legLine(l); if (ln) { ic = xRound(ln[0], ln[1]); title = (LINE_NAME[ln[0]] || {})[ln[1]] || l.name || MODE_ZH[l.mode]; } else { ic = `<span class="lc" style="${chipStyle(c)}">${esc(legLabel(l))}</span>`; title = ''; } }
   const dir = l.via ? `${l.via}・到 ${l.to.name || ''}` : l.headsign ? `往 ${l.headsign}` : `到 ${l.to.name || ''}`;
@@ -6333,7 +6355,7 @@ function detailHtml() {
     <div class="rhead pdh"><h1>${minTxt(r.dur)}</h1><span class="dirbtn"><span>${hmOf(r.start)}–${hmOf(r.end)}</span></span></div>
     <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${thruN ? `・免轉乘${thruN}次` : ''}${P.liveLoading ? '・讀取即時資料中…' : ''}</div>${pupd(P.liveAt, P.liveErr)}</div>
     <div id="planMapSlot" class="mapslot"></div>${segBar(r)}${r.ttNote ? `<div class="sub pnote" style="margin:8px 0 0">${esc(r.ttNote)}</div>` : ''}<div class="xr">`;
-  const T = legs.map((l, i) => l.kind === 'transit' ? i : -1).filter(i => i >= 0);
+  const T = legs.map((l, i) => (l.kind === 'transit' || (l.kind === 'bike' && (l.rent || l.ret || (l.from && l.from.name) || (l.to && l.to.name)))) ? i : -1).filter(i => i >= 0);
   if (!T.length) {   // 全程步行／YouBike
     h += xStation(hmOf(r.start), P.o?.name || '起點', P.o?.here ? '目前位置' : '', '發', null, 'xo');
     legs.forEach(l => { h += xWalkRow(l); });
@@ -6343,9 +6365,11 @@ function detailHtml() {
     if (i0 > 0) { h += xStation(hmOf(r.start), P.o?.name || '起點', P.o?.here ? '目前位置' : '', '發', null, 'xo'); legs.slice(0, i0).forEach(l => { h += xWalkRow(l); }); }
     T.forEach((i, k) => {
       const l = legs[i], c = legColor(l), L = LV[i];
-      h += xStation(xT(l.from.time), l.from.name, xStLab(l, 'from', L), '發', i === 0 ? null : c);
+      const fromName = l.kind === 'bike' ? (l.rent || (l.from && l.from.name) || 'YouBike') : l.from.name;
+      const toName = l.kind === 'bike' ? (l.ret || (l.to && l.to.name) || 'YouBike') : l.to.name;
+      h += xStation(xT(l.from.time), fromName, xStLab(l, 'from', L), '發', i === 0 ? null : c);
       h += xLeg(l, i, L, c);
-      h += xStation(xT(l.to.time), l.to.name, xStLab(l, 'to', L), '到', i === legs.length - 1 ? null : c);
+      h += xStation(xT(l.to.time), toName, xStLab(l, 'to', L), '到', i === legs.length - 1 ? null : c);
       const j = T[k + 1];
       if (j != null) h += xXfer(l, legs[j], legs.slice(i + 1, j), L, LV[j]);
     });
@@ -6364,20 +6388,26 @@ let PM = null, planMapEl = null, planMapKey = null;
 function planGeo(r) {
   const F = [], pts = [];
   for (const l of r.legs) {
-    const co = [l.from, ...(l.stops || []), l.to].filter(p => p && p.lat != null).map(p => [p.lon, p.lat]);
-    if (co.length < 2) continue; pts.push(...co);
+    const co = [l.from, ...(l.stops || []), l.to].filter(p => p && p.lat != null && p.lat > 20 && p.lon > 115).map(p => [p.lon, p.lat]);
+    let sh = l.shape && Array.isArray(l.shape.coords) && l.shape.coords.length >= 2 ? l.shape.coords.filter(([a, b]) => a > 20 && b > 115).map(([a, b]) => [b, a]) : null;
+    if (sh && co.length >= 2) {
+      const [lon0, lat0] = sh[0], [lon1, lat1] = sh[sh.length - 1];
+      const [cLon0, cLat0] = co[0], [cLon1, cLat1] = co[co.length - 1];
+      if (Math.hypot(lon0 - cLon0, lat0 - cLat0) > 0.05 || Math.hypot(lon1 - cLon1, lat1 - cLat1) > 0.05) sh = null;
+    }
+    if (co.length < 2 && !sh) continue;
+    if (sh) pts.push(...sh);
+    if (co.length >= 2) pts.push(...co);
     if (l.kind === 'transit') {
-      F.push({ type:'Feature', properties:{ k:'t', c:legColor(l) }, geometry:{ type:'LineString', coordinates:co } });
+      F.push({ type:'Feature', properties:{ k:'t', c:legColor(l) }, geometry:{ type:'LineString', coordinates: sh || co } });
       for (const [j, p] of co.entries()) F.push({ type:'Feature', properties:{ k: j === 0 || j === co.length - 1 ? 'e' : 's', c:legColor(l) }, geometry:{ type:'Point', coordinates:p } });
     } else if (l.kind !== 'wait') {
-      const sh = l.shape && Array.isArray(l.shape.coords) && l.shape.coords.length >= 2 ? l.shape.coords.map(([a, b]) => [b, a]) : null;   // v2.51.4：有路網形狀就沿街畫實線
-      if (sh) pts.push(...sh);
-      F.push({ type:'Feature', properties:{ k: (l.kind === 'bike' ? 'b' : 'w') + (sh ? 'r' : ''), c: l.kind === 'bike' ? '#FFB400' : '#B8BBB6' }, geometry:{ type:'LineString', coordinates: sh || [co[0], co[co.length - 1]] } });
+      F.push({ type:'Feature', properties:{ k: (l.kind === 'bike' ? 'b' : 'w') + (sh ? 'r' : ''), c: l.kind === 'bike' ? '#FFB400' : '#B8BBB6' }, geometry:{ type:'LineString', coordinates: sh || (co.length >= 2 ? [co[0], co[co.length - 1]] : []) } });
     }
   }
   const o = r.legs[0]?.from, d = r.legs[r.legs.length - 1]?.to;
-  if (o && o.lat != null) F.push({ type:'Feature', properties:{ k:'o', c:'#C6F135' }, geometry:{ type:'Point', coordinates:[o.lon, o.lat] } });
-  if (d && d.lat != null) F.push({ type:'Feature', properties:{ k:'d', c:'#C6F135' }, geometry:{ type:'Point', coordinates:[d.lon, d.lat] } });
+  if (o && o.lat != null && o.lat > 20 && o.lon > 115) F.push({ type:'Feature', properties:{ k:'o', c:'#C6F135' }, geometry:{ type:'Point', coordinates:[o.lon, o.lat] } });
+  if (d && d.lat != null && d.lat > 20 && d.lon > 115) F.push({ type:'Feature', properties:{ k:'d', c:'#C6F135' }, geometry:{ type:'Point', coordinates:[d.lon, d.lat] } });
   return { fc:{ type:'FeatureCollection', features:F }, pts };
 }
 // Google 來源的路線：依使用條款不能畫在 OpenStreetMap 底圖上，改用 Worker 代理的 Google 靜態地圖圖片；Maps Static API 沒開通就只列清單

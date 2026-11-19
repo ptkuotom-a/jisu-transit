@@ -1174,7 +1174,7 @@ async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站�
     return j && j.list ? j.list : [];
   }
   const j = await odRouteEta(b.routeUID, false, b.route); if (j) return j.list;
-  return tdx("route", `${BASE}/basic/v2/Bus/EstimatedTimeOfArrival/${b.path}?%24filter=${enc(`RouteUID eq '${b.routeUID}'`)}&%24top=600&%24format=JSON`);   // v2.46.3：用 RouteUID 過濾（高雄等路線名稱當路徑會回空）
+  return [];
 }
 
 const NEAR_OFFICIAL_MAX = 8;
@@ -6956,6 +6956,37 @@ const pPlace = (p, time) => { const pl = (p && p.place) || {}, loc = pl.location
 const tms = s => s ? Date.parse(s + "+08:00") : null;
 // TDX MaaS 的輕軌路段 headsign 常是字串 "nan"（資料缺值），當成沒有終點
 const planHead = h => { h = String(h ?? "").trim(); return /^(nan|null|undefined|none|-)?$/i.test(h) ? "" : h; };
+function decodePoly(encoded) {
+  if (!encoded || typeof encoded !== "string") return [];
+  const poly = [];
+  let index = 0, len = encoded.length;
+  let lat = 0, lng = 0;
+  while (index < len) {
+    let b, shift = 0, result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lat += dlat;
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+    lng += dlng;
+    const pLat = lat * 1e-5, pLng = lng * 1e-5;
+    if (pLat > 21 && pLat < 27 && pLng > 118 && pLng < 123) {
+      poly.push([+pLat.toFixed(6), +pLng.toFixed(6)]);
+    }
+  }
+  return poly;
+}
+
 // 整理成前端好用的格式；計程車／開車路段一律換成步行（標「約」），沒開 YouBike 時騎車路段也換成步行
 function planClean(routes, yb) {
   const out = [];
@@ -6964,12 +6995,13 @@ function planClean(routes, yb) {
     for (const s of r.sections || []) {
       const from = pPlace(s.departure), to = pPlace(s.arrival), dur = (s.travelSummary && s.travelSummary.duration) || Math.max(0, (tms(to.time) - tms(from.time)) / 1000) || 0;
       const len = (s.travelSummary && s.travelSummary.length) || 0;
+      const pts = s.polyline ? decodePoly(s.polyline) : null;
       let kind = s.type === "transit" ? "transit" : s.type === "waiting" ? "wait" : s.type === "cycle" && (yb || s.rental) ? "bike" : "walk";
       const fake = s.type === "drive" || (s.type === "cycle" && !yb && !s.rental);   // v2.60.6：OTP 的 YouBike 段帶 rental（借車站、還車站）
       if (kind === "walk" || kind === "bike") {
         const d = fake || !len ? (from.lat != null && to.lat != null ? haversine(from.lat, from.lon, to.lat, to.lon) * 1.3 : len) : len;
         const timeSrc = s.timeSrc || (fake ? "line" : undefined);
-        const leg = { kind, from, to, dur: fake ? Math.round(d / 1.2) : dur, len: Math.round(d), approx: fake, ...(timeSrc ? { timeSrc } : {}), ...(kind === "bike" && s.rental ? { rent: s.rental.from || from.name || "", ret: s.rental.to || to.name || "", bikes: s.rental.bikes ?? null, docks: s.rental.docks ?? null } : {}) };
+        const leg = { kind, from, to, dur: fake ? Math.round(d / 1.2) : dur, len: Math.round(d), approx: fake, ...(timeSrc ? { timeSrc } : {}), ...(kind === "bike" && s.rental ? { rent: s.rental.from || from.name || "", ret: s.rental.to || to.name || "", bikes: s.rental.bikes ?? null, docks: s.rental.docks ?? null } : {}), ...(pts && pts.length >= 2 ? { shape: { coords: pts } } : {}) };
         if (fake) approx = true;
         const prev = legs[legs.length - 1];
         if (kind === "walk" && prev && prev.kind === "walk") {   // 走到出入口＋進站合成一段，記下出入口名稱
@@ -6991,7 +7023,7 @@ function planClean(routes, yb) {
       const toStopUID = (s.arrival && s.arrival.place && s.arrival.place.stopUID) || "";
       legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: r.source !== "google" && /環狀輕軌/.test((t.shortName || t.name || "") + (t.longName || "")) ? "" : planHead(t.headsign), color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
         number: t.number || "", agency: agId, agencyName: (s.agency && s.agency.name) || "", from, to, dur,
-        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(t.dir != null ? { dir: t.dir === 1 ? 1 : 0 } : {}), ...(stopUID ? { stopUID } : {}), ...(toStopUID ? { toStopUID } : {}), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}), ...(t.est ? { est: true } : {}), ...(t.liveDep ? { liveDep: true } : {}), ...(s.timeSrc ? { timeSrc: s.timeSrc } : {}) });
+        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(t.dir != null ? { dir: t.dir === 1 ? 1 : 0 } : {}), ...(stopUID ? { stopUID } : {}), ...(toStopUID ? { toStopUID } : {}), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}), ...(t.est ? { est: true } : {}), ...(t.liveDep ? { liveDep: true } : {}), ...(s.timeSrc ? { timeSrc: s.timeSrc } : {}), ...(pts && pts.length >= 2 ? { shape: { coords: pts } } : {}) });
     }
     // 換成步行的頭尾段：依公共運輸的時刻往前／往後推，算出新的出發／抵達時間
     const tr = legs.filter(l => l.kind === "transit");
@@ -7003,7 +7035,8 @@ function planClean(routes, yb) {
     } else if (approx) end = start + legs.reduce((a, l) => a + l.dur * 1000, 0);
     const sig = legs.map(l => l.kind === "transit" ? l.name + "@" + l.from.name + ">" + l.to.name + "@" + l.from.time : l.kind).join("|");
     if (out.some(o => o.sig === sig)) continue;   // 同一班車、只差頭尾接駁方式的重複結果
-    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : r.source === "timetable" ? "tt" : r.source === "self" ? "self" : r.source === "otp" ? "otp" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}), ...(r.tightNote ? { tightNote: r.tightNote } : {}), ...(r.busNote ? { busNote: r.busNote } : {}) });
+    const hasShape = legs.some(l => l.shape && Array.isArray(l.shape.coords) && l.shape.coords.length >= 2);
+    out.push({ sig, start, end, dur: Math.round((end - start) / 60000), transfers: Math.max(0, tr.length - 1), approx, legs, src: r.source === "google" ? "google" : r.source === "timetable" ? "tt" : r.source === "self" ? "self" : r.source === "otp" ? "otp" : "tdx", ...(r.polyline ? { poly: r.polyline } : {}), ...(r.tightNote ? { tightNote: r.tightNote } : {}), ...(r.busNote ? { busNote: r.busNote } : {}), ...(hasShape ? { shapeFilled: true, shapeDone: true } : {}) });
   }
   return out.filter(r => !r.approx).concat(out.filter(r => r.approx));
 }
@@ -7930,7 +7963,160 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
     RP_REGION = prevRegion;
   }
 }
-// v2.60.6：OpenTripPlanner（經 Worker POST /otp/plan，要登入）：全國時刻表＋YouBike 即時車位。
+async function otpEnrichRail(routes) {
+  for (const r of routes || []) {
+    for (const l of r.legs || []) {
+      if (l.kind === "transit" && (l.mode === "tra" || l.mode === "thsr" || l.mode === "mrt" || l.mode === "lrt")) {
+        const p0 = tms(l.from && l.from.time), a0 = tms(l.to && l.to.time);
+        if (!p0 || !a0) continue;
+        const op = l.mode === "tra" ? "TRA" : l.mode === "thsr" ? "THSR" : null;
+        if (!op) continue;
+        const A = await planRailStation(l, "from").catch(() => null);
+        const B = await planRailStation(l, "to").catch(() => null);
+        if (!A || !B || !A.ids || !B.ids) continue;
+        const rides = await railRides(op, A.ids, B.ids, p0 - 15 * 60000, p0 + 15 * 60000).catch(() => []);
+        if (!rides || !rides.length) continue;
+        const near = rides.filter(c => Math.abs(c.dep - p0) <= 180000);
+        const pool = near.length ? near : rides;
+        const c = pool.slice().sort((x, y) => (Math.abs(x.dep - p0) + Math.abs(x.arr - a0)) - (Math.abs(y.dep - p0) + Math.abs(y.arr - a0)))[0];
+        if (c) {
+          l.number = c.no || l.number;
+          l.trainType = l.mode === "tra" ? TRA_TYPE(c.type) : "高鐵";
+          if (l.mode === "tra" && c.type) l.trainTypeFull = c.tf || c.type;
+          if (c.dest && !l.headsign) l.headsign = c.dest;
+          if (c.start && c.dest) { l.name = `${c.start}-${c.dest}`; l.longName = `${c.start}-${c.dest}`; }
+          l.tt = true;
+          if (c.stops && c.stops.length) {
+            const all = await railAll().catch(() => []);
+            const stnMap = new Map();
+            for (const s of all || []) if (s && s.ids) for (const id of s.ids) stnMap.set(id, s);
+            l.stops = c.stops.map(([id, t]) => {
+              const s = stnMap.get(id);
+              return { name: (s && s.name) || id, lat: s ? s.lat : null, lon: s ? s.lon : null, time: isoTpe(t).slice(0, 19) };
+            });
+            l.stopCount = l.stops.length + 1;
+          }
+        }
+      }
+    }
+  }
+}
+
+async function otpCalibrateBus(routes) {
+  for (const r of routes || []) {
+    for (let idx = 0; idx < (r.legs || []).length; idx++) {
+      const l = r.legs[idx];
+      if (l.kind !== "transit" || l.mode !== "bus") continue;
+      let city = l.city || STOP_CITY[(l.routeUID || "").slice(0, 3)];
+      const b = await planBusMatch(l).catch(() => null);
+      if (b && b.route && !/[大南三重指南欣欣大都會光華光南客運總站發半趟]/.test(b.route)) {
+        l.name = b.route;
+        l.routeUID = b.routeUID;
+        l.city = b.city || city;
+        city = l.city;
+        l.dir = b.dirNum;
+        l.stopUID = b.stopUID;
+        l.toStopUID = b.alightUID || l.toStopUID;
+      } else if (b) {
+        l.name = b.route || l.name;
+        l.routeUID = b.routeUID || l.routeUID;
+        l.city = b.city || city;
+        city = l.city;
+        l.dir = b.dirNum ?? l.dir;
+        l.stopUID = b.stopUID || l.stopUID;
+        l.toStopUID = b.alightUID || l.toStopUID;
+      }
+      if (!city && l.from && l.from.lat != null) {
+        const gc = busGeoCities(l.from.lat, l.from.lon);
+        if (gc.length) city = gc[0];
+      }
+      let newDur = null;
+      // 優先查雲端 s2s 站間歷史時間
+      if (city && l.name && l.stopUID && l.toStopUID && typeof S2STIME !== "undefined") {
+        try {
+          const res = await (typeof window !== "undefined" && window.s2sDocGet ? window.s2sDocGet({ c: city, route: l.name }) : s2sDocGet({ c: city, route: l.name })).catch(() => null);
+          if (res && res.doc && Array.isArray(res.doc.d)) {
+            const dirs = res.doc.d.slice().sort((a, b) => ((Number(a.Direction) === Number(l.dir ?? 0)) ? 0 : 1) - ((Number(b.Direction) === Number(l.dir ?? 0)) ? 0 : 1));
+            for (const it of dirs) {
+              const ans = S2STIME.travel({ doc: res.doc, sub: it.SubRouteUID, dir: it.Direction, from: l.stopUID, to: l.toStopUID, depart: tms(l.from.time) });
+              if (ans && ans.ok && ans.seconds > 0) {
+                newDur = Math.round(ans.seconds);
+                l.timeSrc = "s2s";
+                break;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+      // 合理下限校正
+      const nStops = (l.stops && l.stops.length ? l.stops.length + 1 : l.stopCount) || 1;
+      const distM = l.len || (l.from.lat != null && l.to.lat != null ? haversine(l.from.lat, l.from.lon, l.to.lat, l.to.lon) * 1.3 : 0);
+      const isInter = city === "InterCity";
+      const distSec = Math.round(distM / (isInter ? 6.944 : 4.167));
+      const stopSec = nStops * (isInter ? 90 : 80);
+      const minSec = Math.max(distSec, stopSec);
+      if (!newDur && l.dur < minSec * 0.75) {
+        newDur = minSec;
+        l.timeSrc = "s2s";
+      }
+      if (newDur != null && newDur !== l.dur) {
+        l.dur = newDur;
+        const depMs = tms(l.from.time);
+        const arrMs = depMs + newDur * 1000;
+        l.to = { ...l.to, time: isoTpe(arrMs).slice(0, 19) };
+        if (Array.isArray(l.stops) && l.stops.length) {
+          const step = (arrMs - depMs) / (l.stops.length + 1);
+          l.stops.forEach((st, sIdx) => {
+            st.time = isoTpe(depMs + Math.round(step * (sIdx + 1))).slice(0, 19);
+          });
+        }
+        let curTime = arrMs;
+        for (let j = idx + 1; j < r.legs.length; j++) {
+          const nextL = r.legs[j];
+          if (nextL.kind === "walk" || nextL.kind === "bike") {
+            nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+            curTime += nextL.dur * 1000;
+            nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+          } else if (nextL.kind === "wait") {
+            const nextTransit = r.legs[j + 1];
+            if (nextTransit && nextTransit.kind === "transit") {
+              const targetDep = tms(nextTransit.from.time);
+              if (targetDep >= curTime) {
+                nextL.dur = Math.round((targetDep - curTime) / 1000);
+                nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                nextL.to = { ...nextL.to, time: isoTpe(targetDep).slice(0, 19) };
+                curTime = targetDep;
+              } else {
+                nextL.dur = 0;
+                nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+              }
+            } else {
+              nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+              curTime += nextL.dur * 1000;
+              nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+            }
+          } else if (nextL.kind === "transit") {
+            const origDep = tms(nextL.from.time);
+            if (curTime > origDep) {
+              const shift = curTime - origDep;
+              nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+              const newArr = tms(nextL.to.time) + shift;
+              nextL.to = { ...nextL.to, time: isoTpe(newArr).slice(0, 19) };
+              curTime = newArr;
+            } else {
+              curTime = tms(nextL.to.time);
+            }
+          }
+        }
+        r.end = curTime;
+        r.dur = Math.round((r.end - r.start) / 60000);
+      }
+    }
+  }
+}
+
+// v2.60.7：OpenTripPlanner（經 Worker POST /otp/plan，要登入）：全國時刻表＋YouBike 即時車位。
 // 有路線就直接用，不再問 Google／TDX；沒登入、指定抵達、OTP 沒設定（503）、找不到（404）、逾時（15 秒）或任何錯誤都回 null，照原本流程規劃
 const OTP_MS = 15000;
 async function otpPlanTry({ o, d, modes, yb, when, time }) {
@@ -7942,6 +8128,8 @@ async function otpPlanTry({ o, d, modes, yb, when, time }) {
   if (!j || j.result !== "success" || !j.data || !Array.isArray(j.data.routes)) return null;
   const out = planClean(j.data.routes, yb).filter(r => !r.approx);
   if (!out.length) return null;
+  await otpEnrichRail(out).catch(e => console.warn("otpEnrichRail", e));
+  await otpCalibrateBus(out).catch(e => console.warn("otpCalibrateBus", e));
   const walkOf = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
   out.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
   return out;
@@ -8847,6 +9035,21 @@ async function sorOf(k, route, uid) {
   }
   return sc ? sc.d : [];
 }
+function busGeoCities(lat, lon) {
+  if (lat == null || lon == null) return [];
+  const c = [];
+  if (lat >= 24.8 && lat <= 25.35 && lon >= 121.2 && lon <= 122.1) c.push("Taipei", "NewTaipei", "Keelung", "Taoyuan");
+  else if (lat >= 24.5 && lat <= 25.1 && lon >= 120.8 && lon <= 121.6) c.push("Hsinchu", "HsinchuCounty", "MiaoliCounty");
+  else if (lat >= 24.0 && lat <= 24.5 && lon >= 120.4 && lon <= 121.0) c.push("Taichung", "ChanghuaCounty", "NantouCounty");
+  else if (lat >= 23.3 && lat <= 24.0 && lon >= 120.0 && lon <= 120.8) c.push("YunlinCounty", "Chiayi", "ChiayiCounty");
+  else if (lat >= 22.8 && lat <= 23.4 && lon >= 120.0 && lon <= 120.6) c.push("Tainan");
+  else if (lat >= 22.4 && lat <= 23.0 && lon >= 120.2 && lon <= 120.9) c.push("Kaohsiung", "PingtungCounty");
+  else if (lat >= 21.8 && lat <= 22.6 && lon >= 120.5 && lon <= 121.0) c.push("PingtungCounty", "Kaohsiung");
+  else if (lat >= 24.4 && lat <= 25.0 && lon >= 121.6 && lon <= 122.0) c.push("YilanCounty");
+  else if (lat >= 23.5 && lat <= 24.4 && lon >= 121.3 && lon <= 121.8) c.push("HualienCounty");
+  else if (lat >= 22.5 && lat <= 23.5 && lon >= 120.8 && lon <= 121.5) c.push("TaitungCounty");
+  return c;
+}
 async function planBusMatch(leg) {
   const rawAg = String(leg.agency || "");
   const rawPfx = rawAg.slice(0, 3).toUpperCase();
@@ -8885,10 +9088,21 @@ async function planBusMatch(leg) {
       }
     }
   }
-  const order = [...new Set([c0, "InterCity", c0 === "Taipei" ? "NewTaipei" : c0 === "NewTaipei" ? "Taipei" : null].filter(Boolean))];
+  const geoC = (!c0 && leg.from && leg.from.lat != null) ? busGeoCities(leg.from.lat, leg.from.lon) : [];
+  const order = [...new Set([...geoC, c0, "InterCity", c0 === "Taipei" ? "NewTaipei" : c0 === "NewTaipei" ? "Taipei" : null].filter(Boolean))];
+  const legPn = pn(leg.name);
+  const agPn = pn(leg.agencyName || "");
+  const legClean = agPn ? legPn.replace(agPn, "") : "";
   for (const city of order) {
     const list = await busCity(city);
-    const cands = list.filter(r => pn(r[1]) === pn(leg.name));
+    const cands = list.filter(r => {
+      const rPn = pn(r[1]);
+      if (rPn === legPn) return true;
+      if (legClean && rPn === legClean) return true;
+      if (legPn.startsWith(rPn)) return true;
+      return false;
+    });
+    cands.sort((a, b) => (pn(a[1]) === legPn ? 0 : 1) - (pn(b[1]) === legPn ? 0 : 1));
     for (const r of cands) {
       const k = routeKind(r[0]); if (!k) continue;
       let sor; try { sor = await sorOf(k, r[1], r[0]); } catch (e) { if (isRate(e)) throw e; continue; }
@@ -8968,7 +9182,7 @@ async function planLive({ legs, busOnly, memo }) {
         if (B.kind === "tra" || B.kind === "thsr") {
           const hm0 = (leg.from.time || "").slice(11, 16);
           const row = (B.trains || []).find(t => (leg.number && String(t.no) === String(leg.number)) || t.time === hm0);
-          if (row) { const m = row.t + (row.delay || 0) - nowM; o.pill = { min: m < -600 ? m + 1440 : m, tag: row.delay == null ? "表定" : row.delay > 0 ? `即時・晚${row.delay}` : "即時・準點", live: row.delay != null, late: row.delay > 0, no: row.no }; }
+          if (row) { const m = row.t + (row.delay || 0) - nowM; o.pill = { min: m < -600 ? m + 1440 : m, tag: row.delay == null ? "表定" : row.delay > 0 ? `即時・晚${row.delay}` : "即時・準點", live: row.delay != null, late: row.delay > 0, no: row.no }; o.no = row.no; o.trainType = row.type; }
         } else {
           const head = leg.headsign;
           const lv = B.live ? (B.trains || []).filter(t => t.eta != null && nameHit(t.dest, head) && t.eta >= m0 - 1).sort((a, b) => a.eta - b.eta)[0] : null;
