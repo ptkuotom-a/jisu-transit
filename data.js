@@ -7021,9 +7021,11 @@ function planClean(routes, yb) {
       const city = t.city || s.city || STOP_CITY[(uid || agId).slice(0, 3).toUpperCase()] || "";
       const stopUID = (s.departure && s.departure.place && s.departure.place.stopUID) || "";
       const toStopUID = (s.arrival && s.arrival.place && s.arrival.place.stopUID) || "";
+      const lineOp = t.lineOp || s.lineOp || "";
+      const lineCode = t.lineCode || s.lineCode || "";
       legs.push({ kind, mode: PLAN_MODE(s), name: t.shortName || t.name || "", longName: t.longName || "", headsign: r.source !== "google" && /環狀輕軌/.test((t.shortName || t.name || "") + (t.longName || "")) ? "" : planHead(t.headsign), color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
         number: t.number || "", agency: agId, agencyName: (s.agency && s.agency.name) || "", from, to, dur,
-        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(t.dir != null ? { dir: t.dir === 1 ? 1 : 0 } : {}), ...(stopUID ? { stopUID } : {}), ...(toStopUID ? { toStopUID } : {}), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}), ...(t.est ? { est: true } : {}), ...(t.liveDep ? { liveDep: true } : {}), ...(s.timeSrc ? { timeSrc: s.timeSrc } : {}), ...(pts && pts.length >= 2 ? { shape: { coords: pts } } : {}) });
+        stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(t.dir != null ? { dir: t.dir === 1 ? 1 : 0 } : {}), ...(stopUID ? { stopUID } : {}), ...(toStopUID ? { toStopUID } : {}), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}), ...(t.est ? { est: true } : {}), ...(t.liveDep ? { liveDep: true } : {}), ...(s.timeSrc ? { timeSrc: s.timeSrc } : {}), ...(lineOp ? { lineOp } : {}), ...(lineCode ? { lineCode } : {}), ...(pts && pts.length >= 2 ? { shape: { coords: pts } } : {}) });
     }
     // 換成步行的頭尾段：依公共運輸的時刻往前／往後推，算出新的出發／抵達時間
     const tr = legs.filter(l => l.kind === "transit");
@@ -7318,6 +7320,84 @@ async function rpWalkBoth(o, d, oPts, dPts, wantOD) {
   if (acc.od) { od = acc.od; walkOdSet(so + ">>" + sd, od); }
   return { Wo, Wd, od };
 }
+// ===== 三鶯線（新北捷運 LB）站點清單與常數 =====
+const LB_NEAR_DIST_M = 1500; // 判斷起訖點是否在任一 LB 站 1.5 公里內
+let lbStationsCache = null;
+// 備援常數表（出處：新北捷運 NTMC 官方車站資料與 TDX StationPosition /static/rail/stations）
+const LB_STATIONS_FALLBACK = [
+  { id: "LB01", name: "頂埔", lat: 24.959722, lon: 121.419444 },
+  { id: "LB02", name: "媽祖田", lat: 24.953341, lon: 121.411872 },
+  { id: "LB03", name: "長壽山", lat: 24.944376, lon: 121.402946 },
+  { id: "LB04", name: "橫溪", lat: 24.937182, lon: 121.390407 },
+  { id: "LB05", name: "龍埔", lat: 24.939689, lon: 121.382542 },
+  { id: "LB06", name: "三峽", lat: 24.939323, lon: 121.376066 },
+  { id: "LB07", name: "台北大學", lat: 24.93905, lon: 121.367073 },
+  { id: "LB08", name: "鶯歌車站", lat: 24.953253, lon: 121.356482 },
+  { id: "LB09", name: "陶瓷老街", lat: 24.952578, lon: 121.349486 },
+  { id: "LB10", name: "國華", lat: 24.955342, lon: 121.342194 },
+  { id: "LB11", name: "永吉公園", lat: 24.960838, lon: 121.334432 },
+  { id: "LB12", name: "鶯桃福德", lat: 24.966833, lon: 121.329972 }
+];
+
+async function getLbStations() {
+  if (lbStationsCache && lbStationsCache.length) return lbStationsCache;
+  try {
+    const all = await loadRailStations();
+    if (all && all.length) {
+      const lbs = all.filter(s => s && ((s.id && /^LB\d/i.test(s.id)) || (s.ids && s.ids.some(x => /^LB\d/i.test(x)))));
+      if (lbs.length) return (lbStationsCache = lbs);
+    }
+  } catch (e) {}
+  return (lbStationsCache = LB_STATIONS_FALLBACK);
+}
+
+function rpLbNear(p, r = LB_NEAR_DIST_M) {
+  if (!p || p.lat == null || p.lon == null) return [];
+  const out = [];
+  const stns = lbStationsCache || LB_STATIONS_FALLBACK;
+  for (const s of stns) {
+    if (s.lat != null && s.lon != null) {
+      const d = haversine(p.lat, p.lon, s.lat, s.lon);
+      if (d <= r) out.push([{ key: "NTMC:" + s.id, op: "NTMC", id: s.id, name: s.name, lat: s.lat, lon: s.lon }, d]);
+    }
+  }
+  return out;
+}
+
+async function isLbNearCoord(o, d) {
+  if (!o || !d || o.lat == null || d.lat == null) return false;
+  const stns = await getLbStations();
+  return stns.some(s => (s.lat != null && s.lon != null) &&
+    (haversine(o.lat, o.lon, s.lat, s.lon) <= LB_NEAR_DIST_M ||
+     haversine(d.lat, d.lon, s.lat, s.lon) <= LB_NEAR_DIST_M));
+}
+
+function hasLbLeg(r) {
+  return (r && r.legs || []).some(l =>
+    l.kind === "transit" && (
+      (l.lineCode && l.lineCode.toUpperCase() === "LB") ||
+      (l.lineOp === "NTMC" && (l.lineCode === "LB" || /三鶯/.test(l.name || ""))) ||
+      /三鶯/.test(l.name || "") ||
+      (l.routeUID && /NTMC_LB|LB/i.test(l.routeUID)) ||
+      (l.from && l.from.stopUID && /^LB\d/i.test(l.from.stopUID)) ||
+      (l.to && l.to.stopUID && /^LB\d/i.test(l.to.stopUID)) ||
+      (l.from && l.from.name && /三峽|頂埔|媽祖田|長壽山|橫溪|龍埔|台北大學|陶瓷老街|國華|永吉公園|鶯桃福德/.test(l.from.name) && l.to && l.to.name && /三峽|頂埔|媽祖田|長壽山|橫溪|龍埔|台北大學|陶瓷老街|國華|永吉公園|鶯桃福德/.test(l.to.name))
+    )
+  );
+}
+
+function mergeLbAndOtp(otpRoutes, ownRoutes) {
+  // 取 ownPlan 結果中「有 NTMC LB 搭乘段」的路線
+  const lbRoutes = (ownRoutes || []).filter(hasLbLeg);
+  // OTP 路線中含三鶯線段的整條丟掉（路網不完整）；其餘 OTP 路線（YouBike、公車等）保留
+  const cleanOtp = (otpRoutes || []).filter(r => !hasLbLeg(r));
+  const merged = lbRoutes.concat(cleanOtp);
+  if (!merged.length) return null;
+  const walkOf = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
+  merged.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
+  return merged;
+}
+
 // 路上步行公尺：有 OSRM 就用（不會短於直線；比直線長 4 倍以上多半是定位到別條路，改回估算），沒有就直線×1.3
 function rpWalkM(W, p, lat, lon) { const s = haversine(p.lat, p.lon, lat, lon), v = W && W.get(rpLL(lat, lon)); return v != null && v <= s * 4 + 200 ? Math.max(v, s) : s * 1.3; }
 // v2.51.4：這段步行有沒有用到路網距離（有就標「路網」，沒有標「直線估算」）
@@ -7326,6 +7406,9 @@ const rpStreetW = (W, p, lat, lon) => Math.ceil(rpWalkM(W, p, lat, lon) / RP_WSP
 // 要問步行距離的點：附近車站（RP_WALK_ST 內）＋附近公車的上下車站牌（＋直達公車在終點附近的下車站牌）
 function rpWalkPts(S, p, B, dirTo) {
   const out = S ? S.near(p.lat, p.lon, RP_WALK_ST).map(([x]) => [x.lat, x.lon, false]) : [];
+  for (const [x] of rpLbNear(p, LB_NEAR_DIST_M)) {
+    if (!out.some(q => q[0] === x.lat && q[1] === x.lon)) out.push([x.lat, x.lon, false]);
+  }
   for (const r of (B && B.rows) || []) {
     const sq = rpSeq(B.sor, r.RouteUID, r.Direction); if (!sq) continue;
     const st = sq.Stops || [], i = st.findIndex(x => x.StopUID === r.StopUID); if (i < 0 || !st[i].P) continue;
@@ -7380,7 +7463,10 @@ const rpAltTxt = (b, alts, live) => [b.name + (live && b.dep ? `（${hmTpe(b.dep
 function rpAccess(S, o, isSt, bus, t0, live, W) {
   const src = new Map(), how = new Map(), put = (k, m, h) => { if (!src.has(k) || src.get(k) > m) { src.set(k, m); how.set(k, h); } };
   if (isSt) for (const [k, m] of rpEnds(S, o)) put(k, m, { type: "walk", m });
-  else for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+  else {
+    if (S) for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+    for (const [x] of rpLbNear(o, LB_NEAR_DIST_M)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+  }
   for (const b of bus) {
     const ready = t0 + b.walk * RP_MS, alts = rpAlts(b, bus, live, ready), q = rpDepAt(b, ready, live, alts.length > 0); if (!q) continue;
     const dep = q.dep, lv = q.live;
@@ -7392,7 +7478,10 @@ function rpAccess(S, o, isSt, bus, t0, live, W) {
 function rpEgress(S, d, isSt, bus, W) {
   const dst = new Map(), how = new Map(), put = (k, m, h) => { if (!dst.has(k) || dst.get(k) > m) { dst.set(k, m); how.set(k, h); } };
   if (isSt) for (const [k, m] of rpEnds(S, d)) put(k, m, { type: "walk", m });
-  else for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+  else {
+    if (S) for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+    for (const [x] of rpLbNear(d, LB_NEAR_DIST_M)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+  }
   for (const b of bus) {   // 終點那頭：同一站牌好幾條路線都到終點附近，等車估 3 分
     const alts = rpAlts(b, bus, false, null), w = alts.length ? 3 : RP_BUS_WAIT, m = b.stWalk + w + b.ride + b.walk;
     put(b.key, m, { type: "bus", m, opt: b, alts, wait: w });
@@ -7443,7 +7532,7 @@ function rpRoute(net, S, J, o, d) {
     const big = rpBig(t.op);
     const transport = big
       ? { mode: t.op, name: t.start && t.dest ? t.start + "-" + t.dest : t.op === "TRA" ? "台鐵" : "高鐵", headsign: t.dest, number: t.no, ...(t.op === "TRA" && t.type ? { trainType: t.type } : {}) }
-      : { mode: RP_LRT[t.op] ? "lrt" : "metro", name: (RP_LINE_ZH[t.op] || {})[t.line] || t.line, headsign: t.dest || "", ...(t.est ? { est: true } : {}) };
+      : { mode: RP_LRT[t.op] ? "lrt" : "metro", name: (RP_LINE_ZH[t.op] || {})[t.line] || t.line, headsign: t.dest || "", lineOp: t.op, lineCode: t.line, ...(t.est ? { est: true } : {}) };
     sec.push({ type: "transit", timeSrc: t.est ? "headway" : "schedule", transport, agency: { agency_id: t.op, name: t.op },
       departure: place(A[0], dep), arrival: place(B[0], arr),
       intermediateStops: t.pts.slice(r.b + 1, r.a).map(x => ({ departure: place(x[0], x[2]) })),
@@ -8140,10 +8229,28 @@ async function planRoutes({ o, d, modes, yb, walk, when, time, onLive, more }) {
   o = r4(o); d = r4(d);
   if (walk && !(modes || []).length && !yb) return await ownPlan({ o, d, modes: [], yb: false, walk: true, when, time });   // 只步行：不往 Google／TDX
   if (!more) {
-    const otp = await otpPlanTry({ o, d, modes, yb, when, time });
-    if (otp && otp.length) return otp;   // v2.60.6：OTP 有路線：不跑 ownPlan、不打 /plan（Google／TDX）
-    const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
-    if (own && own.length) return own;
+    const lbNear = await isLbNearCoord(o, d);
+    if (lbNear) {
+      // v2.60.8：三鶯線相關時，OTP 與 ownPlan 同時開跑（不要串行加長等待）
+      const otpP = otpPlanTry({ o, d, modes, yb, when, time }).catch(e => { console.warn("otpPlanTry", e); return []; });
+      const ownP = ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
+      const [otpRes, ownRes] = await Promise.all([otpP, ownP]);
+      const merged = mergeLbAndOtp(otpRes, ownRes);
+      if (merged && merged.length) return merged;
+    } else {
+      const otp = await otpPlanTry({ o, d, modes, yb, when, time });
+      if (otp && otp.length) {
+        if (otp.some(hasLbLeg)) {
+          // 若 OTP 路線含三鶯線段，啟動 ownPlan 補充完整班表並合併
+          const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
+          const merged = mergeLbAndOtp(otp, own);
+          if (merged && merged.length) return merged;
+        }
+        return otp;   // v2.60.6：OTP 有路線：不跑 ownPlan、不打 /plan（Google／TDX）
+      }
+      const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
+      if (own && own.length) return own;
+    }
   }
   const snapOf = p => { if (!planIsStation(p)) return null; const m = TDX_MISSING[String(p.name || "").replace(/站$/, "")]; return m && modes.includes(m.mode) ? m : null; };
   let so = snapOf(o), sd = snapOf(d); const qo = so || o, qd = sd || d;

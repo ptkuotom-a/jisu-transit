@@ -2162,7 +2162,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.7';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.8';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -6214,7 +6214,7 @@ function trainIco(l) {
 }
 const stNorm = n => String(n || '').replace(/臺/g, '台').replace(/\s/g, '').replace(/(火車站|車站|站)$/, '');
 // 捷運／輕軌路段的 [營運單位, 路線代碼]（支線優先）
-const legLine = l => { const br = legBr(l); if (br) return ['TRTC', br]; return NAME2LINE[l.name] || NAME2LINE[(l.name || '').replace(/線$/, '') + '線'] || null; };
+const legLine = l => { const br = legBr(l); if (br) return ['TRTC', br]; if (l.lineOp && l.lineCode) return [l.lineOp, l.lineCode]; return NAME2LINE[l.name] || NAME2LINE[(l.name || '').replace(/線$/, '') + '線'] || null; };
 // 系統代號：台鐵／高鐵／公車用 mode；捷運輕軌用營運單位（對不到就用即時資料對到的車站）
 const legSys = (l, L) => l.kind === 'bike' ? 'bike' : l.mode === 'bus' || l.mode === 'tra' || l.mode === 'thsr' ? l.mode : (legLine(l) || [])[0] || (L && L.open && L.open.r && L.open.r.op) || l.mode;
 const SYS_ZH = { bus:'公車', tra:'台鐵', thsr:'高鐵', TRTC:'北捷', NTMC:'新北捷運', TYMC:'桃園機捷', TMRT:'中捷', KRTC:'高捷', KLRT:'高雄輕軌', NTDLRT:'淡海輕軌', NTALRT:'安坑輕軌', mrt:'捷運', lrt:'輕軌', bike:'YouBike' };
