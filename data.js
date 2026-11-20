@@ -7167,8 +7167,8 @@ function rpStations(ops) {
     const all = (await loadRailStations().catch(() => [])).filter(s => ops.includes(s.op) && s.lat != null);
     const info = new Map(), cell = new Map(), ck = (a, b) => Math.floor(a / 0.004) + "," + Math.floor(b / 0.004);
     for (const s of all) { const k = s.op + ":" + s.id; if (info.has(k)) continue; info.set(k, { key: k, op: s.op, id: s.id, name: s.name, lat: s.lat, lon: s.lon }); const c = ck(s.lat, s.lon); if (!cell.has(c)) cell.set(c, []); cell.get(c).push(k); }
-    const near = (lat, lon, r) => { const out = [], a = Math.floor(lat / 0.004), b = Math.floor(lon / 0.004);
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const k of cell.get((a + i) + "," + (b + j)) || []) { const s = info.get(k), d = haversine(lat, lon, s.lat, s.lon); if (d <= r) out.push([s, d]); }
+    const near = (lat, lon, r) => { const out = [], a = Math.floor(lat / 0.004), b = Math.floor(lon / 0.004), span = Math.max(1, Math.ceil((r || 800) / 400));
+      for (let i = -span; i <= span; i++) for (let j = -span; j <= span; j++) for (const k of cell.get((a + i) + "," + (b + j)) || []) { const s = info.get(k), d = haversine(lat, lon, s.lat, s.lon); if (d <= r) out.push([s, d]); }
       return out; };
     const foot = new Map();
     for (const s of info.values()) foot.set(s.key, near(s.lat, s.lon, RP_FP).filter(([x]) => x.key !== s.key).map(([x, d]) => [x.key, rpXfer(s, x, d), rpTight(s, x, d)]));
@@ -7243,7 +7243,7 @@ function rpScan(net, S, src, dst, t0, tMax, arriveBy) {
 // 公車行駛時間用站序座標估：路線距離÷每分鐘 250 公尺＋每站 0.3 分；等車：現在出發用即時預估（第一段），其他估 5 分（有 2 條以上路線可搭估 3 分）。
 // 同一個站牌（150 公尺內）有好幾條路線都到同一個車站時，一起列出（例：榮總→石牌 508／小8／128…），哪班先來搭哪班：現在出發取即時預估最早的一班。
 // 軌道車站 800 公尺內也可以直接走過去（路上步行：OSRM 實際距離，沒有就直線×1.3；÷每分鐘 75 公尺，進出站另加 3 分）。
-const RP_BUS_R = 800, RP_BUS_ST = 800, RP_WALK_ST = 800, RP_BUS_WAIT = 5, RP_DIR_R = 800;
+const RP_BUS_R = 800, RP_BUS_ST = 800, RP_WALK_ST = 1200, RP_BUS_WAIT = 5, RP_DIR_R = 800;
 // 現在出發的發車時間：有即時預估且走得到 → 用即時；這班來不及 → 估下一班（再等 8 分）；沒有預估但有預定發車時間 → 用預定；
 // 都沒有（末班已過、今日未營運、還沒發車又沒時間）→ 不用這條。指定時間出發：一律估等 5 分（好幾條可搭 3 分）
 function rpDepAt(b, ready, live, many) {
@@ -7386,6 +7386,12 @@ function hasLbLeg(r) {
   );
 }
 
+function isRailMode(m) { return m === "mrt" || m === "metro" || m === "lrt" || m === "tra" || m === "thsr"; }
+function hasRailLeg(r) { return (r && r.legs || []).some(l => l.kind === "transit" && isRailMode(l.mode)); }
+function hasBusRailTransfer(r) { return hasRailLeg(r) && (r && r.legs || []).some(l => l.kind === "transit" && l.mode === "bus"); }
+function isBikeRoute(r) { return (r && r.legs || []).some(l => l.kind === "bike"); }
+function isDirectBusRoute(r) { return !isBikeRoute(r) && !hasRailLeg(r) && (r && r.legs || []).some(l => l.kind === "transit" && l.mode === "bus"); }
+
 function mergeLbAndOtp(otpRoutes, ownRoutes) {
   // 取 ownPlan 結果中「有 NTMC LB 搭乘段」的路線
   const lbRoutes = (ownRoutes || []).filter(hasLbLeg);
@@ -7396,6 +7402,67 @@ function mergeLbAndOtp(otpRoutes, ownRoutes) {
   const walkOf = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
   merged.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
   return merged;
+}
+
+function mergeOtpAndOwn(otpRoutes, ownRoutes, opts = {}) {
+  const { lbMode = false } = opts;
+  if (lbMode || (otpRoutes || []).some(hasLbLeg)) {
+    return mergeLbAndOtp(otpRoutes, ownRoutes);
+  }
+
+  const ownRail = (ownRoutes || []).filter(hasRailLeg);
+  if (!ownRail.length) {
+    return (otpRoutes && otpRoutes.length) ? otpRoutes : (ownRoutes || []);
+  }
+
+  const walkOf = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
+  const cmp = (a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b);
+
+  // 依搭乘路線組合（例如 bus:602>mrt:淡水信義線 或 mrt:淡水信義線）分組，先挑每種組合最快的一條放在前段，
+  // 確保公車轉捷運、步行到車站搭捷運、OTP YouBike、OTP 直達公車都能在列表前段同時呈現，不被同路線多班次洗版
+  const patternOf = r => (r.legs || []).filter(l => l.kind === "transit").map(l => `${l.mode}:${l.lineCode || l.name || ""}`).join(">");
+  const dedupeByPattern = arr => {
+    const sorted = arr.slice().sort(cmp);
+    const seen = new Set(), primary = [], rest = [];
+    for (const r of sorted) {
+      const k = patternOf(r);
+      if (!seen.has(k)) { seen.add(k); primary.push(r); }
+      else rest.push(r);
+    }
+    return { primary, rest };
+  };
+
+  const busRail = dedupeByPattern(ownRail.filter(hasBusRailTransfer));
+  const pureRail = dedupeByPattern(ownRail.filter(r => !hasBusRailTransfer(r)));
+  const otpBike = (otpRoutes || []).filter(isBikeRoute).slice().sort(cmp);
+  const otpBusOrOther = (otpRoutes || []).filter(r => !isBikeRoute(r)).slice().sort(cmp);
+
+  const head = [];
+  const pushUnique = (target, arr, limit) => {
+    let n = 0;
+    for (const r of arr) {
+      if (limit != null && n >= limit) break;
+      if (!target.includes(r)) { target.push(r); n++; }
+    }
+  };
+
+  pushUnique(head, busRail.primary, 1);
+  pushUnique(head, pureRail.primary, 1);
+  pushUnique(head, otpBike, 1);
+  pushUnique(head, otpBusOrOther, 1);
+  head.sort(cmp);
+
+  const tail = [];
+  pushUnique(tail, busRail.primary.slice(1));
+  pushUnique(tail, pureRail.primary.slice(1));
+  pushUnique(tail, otpBike.slice(1));
+  pushUnique(tail, otpBusOrOther.slice(1));
+  pushUnique(tail, busRail.rest);
+  pushUnique(tail, pureRail.rest);
+  tail.sort(cmp);
+
+  const out = head.concat(tail.filter(r => !head.includes(r)));
+  return out;
 }
 
 // 路上步行公尺：有 OSRM 就用（不會短於直線；比直線長 4 倍以上多半是定位到別條路，改回估算），沒有就直線×1.3
@@ -8244,6 +8311,15 @@ async function planRoutes({ o, d, modes, yb, walk, when, time, onLive, more }) {
           // 若 OTP 路線含三鶯線段，啟動 ownPlan 補充完整班表並合併
           const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
           const merged = mergeLbAndOtp(otp, own);
+          if (merged && merged.length) return merged;
+        }
+        // v2.60.9：使用者若開啟軌道模式（捷運/輕軌/台鐵/高鐵），而 OTP 結果缺少軌道或缺少公車轉軌道時，自動執行 ownPlan 補齊
+        const wantRail = (modes || []).some(m => [3, 4, 6, 7, "3", "4", "6", "7"].includes(m));
+        const wantBus = (modes || []).some(m => [5, "5"].includes(m));
+        const needRailBackfill = wantRail && (!otp.some(hasRailLeg) || (wantBus && !otp.some(hasBusRailTransfer)));
+        if (needRailBackfill) {
+          const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
+          const merged = mergeOtpAndOwn(otp, own, { wantRail, wantBus });
           if (merged && merged.length) return merged;
         }
         return otp;   // v2.60.6：OTP 有路線：不跑 ownPlan、不打 /plan（Google／TDX）

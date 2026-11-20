@@ -1392,7 +1392,7 @@
   };
   const RP_LRT = { KLRT: 1, NTDLRT: 1, NTALRT: 1 };
   const RP_CHG = () => 3;
-  const RP_K = 4, RP_FP = 800, RP_MS = 60000, RP_WALK_ST = 800, RP_WSPD = 75;
+  const RP_K = 4, RP_FP = 800, RP_MS = 60000, RP_WALK_ST = 1200, RP_WSPD = 75;
   const rpBig = op => op === "TRA" || op === "THSR";
   const rpWalk = m => Math.ceil(m / 100);
   const pn = x => String(x || "").replace(/臺/g, "台").toLowerCase().replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
@@ -1415,8 +1415,8 @@
       cell.get(c).push(k);
     }
     const near = (lat, lon, r) => {
-      const out = [], a = Math.floor(lat / 0.004), b = Math.floor(lon / 0.004);
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      const out = [], a = Math.floor(lat / 0.004), b = Math.floor(lon / 0.004), span = Math.max(1, Math.ceil((r || 800) / 400));
+      for (let i = -span; i <= span; i++) for (let j = -span; j <= span; j++) {
         for (const k of cell.get((a + i) + "," + (b + j)) || []) {
           const s = info.get(k), d = havRound(lat, lon, s.lat, s.lon);
           if (d <= r) out.push([s, d]);
