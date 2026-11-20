@@ -7243,7 +7243,7 @@ function rpScan(net, S, src, dst, t0, tMax, arriveBy) {
 // 公車行駛時間用站序座標估：路線距離÷每分鐘 250 公尺＋每站 0.3 分；等車：現在出發用即時預估（第一段），其他估 5 分（有 2 條以上路線可搭估 3 分）。
 // 同一個站牌（150 公尺內）有好幾條路線都到同一個車站時，一起列出（例：榮總→石牌 508／小8／128…），哪班先來搭哪班：現在出發取即時預估最早的一班。
 // 軌道車站 800 公尺內也可以直接走過去（路上步行：OSRM 實際距離，沒有就直線×1.3；÷每分鐘 75 公尺，進出站另加 3 分）。
-const RP_BUS_R = 800, RP_BUS_ST = 800, RP_WALK_ST = 1200, RP_BUS_WAIT = 5, RP_DIR_R = 800;
+const RP_BUS_R = 800, RP_BUS_ST = 800, RP_WALK_ST = 1200, RP_FALLBACK_WALK_ST = 5000, RP_BUS_WAIT = 5, RP_DIR_R = 800;
 // 現在出發的發車時間：有即時預估且走得到 → 用即時；這班來不及 → 估下一班（再等 8 分）；沒有預估但有預定發車時間 → 用預定；
 // 都沒有（末班已過、今日未營運、還沒發車又沒時間）→ 不用這條。指定時間出發：一律估等 5 分（好幾條可搭 3 分）
 function rpDepAt(b, ready, live, many) {
@@ -7389,8 +7389,11 @@ function hasLbLeg(r) {
 function isRailMode(m) { return m === "mrt" || m === "metro" || m === "lrt" || m === "tra" || m === "thsr"; }
 function hasRailLeg(r) { return (r && r.legs || []).some(l => l.kind === "transit" && isRailMode(l.mode)); }
 function hasBusRailTransfer(r) { return hasRailLeg(r) && (r && r.legs || []).some(l => l.kind === "transit" && l.mode === "bus"); }
-function isBikeRoute(r) { return (r && r.legs || []).some(l => l.kind === "bike"); }
+function isBikeRoute(r) { return (r && r.legs || []).some(l => l.kind === "bike") && !hasTransitLeg(r); }
 function isDirectBusRoute(r) { return !isBikeRoute(r) && !hasRailLeg(r) && (r && r.legs || []).some(l => l.kind === "transit" && l.mode === "bus"); }
+
+function hasTransitLeg(r) { return (r && r.legs || []).some(l => l.kind === "transit"); }
+function isLongBike(r) { return isBikeRoute(r) && !hasTransitLeg(r) && ((r.dur || 0) > 90 || ((r.end - r.start) > 90 * 60000)); }
 
 function mergeLbAndOtp(otpRoutes, ownRoutes) {
   // 取 ownPlan 結果中「有 NTMC LB 搭乘段」的路線
@@ -7400,7 +7403,15 @@ function mergeLbAndOtp(otpRoutes, ownRoutes) {
   const merged = lbRoutes.concat(cleanOtp);
   if (!merged.length) return null;
   const walkOf = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
-  merged.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
+  const cmp = (a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b);
+  const hasTransit = merged.some(hasTransitLeg);
+  merged.sort((a, b) => {
+    if (hasTransit) {
+      const la = isLongBike(a), lb = isLongBike(b);
+      if (la !== lb) return la ? 1 : -1;
+    }
+    return cmp(a, b);
+  });
   return merged;
 }
 
@@ -7411,12 +7422,21 @@ function mergeOtpAndOwn(otpRoutes, ownRoutes, opts = {}) {
   }
 
   const ownRail = (ownRoutes || []).filter(hasRailLeg);
-  if (!ownRail.length) {
-    return (otpRoutes && otpRoutes.length) ? otpRoutes : (ownRoutes || []);
-  }
-
   const walkOf = r => (r.legs || []).reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
   const cmp = (a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b);
+
+  if (!ownRail.length) {
+    const list = (otpRoutes && otpRoutes.length) ? otpRoutes.slice() : (ownRoutes || []).slice();
+    const hasTransit = list.some(hasTransitLeg);
+    if (hasTransit) {
+      list.sort((a, b) => {
+        const la = isLongBike(a), lb = isLongBike(b);
+        if (la !== lb) return la ? 1 : -1;
+        return cmp(a, b);
+      });
+    }
+    return list;
+  }
 
   // 依搭乘路線組合（例如 bus:602>mrt:淡水信義線 或 mrt:淡水信義線）分組，先挑每種組合最快的一條放在前段，
   // 確保公車轉捷運、步行到車站搭捷運、OTP YouBike、OTP 直達公車都能在列表前段同時呈現，不被同路線多班次洗版
@@ -7434,7 +7454,9 @@ function mergeOtpAndOwn(otpRoutes, ownRoutes, opts = {}) {
 
   const busRail = dedupeByPattern(ownRail.filter(hasBusRailTransfer));
   const pureRail = dedupeByPattern(ownRail.filter(r => !hasBusRailTransfer(r)));
-  const otpBike = (otpRoutes || []).filter(isBikeRoute).slice().sort(cmp);
+  const allOtpBike = (otpRoutes || []).filter(isBikeRoute);
+  const otpBike = allOtpBike.filter(r => !isLongBike(r)).slice().sort(cmp);
+  const longBike = allOtpBike.filter(isLongBike).slice().sort(cmp);
   const otpBusOrOther = (otpRoutes || []).filter(r => !isBikeRoute(r)).slice().sort(cmp);
 
   const head = [];
@@ -7461,6 +7483,9 @@ function mergeOtpAndOwn(otpRoutes, ownRoutes, opts = {}) {
   pushUnique(tail, pureRail.rest);
   tail.sort(cmp);
 
+  // 超長 YouBike（>90分）一律排在大眾運輸方案之後
+  pushUnique(tail, longBike);
+
   const out = head.concat(tail.filter(r => !head.includes(r)));
   return out;
 }
@@ -7470,9 +7495,13 @@ function rpWalkM(W, p, lat, lon) { const s = haversine(p.lat, p.lon, lat, lon), 
 // v2.51.4：這段步行有沒有用到路網距離（有就標「路網」，沒有標「直線估算」）
 function rpWalkSrc(W, p, lat, lon) { const s = haversine(p.lat, p.lon, lat, lon), v = W && W.get(rpLL(lat, lon)); return v != null && v <= s * 4 + 200 ? "osrm" : "line"; }
 const rpStreetW = (W, p, lat, lon) => Math.ceil(rpWalkM(W, p, lat, lon) / RP_WSPD);
-// 要問步行距離的點：附近車站（RP_WALK_ST 內）＋附近公車的上下車站牌（＋直達公車在終點附近的下車站牌）
+// 要問步行距離的點：附近車站（RP_WALK_ST 內，若無則退回 RP_FALLBACK_WALK_ST 取最近 2 站）＋附近公車的上下車站牌（＋直達公車在終點附近的下車站牌）
 function rpWalkPts(S, p, B, dirTo) {
-  const out = S ? S.near(p.lat, p.lon, RP_WALK_ST).map(([x]) => [x.lat, x.lon, false]) : [];
+  let nearSt = S ? S.near(p.lat, p.lon, RP_WALK_ST) : [];
+  if (S && (!nearSt || nearSt.length === 0)) {
+    nearSt = S.near(p.lat, p.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2);
+  }
+  const out = nearSt.map(([x]) => [x.lat, x.lon, false]);
   for (const [x] of rpLbNear(p, LB_NEAR_DIST_M)) {
     if (!out.some(q => q[0] === x.lat && q[1] === x.lon)) out.push([x.lat, x.lon, false]);
   }
@@ -7527,12 +7556,48 @@ function rpAlts(b, list, live, ready) {
   return [...m.values()].sort((p, q) => (p.at ?? 9e15) - (q.at ?? 9e15));
 }
 const rpAltTxt = (b, alts, live) => [b.name + (live && b.dep ? `（${hmTpe(b.dep)}）` : ""), ...alts.slice(0, 5).map(a => a.name + (a.at ? `（${hmTpe(a.at)}）` : ""))].join("、") + (alts.length > 5 ? ` 等 ${alts.length + 1} 條` : "");
-function rpAccess(S, o, isSt, bus, t0, live, W) {
+function rpBikeLegOpt(fromP, toP, ybList, walkM) {
+  if (!ybList || !ybList.length || !fromP || !toP || fromP.lat == null || toP.lat == null) return null;
+  const dist = walkM || Math.round(haversine(fromP.lat, fromP.lon, toP.lat, toP.lon) * 1.3);
+  if (dist <= 800) return null;
+  const nearYb = (p, kind) => ybList.filter(s => {
+      if (!s || s.lat == null || (s.lng == null && s.lon == null)) return false;
+      if (s.status != null && s.status !== 1) return false;
+      if (kind === "rent" && typeof s.available_spaces === "number" && s.available_spaces <= 0) return false;
+      if (kind === "ret" && typeof s.empty_spaces === "number" && s.empty_spaces <= 0) return false;
+      return haversine(p.lat, p.lon, +s.lat, +(s.lng ?? s.lon)) <= 800;
+    })
+    .sort((a, b) => haversine(p.lat, p.lon, +a.lat, +(a.lng ?? a.lon)) - haversine(p.lat, p.lon, +b.lat, +(b.lng ?? b.lon)))[0] || null;
+  const stA = nearYb(fromP, "rent"), stB = nearYb(toP, "ret");
+  if (!stA || !stB || stA === stB) return null;
+  const aLat = +stA.lat, aLon = +(stA.lng ?? stA.lon), bLat = +stB.lat, bLon = +(stB.lng ?? stB.lon);
+  const w1M = Math.round(haversine(fromP.lat, fromP.lon, aLat, aLon) * 1.3);
+  const bM = Math.round(haversine(aLat, aLon, bLat, bLon) * 1.3);
+  const w2M = Math.round(haversine(bLat, bLon, toP.lat, toP.lon) * 1.3);
+  const w1S = Math.max(60, Math.ceil(w1M / (75 / 60)));
+  const bS = Math.max(120, Math.ceil(bM / (250 / 60)));
+  const w2S = Math.max(60, Math.ceil(w2M / (75 / 60)));
+  const m = Math.ceil((w1S + bS + w2S) / 60) + 3;
+  const walkMin = Math.ceil(dist / RP_WSPD) + 3;
+  if (m >= walkMin - 2) return null;
+  return { type: "bike", m, w1S, w1M, bS, bM, w2S, w2M, stA, stB };
+}
+function rpAccess(S, o, isSt, bus, t0, live, W, ybList) {
   const src = new Map(), how = new Map(), put = (k, m, h) => { if (!src.has(k) || src.get(k) > m) { src.set(k, m); how.set(k, h); } };
+  const putSt = x => {
+    const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3;
+    put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) });
+    const bk = rpBikeLegOpt(o, x, ybList, len);
+    if (bk) put(x.key, bk.m, bk);
+  };
   if (isSt) for (const [k, m] of rpEnds(S, o)) put(k, m, { type: "walk", m });
   else {
-    if (S) for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
-    for (const [x] of rpLbNear(o, LB_NEAR_DIST_M)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+    if (S) for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) putSt(x);
+    for (const [x] of rpLbNear(o, LB_NEAR_DIST_M)) putSt(x);
+    if (S && src.size === 0) {
+      const fallback = S.near(o.lat, o.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2);
+      for (const [x] of fallback) putSt(x);
+    }
   }
   for (const b of bus) {
     const ready = t0 + b.walk * RP_MS, alts = rpAlts(b, bus, live, ready), q = rpDepAt(b, ready, live, alts.length > 0); if (!q) continue;
@@ -7542,12 +7607,22 @@ function rpAccess(S, o, isSt, bus, t0, live, W) {
   }
   return { src, how };
 }
-function rpEgress(S, d, isSt, bus, W) {
+function rpEgress(S, d, isSt, bus, W, ybList) {
   const dst = new Map(), how = new Map(), put = (k, m, h) => { if (!dst.has(k) || dst.get(k) > m) { dst.set(k, m); how.set(k, h); } };
+  const putSt = x => {
+    const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3;
+    put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) });
+    const bk = rpBikeLegOpt(x, d, ybList, len);
+    if (bk) put(x.key, bk.m, bk);
+  };
   if (isSt) for (const [k, m] of rpEnds(S, d)) put(k, m, { type: "walk", m });
   else {
-    if (S) for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
-    for (const [x] of rpLbNear(d, LB_NEAR_DIST_M)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+    if (S) for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) putSt(x);
+    for (const [x] of rpLbNear(d, LB_NEAR_DIST_M)) putSt(x);
+    if (S && dst.size === 0) {
+      const fallback = S.near(d.lat, d.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2);
+      for (const [x] of fallback) putSt(x);
+    }
   }
   for (const b of bus) {   // 終點那頭：同一站牌好幾條路線都到終點附近，等車估 3 分
     const alts = rpAlts(b, bus, false, null), w = alts.length ? 3 : RP_BUS_WAIT, m = b.stWalk + w + b.ride + b.walk;
@@ -7574,12 +7649,26 @@ function rpRoute(net, S, J, o, d) {
   const free = (p, t) => ({ time: isoT(t), place: { name: p.name || null, type: "location", location: { lat: p.lat, lng: p.lon } } });
   const r0 = J.rides[0], t0 = trips[r0.ti], dep0 = t0.pts[r0.b][2];
   const stop = (x, t) => ({ time: isoT(t), place: { name: rpStopNm(x), type: "stop", location: x.P ? { lat: x.P[0], lng: x.P[1] } : {} } });
+  const ybPl = (s, t) => ({ time: isoT(t), place: { name: s.name_tw || s.name || "YouBike", type: "station", location: { lat: +s.lat, lng: +(s.lng ?? s.lon) } } });
+  const pushYb = (fromPt, toPt, t0, bk) => {
+    const t1 = t0 + bk.w1S * 1000, t2 = t1 + bk.bS * 1000, t3 = t2 + bk.w2S * 1000;
+    const aName = bk.stA.name_tw || bk.stA.name || "YouBike", bName = bk.stB.name_tw || bk.stB.name || "YouBike";
+    sec.push({ type: "pedestrian", timeSrc: "line", departure: fromPt(t0), arrival: ybPl(bk.stA, t1), travelSummary: { duration: bk.w1S, length: bk.w1M } });
+    sec.push({ type: "cycle", timeSrc: "line", transport: { mode: "youbike", name: "YouBike" }, departure: ybPl(bk.stA, t1), arrival: ybPl(bk.stB, t2), travelSummary: { duration: bk.bS, length: bk.bM },
+      rental: { from: aName, to: bName, bikes: typeof bk.stA.available_spaces === "number" ? bk.stA.available_spaces : null, docks: typeof bk.stB.empty_spaces === "number" ? bk.stB.empty_spaces : null } });
+    sec.push({ type: "pedestrian", timeSrc: "line", departure: ybPl(bk.stB, t2), arrival: toPt(t3), travelSummary: { duration: bk.w2S, length: bk.w2M } });
+    return t3;
+  };
   let start = dep0 - J.startWalk * RP_MS;
   if (J.acc && J.acc.type === "bus") {   // 公車接駁：走到站牌 → 公車 → 走進車站
     const b = J.acc.opt, bd = J.acc.dep, ba = bd + b.ride * RP_MS; start = bd - b.walk * RP_MS;
     sec.push({ type: "pedestrian", timeSrc: b.walkSrc || "line", departure: free(o, start), arrival: stop(b.seq[b.a], bd), travelSummary: { duration: b.walk * 60, ...(b.walkM ? { length: b.walkM } : {}) } });
     sec.push(rpBusSec(b, bd, J.acc.live, isoT, J.acc.alts));
     sec.push({ type: "pedestrian", timeSrc: "line", departure: stop(b.seq[b.b], ba), arrival: place(t0.pts[r0.b][0], ba + b.stWalk * RP_MS), travelSummary: { duration: b.stWalk * 60 } });
+  } else if (J.acc && J.acc.type === "bike") {
+    const bk = J.acc;
+    start = dep0 - (bk.w1S + bk.bS + bk.w2S) * 1000;
+    pushYb(t => free(o, t), t => place(t0.pts[r0.b][0], t), start, bk);
   } else if (J.startWalk) sec.push({ type: "pedestrian", timeSrc: (J.acc && J.acc.src) || "line", departure: free(o, start), arrival: place(t0.pts[r0.b][0], dep0), travelSummary: { duration: J.startWalk * 60, ...(J.acc && J.acc.len ? { length: J.acc.len } : {}) } });
   let lastArr = null;
   J.rides.forEach((r, i) => {
@@ -7613,6 +7702,8 @@ function rpRoute(net, S, J, o, d) {
     sec.push(rpBusSec(b, bd, false, isoT, J.egr.alts));
     sec.push({ type: "pedestrian", timeSrc: b.walkSrc || "line", departure: stop(b.seq[b.b], ba), arrival: free(d, ba + b.walk * RP_MS), travelSummary: { duration: b.walk * 60, ...(b.walkM ? { length: b.walkM } : {}) } });
     end = ba + b.walk * RP_MS;
+  } else if (J.egr && J.egr.type === "bike") {
+    end = pushYb(t => place(lastArr.k, t), t => free(d, t), lastArr.t, J.egr);
   } else if (J.endWalk) sec.push({ type: "pedestrian", timeSrc: (J.egr && J.egr.src) || "line", departure: place(lastArr.k, lastArr.t), arrival: free(d, end), travelSummary: { duration: J.endWalk * 60, ...(J.egr && J.egr.len ? { length: J.egr.len } : {}) } });
   const bn = [J.acc && J.acc.type === "bus" && J.acc.alts && J.acc.alts.length ? `${rpStopNm(J.acc.opt.seq[J.acc.opt.a])}：${rpAltTxt({ name: J.acc.opt.name, dep: J.acc.dep }, J.acc.alts, J.acc.live)} 都到${stOf(t0.pts[r0.b][0]).name}，哪班先來搭哪班` : "",
     J.egr && J.egr.type === "bus" && J.egr.alts && J.egr.alts.length ? `${rpStopNm(J.egr.opt.seq[J.egr.opt.a])}：${rpAltTxt({ name: J.egr.opt.name }, J.egr.alts, false)} 都到${rpStopNm(J.egr.opt.seq[J.egr.opt.b])}，哪班先來搭哪班` : ""].filter(Boolean).join("；");
@@ -7693,11 +7784,11 @@ async function railPlan(p) {
   if (Bo && when !== "arr" && !p.skipDirect) { try { direct = rpDirect(Bo, o, d, when === "dep" && time ? tms(time) : Date.now(), when === "now", Wo, Wd); } catch (e) { console.warn("rpDirect", e); } }
   return rail.concat(direct);
 }
-async function railPlanRail({ o, d, modes, when, time, Bo: Bo0, Bd: Bd0, Wo, Wd, fromBus, busReadyMs, railPack }) {
+async function railPlanRail({ o, d, modes, when, time, Bo: Bo0, Bd: Bd0, Wo, Wd, fromBus, busReadyMs, railPack, yb }) {
   const ops = rpOpsOf(modes); if (!ops.length) return [];
   if (o.lat == null || d.lat == null) return [];
   const oSt = planIsStation(o), dSt = planIsStation(d), useBus = (modes || []).includes(5) && !arguments[0].skipBus;
-  if (!useBus && typeof Worker !== "undefined" && railPack) {
+  if (!useBus && !yb && typeof Worker !== "undefined" && railPack) {
     try {
       const res = await rpRailRun({ o: { lat: +o.lat, lon: +o.lon, name: o.name, st: oSt }, d: { lat: +d.lat, lon: +d.lon, name: d.name, st: dSt }, when, time, Wo: Wo ? (Wo instanceof Map ? Array.from(Wo.entries()) : Wo) : null, Wd: Wd ? (Wd instanceof Map ? Array.from(Wd.entries()) : Wd) : null, fromBus, busReadyMs }, railPack);
       if (res && res.routes) return res.routes;
@@ -7706,9 +7797,13 @@ async function railPlanRail({ o, d, modes, when, time, Bo: Bo0, Bd: Bd0, Wo, Wd,
     }
   }
   const S = await rpStations(ops);
-  const [Bo, Bd] = await Promise.all([!oSt && useBus ? (Bo0 !== undefined ? Bo0 : rpBusNear(o).catch(() => null)) : null, !dSt && useBus ? (Bd0 !== undefined ? Bd0 : rpBusNear(d).catch(() => null)) : null]);
-  const accBus = Bo ? rpBusOpts(Bo, S, o, true, Wo) : [], E = rpEgress(S, d, dSt, Bd ? rpBusOpts(Bd, S, d, false, Wd) : [], Wd), dst = E.dst;
-  const accAt = t => rpAccess(S, o, oSt, accBus, t, when === "now", Wo);
+  const [Bo, Bd, ybList] = await Promise.all([
+    !oSt && useBus ? (Bo0 !== undefined ? Bo0 : rpBusNear(o).catch(() => null)) : null,
+    !dSt && useBus ? (Bd0 !== undefined ? Bd0 : rpBusNear(d).catch(() => null)) : null,
+    yb && (!oSt || !dSt) ? ybPlanList().catch(() => []) : Promise.resolve([])
+  ]);
+  const accBus = Bo ? rpBusOpts(Bo, S, o, true, Wo) : [], E = rpEgress(S, d, dSt, Bd ? rpBusOpts(Bd, S, d, false, Wd) : [], Wd, ybList), dst = E.dst;
+  const accAt = t => rpAccess(S, o, oSt, accBus, t, when === "now", Wo, ybList);
   { const a0 = accAt(Date.now()); if (!a0.src.size || !dst.size) return []; for (const k of a0.src.keys()) if (dst.has(k) && a0.how.get(k).type === "walk" && E.how.get(k).type === "walk") return []; }   // 起訖是同一站
   const arrBy = when === "arr" && time ? tms(time) : null;
   // 指定抵達的時間窗是指定時間前 6 小時到指定時間。00:30 的起點在前一天 18:30，營運日用那個起點（台北時間 03:00 前算前一天），所以 23 點多的班次在同一天的班表裡。隔天也讀，接過午夜的車。
@@ -7908,8 +8003,8 @@ async function ownBusRail(o, d, modes, when, time, wctx) {
   const ops = rpOpsOf(railModes);
   const S = ops.length ? await rpStations(ops).catch(() => null) : null;
   const oSt = planIsStation(o), dSt = planIsStation(d);
-  const oNearSt = (!oSt && S) ? S.near(o.lat, o.lon, RP_WALK_ST).map(([x]) => [x.lat, x.lon]) : [];
-  const dNearSt = (!dSt && S) ? S.near(d.lat, d.lon, RP_WALK_ST).map(([x]) => [x.lat, x.lon]) : [];
+  const oNearSt = (!oSt && S) ? (S.near(o.lat, o.lon, RP_WALK_ST).length ? S.near(o.lat, o.lon, RP_WALK_ST) : S.near(o.lat, o.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2)).map(([x]) => [x.lat, x.lon]) : [];
+  const dNearSt = (!dSt && S) ? (S.near(d.lat, d.lon, RP_WALK_ST).length ? S.near(d.lat, d.lon, RP_WALK_ST) : S.near(d.lat, d.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2)).map(([x]) => [x.lat, x.lon]) : [];
   // Opus（v2.51.5 審查）：起點、終點、每個轉乘站各取最近幾個公車站，先看快取；沒有的整組併成最少批 table（每批 ≤25 點）一次查完。
   // 之後 busTo 的 walkTable、railPlanRail 的 Wo／Wd 都只讀快取，不再另外打 /walk。
   const N_OD = 8, N_HUB = 4;
@@ -8064,7 +8159,7 @@ async function ownPlan({ o, d, modes, yb, walk, when, time }) {
   RP_REGION = await rpRegionOf(o, d);   // v2.60.4：這次規劃只下載、只算起訖點附近會用到的軌道系統
   const wctx = { od: null };
   const railP = br.rail
-    ? railPlan({ o, d, modes: modesA, when, time, skipDirect: true, skipBus: true, wctx }).then(l => planClean(l, !!yb).map(rpTag)).catch(e => { console.warn("own rail", e); return []; })
+    ? railPlan({ o, d, modes: modesA, when, time, skipDirect: true, skipBus: true, wctx, yb: !!yb }).then(l => planClean(l, !!yb).map(rpTag)).catch(e => { console.warn("own rail", e); return []; })
     : Promise.resolve([]);
   const busP = br.bus
     ? busDirectPlan({ o, d, when: when === "arr" ? "arr" : "dep", time: when === "now" ? null : time, opts: { walkRadiusM: 800, walkMpm: 70, walkFactor: 1.3, freqPolicy: "halfHeadway", maxResults: 6 } }).then(B => {

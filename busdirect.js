@@ -309,9 +309,10 @@
       }
       list = onTime;
     }
-    const bikes = list.filter(r => hasBike(r));
+    const bikes = list.filter(r => hasBike(r) && !hasT(r));
+    const isLongBike = r => hasBike(r) && !hasT(r) && ((r.dur || 0) > 90 || ((r.end - r.start) > 90 * 60000));
     const walks = list.filter(r => !hasT(r) && !hasBike(r));
-    const rides = list.filter(r => hasT(r) && !hasBike(r));
+    const rides = list.filter(r => hasT(r));
     rides.sort(cmp);
     walks.sort(cmp);
     bikes.sort(cmp);
@@ -323,10 +324,16 @@
     const walkFirst = !!(w && rides.length && rides.every(r => when === "arr" ? w.start >= r.start : w.end <= r.end));
     if (walkFirst) w.suggestWalk = true;
     const out = (walkFirst ? [w] : []).concat(rides, bikes);
-    out.sort(cmp);
+    out.sort((a, b) => {
+      if (rides.length) {
+        const la = isLongBike(a), lb = isLongBike(b);
+        if (la !== lb) return la ? 1 : -1;
+      }
+      return cmp(a, b);
+    });
     if (walkFirst && out[0] !== w) { out.splice(out.indexOf(w), 1); out.unshift(w); }
     const capped = out.slice(0, 8);
-    if (bikes.length && !capped.some(hasBike)) capped[capped.length - 1] = bikes[0];
+    if (bikes.length && !capped.some(hasBike) && !isLongBike(bikes[0])) capped[capped.length - 1] = bikes[0];
     return capped;
   }
 
@@ -1392,7 +1399,7 @@
   };
   const RP_LRT = { KLRT: 1, NTDLRT: 1, NTALRT: 1 };
   const RP_CHG = () => 3;
-  const RP_K = 4, RP_FP = 800, RP_MS = 60000, RP_WALK_ST = 1200, RP_WSPD = 75;
+  const RP_K = 4, RP_FP = 800, RP_MS = 60000, RP_WALK_ST = 1200, RP_FALLBACK_WALK_ST = 5000, RP_WSPD = 75;
   const rpBig = op => op === "TRA" || op === "THSR";
   const rpWalk = m => Math.ceil(m / 100);
   const pn = x => String(x || "").replace(/臺/g, "台").toLowerCase().replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
@@ -1460,7 +1467,13 @@
   function rpAccess(S, o, isSt, bus, t0, live, W) {
     const src = new Map(), how = new Map(), put = (k, m, h) => { if (!src.has(k) || src.get(k) > m) { src.set(k, m); how.set(k, h); } };
     if (isSt) for (const [k, m] of rpEnds(S, o)) put(k, m, { type: "walk", m });
-    else for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+    else {
+      if (S) for (const [x] of S.near(o.lat, o.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+      if (S && src.size === 0) {
+        const fallback = S.near(o.lat, o.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2);
+        for (const [x] of fallback) { const len = Math.round(rpWalkM(W, o, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, o, x.lat, x.lon) }); }
+      }
+    }
     for (const b of (bus || [])) {
       const ready = t0 + b.walk * RP_MS, dep = b.dep, lv = b.live;
       const m = Math.ceil((dep + (b.ride + b.stWalk) * RP_MS - t0) / RP_MS);
@@ -1471,7 +1484,13 @@
   function rpEgress(S, d, isSt, bus, W) {
     const dst = new Map(), how = new Map(), put = (k, m, h) => { if (!dst.has(k) || dst.get(k) > m) { dst.set(k, m); how.set(k, h); } };
     if (isSt) for (const [k, m] of rpEnds(S, d)) put(k, m, { type: "walk", m });
-    else for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+    else {
+      if (S) for (const [x] of S.near(d.lat, d.lon, RP_WALK_ST)) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+      if (S && dst.size === 0) {
+        const fallback = S.near(d.lat, d.lon, RP_FALLBACK_WALK_ST).sort((a, b) => a[1] - b[1]).slice(0, 2);
+        for (const [x] of fallback) { const len = Math.round(rpWalkM(W, d, x.lat, x.lon)), m = Math.ceil(len / RP_WSPD) + 3; put(x.key, m, { type: "walk", m, len, src: rpWalkSrc(W, d, x.lat, x.lon) }); }
+      }
+    }
     for (const b of (bus || [])) {
       const w = b.wait || 5, m = b.stWalk + w + b.ride + b.walk;
       put(b.key, m, { type: "bus", m, opt: b, alts: b.alts || [], wait: w });
