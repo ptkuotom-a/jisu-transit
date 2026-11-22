@@ -1682,6 +1682,19 @@ async function cloudSor(uids) {
 // 回傳 { routeUID, recs:[{ u, n, s, sn, d, st, p, tr, sp, f }], t }；recs 空的、或 need 有值＝雲端還沒有這條路線的時刻表
 async function busSchedule({ routeUID, fresh }) {
   if (!routeUID) throw new Error("缺少路線代碼");
+  const isKhh = String(routeUID).startsWith("KHH");
+  if (!isKhh && typeof getSession === "function" && getSession()) {
+    try {
+      const otpRes = await authedPost("/otp/stoptimes", { type: "bus", routeUID }, 8000);
+      if (otpRes && otpRes.result === "success" && otpRes.data && Array.isArray(otpRes.data.recs)) {
+        if (otpRes.data.recs.length) {
+          return { routeUID, recs: otpRes.data.recs, t: otpRes.data.t || Date.now() };
+        }
+      }
+    } catch (e) {
+      console.warn("otp stoptimes bus fallback", e);
+    }
+  }
   const key = "sch|" + routeUID;
   // v2.44.1：雲端時刻表可能隨時更新（例如補上逐站時刻）：手機快取只用 10 分鐘，之後一律重抓；抓不到才退回手機存的那份
   const c = fresh ? null : await IDB.get(key).catch(() => null);
@@ -6949,7 +6962,12 @@ let walkQ = null;
 // v2.60.5：步行查詢的開始時間相隔 1.1 秒、不等上一筆回來；同時最多 3 筆
 function walkGet(path, ms = 9000) { if (!walkQ) walkQ = BusDirect.walkQueue(authedGet, { gap: 1100, maxInFlight: 3 }); return walkQ(path, ms); }
 const walkStat = () => (walkQ ? { ...walkQ.stat } : { calls: 0, out: 0, retries: 0, fails: 0 });
-if (typeof window !== "undefined") window.walkStat = walkStat;
+if (typeof window !== "undefined") {
+  window.walkStat = walkStat;
+  window.authedGet = authedGet;
+  window.authedPost = authedPost;
+  window.getSession = getSession;
+}
 const PLAN_MODE = s => { const m = ((s.transport || {}).mode || "") + " " + ((s.transport || {}).category || "");
   return /bus/i.test(m) ? "bus" : /lrt|light/i.test(m) ? "lrt" : /thsr|hsr|high/i.test(m) ? "thsr" : /mrt|metro|subway/i.test(m) ? "mrt" : /tra|rail|train/i.test(m) ? "tra" : "bus"; };
 const pPlace = (p, time) => { const pl = (p && p.place) || {}, loc = pl.location || {}; return { name: pl.name || null, type: pl.type || null, lat: loc.lat ?? null, lon: loc.lng ?? null, time: (p && p.time) || null }; };
@@ -8368,13 +8386,14 @@ async function otpCalibrateBus(routes) {
 }
 
 // v2.60.7：OpenTripPlanner（經 Worker POST /otp/plan，要登入）：全國時刻表＋YouBike 即時車位。
-// 有路線就直接用，不再問 Google／TDX；沒登入、指定抵達、OTP 沒設定（503）、找不到（404）、逾時（15 秒）或任何錯誤都回 null，照原本流程規劃
+// 有路線就直接用，不再問 Google／TDX；沒登入、OTP 沒設定（503）、找不到（404）、逾時（15 秒）或任何錯誤都回 null，照原本流程規劃
 const OTP_MS = 15000;
 async function otpPlanTry({ o, d, modes, yb, when, time }) {
-  if (!getSession() || when === "arr" || !o || !d || o.lat == null || d.lat == null) return null;
-  const t = when === "dep" && time ? String(time).slice(0, 16) : isoTpe(Date.now()).slice(0, 16);
+  if (!getSession() || !o || !d || o.lat == null || d.lat == null) return null;
+  const isArr = when === "arr";
+  const t = (when === "dep" || when === "arr") && time ? String(time).slice(0, 16) : isoTpe(Date.now()).slice(0, 16);
   let j;
-  try { j = await authedPost("/otp/plan", { o: { lat: +o.lat, lon: +o.lon }, d: { lat: +d.lat, lon: +d.lon }, time: t, yb: !!yb, t: (modes || []).map(String), oName: o.name || "", dName: d.name || "" }, OTP_MS); }
+  try { j = await authedPost("/otp/plan", { o: { lat: +o.lat, lon: +o.lon }, d: { lat: +d.lat, lon: +d.lon }, time: t, arr: isArr, yb: !!yb, t: (modes || []).map(String), oName: o.name || "", dName: d.name || "" }, OTP_MS); }
   catch (e) { console.warn("otp plan", e && (e.status || e.message)); return null; }
   if (!j || j.result !== "success" || !j.data || !Array.isArray(j.data.routes)) return null;
   const out = planClean(j.data.routes, yb).filter(r => !r.approx);
@@ -8391,37 +8410,12 @@ async function planRoutes({ o, d, modes, yb, walk, when, time, onLive, more }) {
   o = r4(o); d = r4(d);
   if (walk && !(modes || []).length && !yb) return await ownPlan({ o, d, modes: [], yb: false, walk: true, when, time });   // 只步行：不往 Google／TDX
   if (!more) {
-    const lbNear = await isLbNearCoord(o, d);
-    if (lbNear) {
-      // v2.60.8：三鶯線相關時，OTP 與 ownPlan 同時開跑（不要串行加長等待）
-      const otpP = otpPlanTry({ o, d, modes, yb, when, time }).catch(e => { console.warn("otpPlanTry", e); return []; });
-      const ownP = ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
-      const [otpRes, ownRes] = await Promise.all([otpP, ownP]);
-      const merged = mergeLbAndOtp(otpRes, ownRes);
-      if (merged && merged.length) return merged;
-    } else {
-      const otp = await otpPlanTry({ o, d, modes, yb, when, time });
-      if (otp && otp.length) {
-        if (otp.some(hasLbLeg)) {
-          // 若 OTP 路線含三鶯線段，啟動 ownPlan 補充完整班表並合併
-          const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
-          const merged = mergeLbAndOtp(otp, own);
-          if (merged && merged.length) return merged;
-        }
-        // v2.60.9：使用者若開啟軌道模式（捷運/輕軌/台鐵/高鐵），而 OTP 結果缺少軌道或缺少公車轉軌道時，自動執行 ownPlan 補齊
-        const wantRail = (modes || []).some(m => [3, 4, 6, 7, "3", "4", "6", "7"].includes(m));
-        const wantBus = (modes || []).some(m => [5, "5"].includes(m));
-        const needRailBackfill = wantRail && (!otp.some(hasRailLeg) || (wantBus && !otp.some(hasBusRailTransfer)));
-        if (needRailBackfill) {
-          const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
-          const merged = mergeOtpAndOwn(otp, own, { wantRail, wantBus });
-          if (merged && merged.length) return merged;
-        }
-        return otp;   // v2.60.6：OTP 有路線：不跑 ownPlan、不打 /plan（Google／TDX）
-      }
-      const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
-      if (own && own.length) return own;
+    const otp = await otpPlanTry({ o, d, modes, yb, when, time });
+    if (otp && otp.length) {
+      return otp;   // v2.60.11（第 4 條）：OTP 有路線時優先全部只顯示 OTP 路線，不回填自有規劃單一路段；v2.60.12：拿掉三鶯 mergeLbAndOtp 特例
     }
+    const own = await ownPlan({ o, d, modes, yb, walk, when, time }).catch(e => { console.warn("ownPlan", e); return []; });
+    if (own && own.length) return own;
   }
   const snapOf = p => { if (!planIsStation(p)) return null; const m = TDX_MISSING[String(p.name || "").replace(/站$/, "")]; return m && modes.includes(m.mode) ? m : null; };
   let so = snapOf(o), sd = snapOf(d); const qo = so || o, qd = sd || d;
@@ -8786,7 +8780,63 @@ async function stationTT(p) {
   return p.op === "TRA" || p.op === "THSR" ? stationTTrain(p, day, base) : stationTTMetro(p, day, di, base);
 }
 async function stationTTrain(p, day, base) {
-  const op = p.op, D = await railDayTt(op, day), P = D && await railTrains(op, day);
+  const op = p.op;
+  if (typeof getSession === "function" && getSession()) {
+    try {
+      let stName = p.name, stLat = p.lat, stLon = p.lon;
+      if (!stLat || !stLon || !stName) {
+        try {
+          const allSt = await loadRailStations();
+          const hit = allSt.find(s => s.op === op && p.ids.includes(s.id));
+          if (hit) {
+            if (!stName) stName = hit.name;
+            if (stLat == null) stLat = hit.lat;
+            if (stLon == null) stLon = hit.lon;
+          }
+        } catch (e) {}
+      }
+      if (stName && stLat != null && stLon != null) {
+        const otpRes = await authedPost("/otp/stoptimes", { type: "rail", lat: stLat, lon: stLon, name: stName, op, date: base.date }, 8000);
+        if (otpRes && otpRes.result === "success" && otpRes.data && Array.isArray(otpRes.data.stoptimes)) {
+          const rawTimes = otpRes.data.stoptimes;
+          const trains = [];
+          for (const s of rawTimes) {
+            const depSec = s.scheduledDeparture ?? s.realtimeDeparture;
+            if (depSec == null) continue;
+            const v = Math.round(depSec / 60);
+            const tMin = v < 180 ? v + 1440 : v;
+            const dest = (s.headsign || "").replace(/^往\s*/, "") || "未知";
+            trains.push({
+              no: s.trainNo || "",   // 審查修正：車次用 trip.tripShortName，不可拿站碼當車次
+              type: op === "THSR" ? "高鐵" : (TRA_TYPE(s.trainType) || s.trainType || ""),
+              tf: s.trainType || "",
+              dir: s.dir != null ? s.dir : 0,
+              start: "",
+              dest,
+              t: tMin,
+              time: clk(v),
+              next: {}
+            });
+          }
+          if (trains.length) {
+            trains.sort((a, b) => a.t - b.t);
+            const cnt = {}; for (const t of trains) if (t.type) cnt[t.type] = (cnt[t.type] || 0) + 1;
+            return {
+              ...base,
+              kind: "train",
+              src: "otp",
+              trains,
+              dests: [...new Set(trains.map(t => t.dest))].map(name => ({ name, min: 0, dir: 0 })),
+              types: Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("otp stoptimes train fallback", e);
+    }
+  }
+  const D = await railDayTt(op, day), P = D && await railTrains(op, day);
   if (!P) return { ...base, kind: "train", none: true, trains: [], dests: [], types: [] };
   const ids = new Set(p.ids), names = {}, reach = {}, trains = [];
   try { for (const s of await loadRailStations()) if (s.op === op) names[s.id] = s.name; } catch (e) {}
@@ -8827,11 +8877,100 @@ function hwInfo(freq, fl, ids, di, lines) {
 const END_FIX = { "TRTC|R": { ends: ["廣慈/奉天宮", "淡水"] }, "TRTC|O": { ends: ["南勢角"], br: ["迴龍", "蘆洲"] }, "NTDLRT|V": { ends: ["紅樹林"], br: ["崁頂", "淡水漁人碼頭"] } };
 async function stationTTMetro(p, day, di, base) {
   const op = p.op, ids = p.ids, out = { ...base, kind: "metro", trains: [], groups: [], hw: [] };
+  // 審查修正：環狀線在北捷資料裡也用 Y（畫面以 TRTC＋Y 顯示成新北捷運），所以 TRTC 的 Y 站同樣走舊來源；三鶯線（LB）改經 OTP
+  const isRing = (op === "NTMC" || op === "TRTC") && ids.some(i => /^Y/.test(i));
   const stored = await ttLoad(op).catch(() => null);
-  const hwL = op === "TMRT" ? null : (HW_LINES[op] || []).filter(l => ids.some(i => stnPre(i) === l));
-  if (op === "TMRT" || hwL.length) {
+  const hwL = (HW_LINES[op] || []).filter(l => ids.some(i => stnPre(i) === l));
+  if (!isRing && typeof getSession === "function" && getSession()) {
+    try {
+      let stName = p.name, stLat = p.lat, stLon = p.lon;
+      if (!stLat || !stLon || !stName) {
+        try {
+          const allSt = await loadRailStations();
+          const hit = allSt.find(s => (s.op === op || (op === "TRTC" && s.op === "TRTC") || (op === "NTMC" && s.op === "NTMC")) && (ids.includes(s.id) || (s.ids && s.ids.some(i => ids.includes(i)))));
+          if (hit) {
+            if (!stName) stName = hit.name;
+            if (stLat == null) stLat = hit.lat;
+            if (stLon == null) stLon = hit.lon;
+          }
+        } catch (e) {}
+      }
+      if (stName && stLat != null && stLon != null) {
+        const otpRes = await authedPost("/otp/stoptimes", { type: "rail", lat: stLat, lon: stLon, name: stName, op, date: base.date }, 8000);
+        if (otpRes && otpRes.result === "success" && otpRes.data && Array.isArray(otpRes.data.stoptimes)) {
+          const rawTimes = otpRes.data.stoptimes;
+          const fix = await destFixer(op);
+          const trains = [];
+          for (const s of rawTimes) {
+            const depSec = s.scheduledDeparture ?? s.realtimeDeparture;
+            if (depSec == null) continue;
+            const v = Math.round(depSec / 60);
+            const tMin = v < 180 ? v + 1440 : v;
+            let dest = (s.headsign || "").replace(/^往\s*/, "");
+            const line = s.lineCode || (ids[0] ? stnPre(ids[0]) : "");   // 審查修正：用 Worker 解析出的英文線代號，線名中文時徽章與線色才對
+            const dir = s.dir != null ? s.dir : 0;
+            if (!dest || dest === "未知") {
+              // 仍推不到時前端用方向與站序推（不可自編站名）
+              try {
+                const st = await loadRailStations();
+                const ns = [];
+                for (const sx of st) {
+                  if (sx.op !== op && sx.op !== (op === "TRTC" ? "NTMC" : "TRTC")) continue;
+                  const id = (STN_ALIAS[sx.id] || {})[line] || sx.id, n = stnNum(id);
+                  if (stnPre(id) === line && n != null) ns.push([n, sx.name]);
+                }
+                if (ns.length >= 2) {
+                  ns.sort((a, b) => a[0] - b[0]);
+                  dest = (dir === 1 || dir === "1") ? ns[0][1] : ns[ns.length - 1][1];
+                }
+              } catch (e) {}
+            }
+            if (!dest) dest = "未知";
+            const trObj = fix({
+              time: clk(v),
+              t: tMin,
+              dest,
+              destId: null,
+              line,
+              dir,
+              via: null,
+              timepoint: s.timepoint !== false
+            });
+            trObj.side = metroSide(trObj, ids);
+            trains.push(trObj);
+          }
+          if (trains.length) {
+            trains.sort((a, b) => a.t - b.t);
+            const gm = new Map();
+            for (const t of trains) {
+              const k = (t.line || "") + "|" + (t.side ?? ("x" + t.dest)) + "|" + (t.via || "");
+              if (!gm.has(k)) gm.set(k, { key: k, line: t.line, via: t.via, cnt: {}, n: 0 });
+              const g = gm.get(k); g.n++; g.cnt[t.dest] = (g.cnt[t.dest] || 0) + 1; t.g = k;
+            }
+            out.groups = [...gm.values()].map(g => ({
+              key: g.key,
+              line: g.line,
+              n: g.n,
+              label: "往 " + Object.keys(g.cnt).sort((a, b) => g.cnt[b] - g.cnt[a]).join("／") + (g.via ? `（${g.via}）` : "")
+            }));
+            out.trains = trains;
+            out.src = "otp";
+            out.none = false;
+            return out;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("otp stoptimes metro fallback", e);
+    }
+  }
+  if (op === "TMRT" || (hwL && hwL.length)) {
     const src = op === "TMRT" ? (stored && stored.freq ? stored : null) : stored && stored.hw;
-    if (src && src.freq && src.fl) out.hw = hwInfo(src.freq, src.fl, ids, di, hwL); else out.hwMissing = true;
+    if (src && src.freq && src.fl) out.hw = hwInfo(src.freq, src.fl, ids, di, op === "TMRT" ? null : hwL); else out.hwMissing = true;
+    if (out.hw && out.hw.length) {
+      out.none = false;
+      return out;
+    }
   }
   if (stored && stored.rows) {
     let recs = ttMetroRecs(stored, ids);

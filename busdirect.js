@@ -1314,6 +1314,34 @@
     return out;
   }
 
+  function pickDiverseTrains(pool, per = 3) {
+    if (!pool || !pool.length) return [];
+    const sorted = pool.slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+    const dests = [...new Set(sorted.map(t => t.dest).filter(Boolean))];
+    const totalLimit = Math.max(per, dests.length);
+    const selected = [];
+    const destCounts = {};
+    // 第一輪：確保同方向各終點至少各出現 1 班
+    for (const d of dests) {
+      const firstTrain = sorted.find(t => t.dest === d);
+      if (firstTrain && !selected.includes(firstTrain)) {
+        selected.push(firstTrain);
+        destCounts[d] = (destCounts[d] || 0) + 1;
+      }
+    }
+    // 第二輪：依到站時間填補剩餘名額，同一終點最多 per 班，總數最多 totalLimit
+    for (const t of sorted) {
+      if (selected.length >= totalLimit) break;
+      if (selected.includes(t)) continue;
+      const count = destCounts[t.dest] || 0;
+      if (count < per) {
+        selected.push(t);
+        destCounts[t.dest] = count + 1;
+      }
+    }
+    return selected.sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+  }
+
   // ===== v2.51.7：車站各方向接下來 N 班（車站小卡大時間卡、列表、附近車站卡片共用）=====
   // 台鐵／高鐵：依看板的方向分組（順行／逆行、南下／北上）。
   // 捷運／輕軌：依「路線＋方向」分組（多線交會站＝每條線兩個方向）；有即時用即時，沒有即時的方向改用自有時刻表（src:"tt"，畫面標表定）。
@@ -1327,29 +1355,49 @@
     const keyOf = (line, side, via, dest) => (line || "") + "|" + (side || ("x" + (dest || ""))) + "|" + (via || "");
     const out = new Map();
     for (const g of D.groups || []) {
-      const tr = (g.trains || []).filter(ok).slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999)).slice(0, per);
-      if (!tr.length) continue;
-      const line = g.line || tr[0].line || "", k = keyOf(line, g.side, tr[0].via, tr[0].dest);
-      if (!out.has(k)) out.set(k, { key: k, line, side: g.side || null, label: g.label || ("往 " + (tr[0].dest || "")), trains: tr, src: "live" });
+      const allTr = (g.trains || []).filter(ok).slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+      if (!allTr.length) continue;
+      const line = g.line || allTr[0].line || "", k = keyOf(line, g.side, allTr[0].via, allTr[0].dest);
+      if (!out.has(k)) {
+        out.set(k, { key: k, line, side: g.side || null, via: allTr[0].via || null, origLabel: g.label, rawLive: allTr.slice(), trains: [], src: "live" });
+      } else {
+        const entry = out.get(k);
+        entry.rawLive = entry.rawLive.concat(allTr).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+      }
     }
-    // v2.60.3：opt.fill：即時方向不足 per 班時，用同線同方向的時刻表補後面的班次（比最後一班即時晚 2 分以上，避免把同一班列兩次），補的班次標 tt:true
-    if (opt && opt.fill) for (const g of out.values()) {
-      if (g.trains.length >= per || !g.side) continue;
-      const last = g.trains[g.trains.length - 1].eta ?? 0;
-      const more = (D.tt || []).filter(t => t.eta != null && t.eta >= last + 2 && (t.line || "") === g.line && t.side === g.side).sort((a, b) => a.eta - b.eta);
-      g.trains = g.trains.concat(more.slice(0, per - g.trains.length).map(t => ({ ...t, tt: true })));
+    // v2.60.11（第 5 條）：填補時刻表班次至即時列車間隔較大處或末尾，並確保同方向不同終點皆有代表
+    for (const g of out.values()) {
+      let pool = g.rawLive.slice();
+      if (opt && opt.fill && g.side) {
+        const liveEtas = pool.map(t => t.eta).filter(e => e != null);
+        const ttMatches = (D.tt || []).filter(t => t.eta != null && t.eta >= 0 && (t.line || "") === g.line && t.side === g.side);
+        for (const t of ttMatches) {
+          // 在即時列車間隔處（與所有即時列車差 2 分以上）或末尾補入
+          if (liveEtas.every(le => Math.abs(le - t.eta) >= 2)) {
+            pool.push({ ...t, tt: true });
+          }
+        }
+      }
+      g.trains = pickDiverseTrains(pool, per);
+      const dests = [...new Set(g.trains.map(t => t.dest).filter(Boolean))];
+      if (dests.length > 1) {
+        g.label = "往 " + dests.join("／") + (g.via ? "（" + g.via + "）" : "");
+      } else {
+        g.label = g.origLabel || ("往 " + (g.trains[0]?.dest || ""));
+      }
     }
     const tt = new Map();
     for (const t of D.tt || []) {
       if (t.eta == null || t.eta < 0) continue;
       const k = keyOf(t.line, t.side, t.via, t.dest);
       if (out.has(k)) continue;   // 這個方向有即時就用即時
-      if (!tt.has(k)) tt.set(k, { key: k, line: t.line || "", side: t.side || null, trains: [], src: "tt" });
+      if (!tt.has(k)) tt.set(k, { key: k, line: t.line || "", side: t.side || null, via: t.via || null, trains: [], src: "tt" });
       tt.get(k).trains.push(t);
     }
     for (const [k, g] of tt) {
-      g.trains.sort((a, b) => a.eta - b.eta); g.trains = g.trains.slice(0, per);
-      g.label = "往 " + [...new Set(g.trains.map(t => t.dest).filter(Boolean))].join("／") + (g.trains[0].via ? "（" + g.trains[0].via + "）" : "");
+      g.trains = pickDiverseTrains(g.trains, per);
+      const dests = [...new Set(g.trains.map(t => t.dest).filter(Boolean))];
+      g.label = "往 " + (dests.length ? dests.join("／") : (g.trains[0]?.dest || "")) + (g.via ? "（" + g.via + "）" : "");
       out.set(k, g);
     }
     const rank = l => { const i = lines.indexOf(l); return i < 0 ? 50 + (String(l || "").charCodeAt(0) || 0) : i; };
