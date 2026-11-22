@@ -1,0 +1,1 @@
+{"sys":"NTMC_Y","id":"NTMC_Y14","sids":["NTMC_Y14"],"name":"中原","norm":"中原","lat":25.00841,"lon":121.484159,"axis":[-0.8561,0.5168],"exits":[{"no":"577086","label":"","lat":25.008391,"lon":121.48413,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"576730001"}

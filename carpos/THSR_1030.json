@@ -1,0 +1,1 @@
+{"sys":"THSR","id":"THSR_1030","sids":["THSR_1030"],"name":"新竹","norm":"新竹","lat":24.808441,"lon":121.04026,"axis":[-0.658,-0.753],"exits":[],"crossXfer":{"TRA":{"pos":["front"],"neg":["rear"],"toName":"六家"}},"source":"tw-gtfs","facId":"508833001"}

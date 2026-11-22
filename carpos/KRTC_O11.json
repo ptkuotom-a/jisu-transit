@@ -1,0 +1,1 @@
+{"sys":"KRTC","id":"KRTC_O11","sids":["KRTC_O11"],"name":"鳳山西站","norm":"鳳山西","lat":22.625273,"lon":120.348118,"axis":[0.9977,0.0683],"exits":[{"no":"出口1","label":"1號出口","lat":22.625008,"lon":120.347384,"pos":["rear"],"neg":["front"]},{"no":"出口2","label":"2號出口","lat":22.625172,"lon":120.349052,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"533381001"}

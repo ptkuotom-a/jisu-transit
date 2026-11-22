@@ -1,0 +1,1 @@
+{"sys":"TMRT","id":"TMRT_G15","sids":["TMRT_G15"],"name":"九德","norm":"九德","lat":24.11104,"lon":120.63448,"axis":[-0.9282,-0.372],"exits":[{"no":"出口2","label":"2號出口","lat":24.111115,"lon":120.634438,"pos":["rear"],"neg":["front"]},{"no":"出口1","label":"1號出口","lat":24.110184,"lon":120.634394,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"577974001"}

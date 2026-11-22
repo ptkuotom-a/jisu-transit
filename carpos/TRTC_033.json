@@ -1,0 +1,1 @@
+{"sys":"TRTC","code":"033","name":"新店","norm":"新店","lines":["G"],"lat":24.958181,"lon":121.5377,"lineAxes":{"G":[0.3345,0.9424]},"exits":[{"no":"0","label":"出口","lat":24.95784,"lon":121.53758}],"dirs":[{"line":"G","dirSign":-1,"dest":"終點站","headsigns":["新店","終點站"],"door":"左側開門","carsCount":6,"xferSegs":[],"xferByLine":{},"exitSegs":{"1":["mid"]}}],"source":"trtc-official"}

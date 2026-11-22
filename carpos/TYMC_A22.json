@@ -1,0 +1,1 @@
+{"sys":"TYMC","id":"TYMC_A22","sids":["TYMC_A22"],"name":"老街溪站","norm":"老街溪","lat":24.95823,"lon":121.21936,"axis":[-0.1779,-0.9841],"exits":[{"no":"出口1","label":"1號出口","lat":24.958332,"lon":121.219551,"pos":["front"],"neg":["rear"]},{"no":"出口2","label":"2號出口","lat":24.959535,"lon":121.21936,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"578351001"}

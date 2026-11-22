@@ -1,0 +1,1 @@
+{"sys":"KRTC","id":"KRTC_O13","sids":["KRTC_O13"],"name":"大東","norm":"大東","lat":22.625178,"lon":120.363497,"axis":[0.9963,-0.0857],"exits":[{"no":"出口1","label":"1號出口","lat":22.625452,"lon":120.363641,"pos":["front"],"neg":["rear"]},{"no":"出口2","label":"2號出口","lat":22.625188,"lon":120.362752,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"533383001"}

@@ -537,6 +537,17 @@ html.locked,html.locked body{overflow:hidden}
 .xsg.th .by{padding:8px 16px 8px 26px;font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .xsg.th .by b{color:var(--text);font-size:15px}.xsg.th .by svg{width:15px;height:15px;color:var(--lime)}
 .xsg .sl{position:absolute;left:70px;width:11px;height:3px;background:var(--bg);transform:rotate(-30deg);top:50%;z-index:2}
+/* v2.60.15：乘車位置小卡（對齊設計圖與沿途停靠站列，無資料整張隱藏） */
+.xboard{--blue:#6FB3FF;margin:10px 0 4px 32px;border:1.5px solid #343734;border-radius:14px;padding:10px 12px 11px;background:#121413;text-align:left}
+.xboard .pos-lbl{font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.2px;margin-bottom:8px}
+.xboard .cars{display:flex;align-items:center;gap:0;justify-content:flex-start}
+.xboard .car{height:36px;min-width:52px;padding:0 8px;border:1.5px solid #3A3D3B;background:#1C1E1D;color:var(--dim);font-size:12.5px;font-weight:800;display:grid;place-items:center;margin-right:-1.5px}
+.xboard .car:first-of-type{border-radius:9px 0 0 9px}
+.xboard .car.on{background:rgba(111,179,255,.14);border-color:var(--blue);color:var(--blue);position:relative;z-index:1}
+.xboard .car.head{border-radius:0 20px 20px 0;padding-right:16px;border-top-right-radius:20px;border-bottom-right-radius:20px}
+.xboard .chev{color:var(--muted);font-size:16px;font-weight:700;margin-left:6px;line-height:1}
+.xboard .pos-hint{margin-top:7px;font-size:12px;font-weight:700;color:var(--text)}
+.xboard .pos-hint b{color:var(--blue)}
 /* v2.35.0 公車目的地篩選 */
 .bf{margin:2px 0 12px;display:flex;gap:10px;align-items:center}
 .bf .box{flex:1;min-width:0;height:44px;display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid transparent;border-radius:14px;padding:0 6px 0 14px;font-size:15px;color:var(--muted);transition:border-color .15s,background .15s}
@@ -2163,7 +2174,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.14';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.15';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -6320,6 +6331,7 @@ function openPlanDetail(i) {
   const P = S.plan; P.sel = i; P.live = {}; P.open = {}; P.liveAt = 0; P.liveErr = null;
   stackPush(() => { S.page = 'planDetail'; planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); });
   planLoadLive();
+  planLoadCarpos();
   planFillShape(i);
 }
 async function planFillShape(i) {
@@ -6459,7 +6471,258 @@ function xAlts(l) {
   };
   return `<div class="istops" style="margin-top:6px"><div style="opacity:.7">這一段可搭 ${l.alts.length} 條路線，下一班：</div>${l.alts.map(row).join('')}</div>`;
 }
-function xLeg(l, i, L, c) {
+// v2.60.15：乘車位置離線靜態 JSON 懶載入與推薦計算（TDX/Google/OTP/官網=0，算不出整張不顯示）
+const CARPOS_CACHE = { idx: null, idxP: null, st: new Map(), stP: new Map() };
+const CARPOS_FORBIDDEN = new Set(['NTDLRT', 'NTALRT', 'NTMC_LB', 'KLRT', 'AFR', 'TRTCMG']);
+const CARPOS_SEG_ORDER = ['front', 'mid', 'rear'];
+const CARPOS_SEG_ZH = { front: '前段', mid: '中段', rear: '後段' };
+const carposHav = (la1, lo1, la2, lo2) => {
+  const R = 6371000, p1 = la1 * Math.PI / 180, p2 = la2 * Math.PI / 180;
+  const a = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin((lo2 - lo1) * Math.PI / 360) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+const carposCleanSegs = segs => Array.isArray(segs) ? CARPOS_SEG_ORDER.filter(k => segs.includes(k)).slice(0, 2) : [];
+const isRailMode = l => !!(l && l.kind === 'transit' && (l.mode === 'mrt' || l.mode === 'metro' || l.mode === 'lrt' || l.mode === 'tra' || l.mode === 'thsr'));
+function carposSysCode(l, L) {
+  if (!isRailMode(l)) return null;
+  if (l.mode === 'tra') return 'TRA';
+  if (l.mode === 'thsr') return 'THSR';
+  const nm = String(l.name || '');
+  if (/淡海輕軌/.test(nm)) return 'NTDLRT';
+  if (/安坑輕軌/.test(nm)) return 'NTALRT';
+  if (/三鶯/.test(nm)) return 'NTMC_LB';
+  if (/高雄輕軌|環狀輕軌/.test(nm)) return 'KLRT';
+  if (/阿里山/.test(nm)) return 'AFR';
+  if (/貓空/.test(nm)) return 'TRTCMG';
+  const ln = legLine(l);
+  if (ln) {
+    if (ln[0] === 'NTMC' && ln[1] === 'Y') return 'NTMC_Y';
+    if (ln[0] === 'TRTC' && ln[1] === 'Y') return 'NTMC_Y';
+    if (ln[0] === 'NTMC' && ln[1] === 'LB') return 'NTMC_LB';
+    return ln[0];
+  }
+  const s = legSys(l, L);
+  if (s === 'NTMC') return l.lineCode === 'LB' ? 'NTMC_LB' : 'NTMC_Y';
+  return s ? String(s).toUpperCase() : null;
+}
+function carposLineCode(l, sys) {
+  const ln = legLine(l);
+  if (ln) return ln[1];
+  if (sys === 'THSR') return 'THSR';
+  if (sys === 'TYMC') return 'A';
+  if (sys === 'NTMC_Y') return 'Y';
+  if (sys === 'TMRT') return 'G';
+  return l.lineCode || null;
+}
+function carposIndexUrl() { return './carpos/index.json'; }
+async function carposLoadIndex() {
+  if (CARPOS_CACHE.idx) return CARPOS_CACHE.idx;
+  if (!CARPOS_CACHE.idxP) {
+    CARPOS_CACHE.idxP = fetch(carposIndexUrl()).then(r => r.ok ? r.json() : null).then(d => {
+      if (d && d.stations) CARPOS_CACHE.idx = d;
+      return CARPOS_CACHE.idx;
+    }).catch(() => null);
+  }
+  return CARPOS_CACHE.idxP;
+}
+function carposLookupFile(idx, sys, name) {
+  if (!idx || !sys || !name || CARPOS_FORBIDDEN.has(sys)) return null;
+  const n = stNorm(name);
+  return idx.stations[`${sys}:${n}`] || idx.aliases?.[`${sys}:${n}`] || idx.aliases?.[`${sys}:${String(name).replace(/臺/g, '台').trim()}`] || null;
+}
+async function carposLoadStation(sys, name) {
+  const idx = await carposLoadIndex();
+  const fn = carposLookupFile(idx, sys, name);
+  if (!fn) return null;
+  if (CARPOS_CACHE.st.has(fn)) return CARPOS_CACHE.st.get(fn);
+  if (!CARPOS_CACHE.stP.has(fn)) {
+    CARPOS_CACHE.stP.set(fn, fetch(`./carpos/${fn}`).then(r => r.ok ? r.json() : null).then(d => {
+      if (d) CARPOS_CACHE.st.set(fn, d);
+      return d;
+    }).catch(() => null));
+  }
+  return CARPOS_CACHE.stP.get(fn);
+}
+async function planLoadCarpos() {
+  const P = S.plan, r = P && P.res && P.res[P.sel];
+  if (!r || !Array.isArray(r.legs)) return;
+  const jobs = [];
+  for (let i = 0; i < r.legs.length; i++) {
+    const l = r.legs[i], L = (P.live || {})[i];
+    const sys = carposSysCode(l, L);
+    if (sys && l.to && l.to.name && !CARPOS_FORBIDDEN.has(sys)) {
+      jobs.push(carposLoadStation(sys, l.to.name));
+    }
+  }
+  if (!jobs.length) return;
+  await Promise.all(jobs);
+  if (S.page === 'planDetail' && S.plan && S.plan.res && S.plan.res[S.plan.sel] === r) {
+    renderPage();
+  }
+}
+function carposDirSign(idx, stData, sys, lineCode, l) {
+  const fn = stNorm(l.from && l.from.name), tn = stNorm(l.to && l.to.name);
+  const lo = idx && idx.lineOrder && idx.lineOrder[sys];
+  if (lo && lineCode) {
+    const lists = sys === 'TRTC' && lineCode === 'O' ? [lo.O, lo.O_LU] : [lo[lineCode]];
+    for (const seq of lists) {
+      if (!Array.isArray(seq)) continue;
+      const fi = seq.indexOf(fn), ti = seq.indexOf(tn);
+      if (fi >= 0 && ti >= 0 && fi !== ti) return ti > fi ? 1 : -1;
+    }
+  }
+  const ax = stData && ((lineCode && stData.lineAxes?.[lineCode]) || stData.lines?.[lineCode]?.axis || stData.axis);
+  if (ax && l.from?.lat != null && l.to?.lat != null) {
+    const cos = Math.cos(((l.from.lat + l.to.lat) / 2) * Math.PI / 180);
+    const dot = ((l.to.lon - l.from.lon) * 111320 * cos) * ax[0] + ((l.to.lat - l.from.lat) * 110540) * ax[1];
+    if (Math.abs(dot) > 10) return dot >= 0 ? 1 : -1;
+  }
+  return null;
+}
+function carposPickTrtcDir(stData, lineCode, dirSign, l) {
+  if (!stData || !Array.isArray(stData.dirs) || !stData.dirs.length) return null;
+  const hs = String(l.headsign || '').replace(/^往\s*/, '').trim();
+  const hsNorm = stNorm(hs);
+  const byLine = lineCode ? stData.dirs.filter(d => d.line === lineCode) : stData.dirs.slice();
+  const pool = byLine.length ? byLine : stData.dirs;
+  if (dirSign != null) {
+    const exact = pool.filter(d => d.dirSign === dirSign);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1 && hsNorm) {
+      const m = exact.find(d => (d.headsigns || []).some(h => stNorm(h) === hsNorm || hs.includes(h)));
+      if (m) return m;
+    }
+    if (exact.length) return exact[0];
+  }
+  if (hsNorm) {
+    const m = pool.find(d => (d.headsigns || []).some(h => stNorm(h) === hsNorm || hs.includes(h)));
+    if (m) return m;
+  }
+  if (pool.length === 1) return pool[0];
+  const toNorm = stNorm(l.to && l.to.name);
+  const term = pool.find(d => (d.headsigns || []).includes('終點站') || (d.headsigns || []).some(h => stNorm(h) === toNorm));
+  return term || null;
+}
+function carposResolveLeg(l, i, r, T, posInT, destObj, LV) {
+  const sys = carposSysCode(l, LV?.[i]);
+  if (!sys || CARPOS_FORBIDDEN.has(sys) || !l.to || !l.to.name) return null;
+  const idx = CARPOS_CACHE.idx;
+  const fn = carposLookupFile(idx, sys, l.to.name);
+  if (!fn) return null;
+  const stData = CARPOS_CACHE.st.get(fn);
+  if (!stData) return null;
+
+  const lineCode = carposLineCode(l, sys);
+  const dirSign = carposDirSign(idx, stData, sys, lineCode, l);
+  const nextTIdx = (Array.isArray(T) && posInT >= 0) ? T[posInT + 1] : null;
+  const nextLeg = nextTIdx != null ? r.legs[nextTIdx] : null;
+  const nextIsRail = isRailMode(nextLeg);
+
+  if (nextIsRail) {
+    if (sys === 'TMRT') return null;   // 台中捷運本次僅驗出站
+    const nextSys = carposSysCode(nextLeg, LV?.[nextTIdx]);
+    const nextLine = carposLineCode(nextLeg, nextSys);
+    if (nextSys === sys) {
+      if (stData.sys === 'TRTC') {
+        const dir = carposPickTrtcDir(stData, lineCode, dirSign, l);
+        if (!dir) return null;
+        const raw = (nextLine && dir.xferByLine?.[nextLine]) || ((!dir.xferByLine || !Object.keys(dir.xferByLine).length) ? dir.xferSegs : null);
+        const segs = carposCleanSegs(raw);
+        return (segs.length === 1 || segs.length === 2) ? { segs, target: '轉乘', kind: 'same' } : null;
+      }
+      const lineObj = (stData.lines && lineCode && stData.lines[lineCode]) || stData;
+      const entry = lineObj.sameXfer?.[nextLine] || lineObj.sameXfer?.['*'];
+      if (!entry) return null;
+      const segs = carposCleanSegs(dirSign === -1 ? entry.neg : entry.pos);
+      return (segs.length === 1 || segs.length === 2) ? { segs, target: '轉乘', kind: 'same' } : null;
+    }
+    if (stData.sys === 'TRTC') {
+      const dir = carposPickTrtcDir(stData, lineCode, dirSign, l);
+      if (!dir) return null;
+      const raw = (nextLine && dir.xferByLine?.[nextLine]) || (nextSys && dir.crossXfer?.[nextSys]);
+      let segs = carposCleanSegs(raw);
+      if (!segs.length && nextLeg.from?.lat != null && Array.isArray(stData.exits)) {
+        let best = null, bd = Infinity;
+        for (const ex of stData.exits) {
+          const es = carposCleanSegs(dir.exitSegs?.[ex.no]);
+          if (!es.length) continue;
+          const d = carposHav(ex.lat, ex.lon, nextLeg.from.lat, nextLeg.from.lon);
+          if (d < bd) { bd = d; best = es; }
+        }
+        if (best && bd <= 450) segs = best;
+      }
+      return (segs.length === 1 || segs.length === 2) ? { segs, target: '轉乘', kind: 'cross' } : null;
+    }
+    const lineObj = (stData.lines && lineCode && stData.lines[lineCode]) || stData;
+    const cEntry = nextSys && lineObj.crossXfer?.[nextSys];
+    let segs = cEntry ? carposCleanSegs(dirSign === -1 ? cEntry.neg : cEntry.pos) : [];
+    if (!segs.length && nextLeg.from?.lat != null && Array.isArray(lineObj.exits)) {
+      let best = null, bd = Infinity;
+      for (const ex of lineObj.exits) {
+        const es = carposCleanSegs(dirSign === -1 ? ex.neg : ex.pos);
+        if (!es.length) continue;
+        const d = carposHav(ex.lat, ex.lon, nextLeg.from.lat, nextLeg.from.lon);
+        if (d < bd) { bd = d; best = es; }
+      }
+      if (best && bd <= 450) segs = best;
+    }
+    return (segs.length === 1 || segs.length === 2) ? { segs, target: '轉乘', kind: 'cross' } : null;
+  }
+
+  // Case 3：最後一段軌道出站 → 判斷終點是否就是本站，若是則整張不顯示
+  const tailWalks = r.legs.slice(i + 1);
+  if (!nextLeg) {
+    const destNameMatch = destObj && destObj.name && stNorm(destObj.name) === stNorm(l.to.name);
+    if (destNameMatch) return null;
+    if (destObj && destObj.st && l.to.lat != null && destObj.lat != null && carposHav(l.to.lat, l.to.lon, destObj.lat, destObj.lon) <= 120) return null;
+    if (tailWalks.length === 0 && (!destObj || (l.to.lat != null && destObj.lat != null && carposHav(l.to.lat, l.to.lon, destObj.lat, destObj.lon) <= 80))) return null;
+  }
+
+  let tLat = null, tLon = null;
+  if (nextLeg && nextLeg.from?.lat != null) { tLat = nextLeg.from.lat; tLon = nextLeg.from.lon; }
+  else if (destObj?.lat != null) { tLat = destObj.lat; tLon = destObj.lon; }
+  else {
+    const lastW = tailWalks[tailWalks.length - 1];
+    if (lastW?.to?.lat != null) { tLat = lastW.to.lat; tLon = lastW.to.lon; }
+  }
+  if (tLat == null || tLon == null) return null;
+
+  let bestEx = null, bestD = Infinity;
+  if (stData.sys === 'TRTC') {
+    const dir = carposPickTrtcDir(stData, lineCode, dirSign, l);
+    if (!dir || !Array.isArray(stData.exits)) return null;
+    for (const ex of stData.exits) {
+      const es = carposCleanSegs(dir.exitSegs?.[ex.no]);
+      if (!es.length) continue;
+      const d = carposHav(ex.lat, ex.lon, tLat, tLon);
+      if (d < bestD) { bestD = d; bestEx = { segs: es, label: ex.label || `${ex.no}號出口` }; }
+    }
+  } else {
+    const lineObj = (stData.lines && lineCode && stData.lines[lineCode]) || stData;
+    const exits = lineObj.exits || stData.exits || [];
+    for (const ex of exits) {
+      const es = carposCleanSegs(dirSign === -1 ? ex.neg : ex.pos);
+      if (!es.length) continue;
+      const d = carposHav(ex.lat, ex.lon, tLat, tLon);
+      if (d < bestD) { bestD = d; bestEx = { segs: es, label: ex.label || '出口' }; }
+    }
+  }
+  if (!bestEx) return null;
+  const segs = carposCleanSegs(bestEx.segs);
+  if (segs.length !== 1 && segs.length !== 2) return null;
+  const cleanLab = String(bestEx.label || '').replace(/^出口\s*(\d+[A-Za-z]?)$/, '$1號出口').trim() || '出口';
+  return { segs, target: cleanLab, kind: 'exit' };
+}
+function xBoard(l, i, r, T, posInT) {
+  const P = S.plan, b = carposResolveLeg(l, i, r, T, posInT, P && P.d, P && P.live);
+  if (!b || !b.segs || !b.segs.length) return '';
+  const has = k => b.segs.includes(k);
+  const cls = k => has(k) ? ' on' : '';
+  const segTxt = b.segs.map(k => CARPOS_SEG_ZH[k]).filter(Boolean).join('、');
+  return `<div class="xboard" data-leg="${i}"><div class="pos-lbl">乘車位置</div><div class="cars"><div class="car${cls('rear')}">後段</div><div class="car${cls('mid')}">中段</div><div class="car head${cls('front')}">前段</div><span class="chev">›</span></div><div class="pos-hint">坐<b>${esc(segTxt)}</b>，下車離${esc(b.target)}最近</div></div>`;
+}
+window.__carpos = { loadIndex: carposLoadIndex, loadStation: carposLoadStation, resolveLegCarpos: carposResolveLeg, cache: CARPOS_CACHE, sysCode: carposSysCode, dirSign: carposDirSign };
+function xLeg(l, i, L, c, r, T, posInT) {
   const P = S.plan, m = Math.max(1, Math.round(l.dur / 60)), stops = l.stops || [], open2 = P.open[i];
   if (l.kind === 'bike') {
     const ic = `<span class="ic" style="color:${SEG_BIKE}">${I.bike}</span>`;
@@ -6492,6 +6755,7 @@ function xLeg(l, i, L, c) {
     <button class="xln" data-act="legOpen" data-i="${reg({ i })}">${ic}${title ? `<span class="nmx">${esc(title)}${lNote ? `<small class="rnote">${esc(lNote)}</small>` : ''}</span>` : ''}<span class="dr">${esc(dir)}</span>${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
     <div class="xmt">${xChips(l, L, c)}</div>${xAlts(l)}
     <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站 ›'}</span>` : ''}</button>
+    ${xBoard(l, i, r, T, posInT)}
     ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
     </div></div>`;
   for (const t of l.thru || []) h += `<div class="xsg th" style="--c:${c}"><div class="rl"><div class="sl"></div></div><div class="by">${I.thru}免轉乘 <b>${esc(t.name || '')}</b> ${xT(t.time)}<span class="xc g">同一班車，不用下車</span></div></div>`;
@@ -6551,7 +6815,7 @@ function detailHtml() {
       const fromName = l.kind === 'bike' ? (l.rent || (l.from && l.from.name) || 'YouBike') : l.from.name;
       const toName = l.kind === 'bike' ? (l.ret || (l.to && l.to.name) || 'YouBike') : l.to.name;
       h += xStation(xT(l.from.time), fromName, xStLab(l, 'from', L), '發', i === 0 ? null : c);
-      h += xLeg(l, i, L, c);
+      h += xLeg(l, i, L, c, r, T, k);
       h += xStation(xT(l.to.time), toName, xStLab(l, 'to', L), '到', i === legs.length - 1 ? null : c);
       const j = T[k + 1];
       if (j != null) h += xXfer(l, legs[j], legs.slice(i + 1, j), L, LV[j]);

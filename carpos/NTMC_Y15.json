@@ -1,0 +1,1 @@
+{"sys":"NTMC_Y","id":"NTMC_Y15","sids":["NTMC_Y15"],"name":"板新","norm":"板新","lat":25.014436,"lon":121.472269,"axis":[-0.9341,0.3571],"exits":[{"no":"577085","label":"","lat":25.014439,"lon":121.47223,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"576731001"}

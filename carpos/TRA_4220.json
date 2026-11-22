@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_4220","sids":["TRA_4220"],"name":"臺南","norm":"台南","lat":22.99681,"lon":120.21295,"axis":[-0.0781,0.9969],"exits":[{"no":"前站出入口","label":"前站出入口","lat":22.997206,"lon":120.212401,"pos":["front"],"neg":["rear"]},{"no":"後站出入口","label":"後站出入口","lat":22.996411,"lon":120.213412,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508624001"}

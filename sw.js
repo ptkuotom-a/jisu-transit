@@ -1,9 +1,10 @@
 // 極速通勤 Service Worker：快取優先（同源 GET 有快取直回，換版靠 VERSION）；即時資料不攔截
 // build 2.60.1
-const VERSION = "jisu-v2.60.14";
+const VERSION = "jisu-v2.60.15";
 const SHELL = [
   "./", "./index.html", "./geocode.js", "./data.js", "./busdirect.js", "./s2stime.js", "./config.js", "./manifest.webmanifest",
   "./data/pda-thb-map.json",
+  "./carpos/index.json",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png",
   ...["01_emu500","02_emu3000","03_e500","04_hsr_700t","05_taroko","06_emu900","07_puyuma"].map(n => `./icons/train/${n}.svg`),
 ];

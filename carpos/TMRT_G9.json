@@ -1,0 +1,1 @@
+{"sys":"TMRT","id":"TMRT_G9","sids":["TMRT_G9"],"name":"市政府","norm":"市政府","lat":24.16199,"lon":120.64903,"axis":[-0.4045,-0.9145],"exits":[{"no":"出口2","label":"2號出口","lat":24.161636,"lon":120.649183,"pos":["front"],"neg":["rear"]},{"no":"出口1","label":"1號出口","lat":24.162001,"lon":120.648906,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"577981001"}

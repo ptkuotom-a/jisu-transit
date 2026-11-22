@@ -1,0 +1,1 @@
+{"sys":"THSR","id":"THSR_1000","sids":["THSR_1000"],"name":"台北","norm":"台北","lat":25.04767,"lon":121.516983,"axis":[-0.9573,-0.2891],"exits":[],"crossXfer":{"TRA":{"pos":["mid"],"neg":["mid"],"toName":"臺北"},"TRTC":{"pos":["mid"],"neg":["mid"],"toName":"台北車站"},"TYMC":{"pos":["front"],"neg":["rear"],"toName":"台北車站"}},"source":"tw-gtfs","facId":"508836001"}

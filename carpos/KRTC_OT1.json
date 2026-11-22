@@ -1,0 +1,1 @@
+{"sys":"KRTC","id":"KRTC_OT1","sids":["KRTC_OT1"],"name":"大寮","norm":"大寮","lat":22.622122,"lon":120.390528,"axis":[0.99,-0.1408],"exits":[{"no":"出口1","label":"1號出口","lat":22.621277,"lon":120.390594,"pos":["rear"],"neg":["front"]},{"no":"出口2","label":"2號出口","lat":22.62135,"lon":120.391778,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"533385001"}

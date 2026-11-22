@@ -1,0 +1,1 @@
+{"sys":"KRTC","id":"KRTC_O1","sids":["KRTC_O1"],"name":"哈瑪星","norm":"哈瑪星","lat":22.621492,"lon":120.274508,"axis":[0.9739,0.2271],"exits":[{"no":"出口1","label":"1號出口","lat":22.621959,"lon":120.273363,"pos":["rear"],"neg":["front"]},{"no":"出口2","label":"2號出口","lat":22.621541,"lon":120.275407,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"533375001"}

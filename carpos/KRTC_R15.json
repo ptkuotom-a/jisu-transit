@@ -1,0 +1,1 @@
+{"sys":"KRTC","id":"KRTC_R15","sids":["KRTC_R15"],"name":"生態園區","norm":"生態園區","lat":22.676686,"lon":120.306619,"axis":[0.2252,0.9743],"exits":[{"no":"出口1","label":"1號出口","lat":22.676,"lon":120.306482,"pos":["rear"],"neg":["front"]},{"no":"出口2","label":"2號出口","lat":22.677367,"lon":120.306663,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"512614001"}

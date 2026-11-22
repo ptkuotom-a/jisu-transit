@@ -1,0 +1,1 @@
+{"sys":"TMRT","id":"TMRT_G8","sids":["TMRT_G8"],"name":"文華高中","norm":"文華高中","lat":24.17141,"lon":120.66045,"axis":[-0.9319,-0.3627],"exits":[{"no":"578166","label":"","lat":24.171618,"lon":120.660411,"pos":["mid"],"neg":["mid"]}],"crossXfer":{},"source":"tw-gtfs","facId":"577983001"}

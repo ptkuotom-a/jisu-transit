@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_3230","sids":["TRA_3230"],"name":"豐原","norm":"豐原","lat":24.25438,"lon":120.72374,"axis":[0.264,0.9645],"exits":[{"no":"574364","label":"","lat":24.254567,"lon":120.723889,"pos":["front"],"neg":["rear"]},{"no":"574365","label":"","lat":24.253958,"lon":120.72276,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508642001"}

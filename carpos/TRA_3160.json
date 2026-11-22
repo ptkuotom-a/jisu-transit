@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_3160","sids":["TRA_3160"],"name":"苗栗","norm":"苗栗","lat":24.57001,"lon":120.82233,"axis":[0.3632,0.9317],"exits":[{"no":"574350","label":"","lat":24.569948,"lon":120.82238,"pos":["front"],"neg":["rear"]},{"no":"574351","label":"","lat":24.569726,"lon":120.821609,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508646001"}

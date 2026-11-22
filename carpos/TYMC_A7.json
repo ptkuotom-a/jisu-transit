@@ -1,0 +1,1 @@
+{"sys":"TYMC","id":"TYMC_A7","sids":["TYMC_A7"],"name":"體育大學站","norm":"體育大學","lat":25.04124,"lon":121.38543,"axis":[-0.8661,0.4998],"exits":[{"no":"出口1","label":"1號出口","lat":25.041398,"lon":121.38517,"pos":["front"],"neg":["rear"]},{"no":"出口2","label":"2號出口","lat":25.041241,"lon":121.385662,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"568058001"}

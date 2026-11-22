@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_1040","sids":["TRA_1040"],"name":"樹林","norm":"樹林","lat":24.99123,"lon":121.42442,"axis":[0.8099,0.5865],"exits":[{"no":"574324","label":"","lat":24.991292,"lon":121.424842,"pos":["front"],"neg":["rear"]},{"no":"574325","label":"","lat":24.991476,"lon":121.424217,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508656001"}

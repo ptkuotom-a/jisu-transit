@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_0900","sids":["TRA_0900"],"name":"基隆","norm":"基隆","lat":25.13191,"lon":121.73837,"axis":[-0.3516,0.9361],"exits":[{"no":"574273","label":"","lat":25.134389,"lon":121.740287,"pos":["front"],"neg":["rear"]},{"no":"574274","label":"","lat":25.131666,"lon":121.738655,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508665001"}

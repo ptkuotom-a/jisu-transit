@@ -1,0 +1,1 @@
+{"sys":"TMRT","id":"TMRT_G11","sids":["TMRT_G11"],"name":"南屯","norm":"南屯","lat":24.1405,"lon":120.6466,"axis":[-0.0179,-0.9998],"exits":[{"no":"578172","label":"","lat":24.140169,"lon":120.647274,"pos":["mid"],"neg":["mid"]}],"crossXfer":{},"source":"tw-gtfs","facId":"577978001"}

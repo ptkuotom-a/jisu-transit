@@ -1,0 +1,1 @@
+{"sys":"NTMC_Y","id":"NTMC_Y19","sids":["NTMC_Y19"],"name":"幸福","norm":"幸福","lat":25.049984,"lon":121.45998,"axis":[-0.0233,0.9997],"exits":[{"no":"出口1","label":"1號出口","lat":25.050091,"lon":121.46021,"pos":["front"],"neg":["rear"]},{"no":"出口2","label":"2號出口","lat":25.049752,"lon":121.460262,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"576734001"}

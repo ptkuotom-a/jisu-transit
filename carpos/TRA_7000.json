@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_7000","sids":["TRA_7000"],"name":"花蓮","norm":"花蓮","lat":23.99265,"lon":121.60131,"axis":[-0.2603,-0.9655],"exits":[{"no":"574418","label":"","lat":23.992969,"lon":121.601364,"pos":["front"],"neg":["rear"]},{"no":"574419","label":"","lat":23.993711,"lon":121.600082,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508685001"}

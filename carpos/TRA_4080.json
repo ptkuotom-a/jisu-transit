@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_4080","sids":["TRA_4080"],"name":"嘉義","norm":"嘉義","lat":23.47915,"lon":120.44114,"axis":[0.565,0.8251],"exits":[{"no":"574375","label":"","lat":23.479106,"lon":120.441139,"pos":["rear"],"neg":["front"]},{"no":"574376","label":"","lat":23.479764,"lon":120.440177,"pos":["rear"],"neg":["front"]}],"crossXfer":{},"source":"tw-gtfs","facId":"508630001"}

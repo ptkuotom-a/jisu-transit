@@ -1,0 +1,1 @@
+{"sys":"TRA","id":"TRA_4400","sids":["TRA_4400"],"name":"高雄","norm":"高雄","lat":22.63946,"lon":120.30292,"axis":[-0.9996,0.0269],"exits":[],"crossXfer":{"KRTC":{"pos":["mid"],"neg":["mid"],"toName":"高雄車站"}},"sameXfer":{"*":{"pos":["mid"],"neg":["mid"]}},"source":"tw-gtfs","facId":"508618001"}

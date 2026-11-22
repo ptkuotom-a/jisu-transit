@@ -1,0 +1,1 @@
+{"sys":"NTMC_Y","id":"NTMC_Y13","sids":["NTMC_Y13"],"name":"橋和","norm":"橋和","lat":25.004413,"lon":121.490461,"axis":[-0.8729,0.4878],"exits":[{"no":"577087","label":"","lat":25.004807,"lon":121.490291,"pos":["front"],"neg":["rear"]}],"crossXfer":{},"source":"tw-gtfs","facId":"576729001"}
