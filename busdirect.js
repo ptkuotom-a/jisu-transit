@@ -1316,13 +1316,24 @@
 
   function pickDiverseTrains(pool, per = 3) {
     if (!pool || !pool.length) return [];
-    const sorted = pool.slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+    const sorted = pool.slice().sort((a, b) => (a.eta ?? 9999) - (b.eta ?? 9999));
+    const baseEta = sorted[0] && sorted[0].eta != null ? sorted[0].eta : 0;
+    const topCut = sorted[Math.min(per, sorted.length) - 1];
+    const topCutEta = topCut && topCut.eta != null ? topCut.eta : baseEta;
+    // 只針對近期合理視窗（一般 ≤60 分；收班看隔日則為首班起 +30 分）內有發車的終點各保底 1 班，
+    // 避免數小時後的冷門終點（如機捷 A18 往環北 2時21分／往一航廈 12時1分）擠掉正常的近期班次。
+    const divMaxEta = baseEta <= 60 ? Math.min(60, Math.max(topCutEta + 20, baseEta + 45)) : (baseEta + 30);
     const dests = [...new Set(sorted.map(t => t.dest).filter(Boolean))];
-    const totalLimit = Math.max(per, dests.length);
+    const eligibleDests = [];
+    for (const d of dests) {
+      const firstTrain = sorted.find(t => t.dest === d);
+      if (firstTrain && (firstTrain.eta == null || firstTrain.eta <= divMaxEta)) eligibleDests.push(d);
+    }
+    const totalLimit = Math.max(per, eligibleDests.length || 1);
     const selected = [];
     const destCounts = {};
-    // 第一輪：確保同方向各終點至少各出現 1 班
-    for (const d of dests) {
+    // 第一輪：確保近期視窗內同方向各終點至少各出現 1 班
+    for (const d of eligibleDests) {
       const firstTrain = sorted.find(t => t.dest === d);
       if (firstTrain && !selected.includes(firstTrain)) {
         selected.push(firstTrain);
@@ -1339,7 +1350,7 @@
         destCounts[t.dest] = count + 1;
       }
     }
-    return selected.sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
+    return selected.sort((a, b) => (a.eta ?? 9999) - (b.eta ?? 9999));
   }
 
   // ===== v2.51.7：車站各方向接下來 N 班（車站小卡大時間卡、列表、附近車站卡片共用）=====
@@ -1352,14 +1363,18 @@
     if (D.kind === "tra" || D.kind === "thsr") {
       return (D.groups || []).map(g => ({ key: "d" + g.dir, label: g.label, dir: g.dir, trains: (g.trains || []).filter(ok).slice(0, per), src: "live" })).filter(g => g.trains.length);
     }
-    const keyOf = (line, side, via, dest) => (line || "") + "|" + (side || ("x" + (dest || ""))) + "|" + (via || "");
+    const keyOf = (line, side, via, dest) => via
+      ? (line || "") + "|via|" + via
+      : (line || "") + "|" + (side || ("x" + (dest || ""))) + "|";
     const out = new Map();
     for (const g of D.groups || []) {
       const allTr = (g.trains || []).filter(ok).slice().sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
       if (!allTr.length) continue;
-      const line = g.line || allTr[0].line || "", k = keyOf(line, g.side, allTr[0].via, allTr[0].dest);
+      const line = g.line || allTr[0].line || "";
+      const via = g.via || allTr[0].via || null;
+      const k = keyOf(line, g.side, via, allTr[0].dest);
       if (!out.has(k)) {
-        out.set(k, { key: k, line, side: g.side || null, via: allTr[0].via || null, origLabel: g.label, rawLive: allTr.slice(), trains: [], src: "live" });
+        out.set(k, { key: k, line, side: g.side || null, via, origLabel: g.label, rawLive: allTr.slice(), trains: [], src: "live" });
       } else {
         const entry = out.get(k);
         entry.rawLive = entry.rawLive.concat(allTr).sort((a, b) => (a.eta ?? 999) - (b.eta ?? 999));
@@ -1368,9 +1383,14 @@
     // v2.60.11（第 5 條）：填補時刻表班次至即時列車間隔較大處或末尾，並確保同方向不同終點皆有代表
     for (const g of out.values()) {
       let pool = g.rawLive.slice();
-      if (opt && opt.fill && g.side) {
-        const liveEtas = pool.map(t => t.eta).filter(e => e != null);
-        const ttMatches = (D.tt || []).filter(t => t.eta != null && t.eta >= 0 && (t.line || "") === g.line && t.side === g.side);
+      let ttMatches = [];
+      if (opt && opt.fill && (g.side || g.via)) {
+        const liveEtas = [];
+        for (const t of pool) {
+          if (t.eta != null) liveEtas.push(t.eta);
+          if (t.etaDep != null) liveEtas.push(t.etaDep);
+        }
+        ttMatches = (D.tt || []).filter(t => t.eta != null && t.eta >= 0 && (t.line || "") === g.line && (g.via ? t.via === g.via : t.side === g.side));
         for (const t of ttMatches) {
           // 在即時列車間隔處（與所有即時列車差 2 分以上）或末尾補入
           if (liveEtas.every(le => Math.abs(le - t.eta) >= 2)) {
@@ -1378,12 +1398,20 @@
           }
         }
       }
+      if (g.via) {
+        const realDest = (ttMatches.find(t => t.dest && t.dest !== "環狀輕軌") || pool.find(t => t.dest && t.dest !== "環狀輕軌") || {}).dest;
+        if (realDest) {
+          pool = pool.map(t => t.dest === "環狀輕軌" ? { ...t, dest: realDest } : t);
+        }
+      }
       g.trains = pickDiverseTrains(pool, per);
       const dests = [...new Set(g.trains.map(t => t.dest).filter(Boolean))];
-      if (dests.length > 1) {
+      if (g.via && dests.length) {
+        g.label = "往 " + dests.join("／") + "（" + g.via + "）";
+      } else if (dests.length > 1) {
         g.label = "往 " + dests.join("／") + (g.via ? "（" + g.via + "）" : "");
       } else {
-        g.label = g.origLabel || ("往 " + (g.trains[0]?.dest || ""));
+        g.label = g.origLabel || ("往 " + (g.trains[0]?.dest || "") + (g.via ? "（" + g.via + "）" : ""));
       }
     }
     const tt = new Map();
@@ -1401,8 +1429,8 @@
       out.set(k, g);
     }
     const rank = l => { const i = lines.indexOf(l); return i < 0 ? 50 + (String(l || "").charCodeAt(0) || 0) : i; };
-    const sk = x => x === "up" || x === "d0" ? 0 : x === "dn" || x === "d1" ? 1 : 2;
-    return [...out.values()].sort((a, b) => rank(a.line) - rank(b.line) || sk(a.side) - sk(b.side) || a.key.localeCompare(b.key));
+    const sk = x => x.via === "順行" ? 0 : x.via === "逆行" ? 1 : x.side === "up" || x.side === "d0" ? 0 : x.side === "dn" || x.side === "d1" ? 1 : 2;
+    return [...out.values()].sort((a, b) => rank(a.line) - rank(b.line) || sk(a) - sk(b) || a.key.localeCompare(b.key));
   }
 
   // v2.60.4：站牌格子索引（約 500 公尺一格）。stopsNear(pt) 回傳 radius 內最近的 limit 個站牌 { uid, lat, lon, dist }，
