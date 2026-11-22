@@ -15,7 +15,42 @@ const UID_CITY = {
   PEN: "PenghuCounty", KIN: "KinmenCounty", LIE: "LienchiangCounty",
 };
 const STOP_CITY = { ...UID_CITY, THB: "InterCity" };
-const normBusName = s => String(s || "").trim().replace(/^([A-Za-z\u4e00-\u9fff]{0,8}\d+[A-Za-z0-9區副延繞支跳蛙]*)路$/, "$1");
+// v2.60.14：公車路線主名與營運／行駛註記分離（與 Worker otp-plan.js 完全同一套規則）
+function splitBusRouteName(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { name: "", note: "", raw: "" };
+  let base = s;
+  let note = "";
+  const mLu = /^((?:[A-Za-z\u4e00-\u9fff]{0,6}\d+[A-Za-z0-9區副延繞支反跳蛙]*?))路($|(?:不經|經|往返|往|延駛|繞駛|改道|去程|返程|狗狗公車|寵物公車|預約公車|半趟|半|\(|（).*)$/.exec(base);
+  if (mLu) base = mLu[1] + (mLu[2] || "");
+
+  const basePat = "(?:(?:市民小巴|內科|內快|棕|紅|藍|綠|橘|黃|小|F|R|BL|BR|G|O|E|T|A)?\\d+[A-Za-z0-9]*(?:區間車|區間|區|副線|副|延|繞|支|反|正|左|右|東|西|南|北|直達車|直達|承德|重慶|[\\u4e00-\\u9fff]{0,4}幹線)?|(?:[\\u4e00-\\u9fff]{2,5}幹線)|南軟[\\u4e00-\\u9fff]{2,3})";
+  const notePat = "(?:[（(].*|(?:狗狗公車|寵物公車|預約公車|去程半趟|返程半趟|去程半|返程半|去程|返程|假日|上午|下午|不經|經|往返|往|延駛|繞駛|改道|半趟).*|(?:大南|中興|三重|大都會|光華|指南|欣欣|新店|首都|東南|臺北客運|台北客運|淡水客運|基隆客運|統聯|國光).*|[^\\d\\s(（]{1,8}(?:發半趟|發車).*)";
+  const m = new RegExp("^(" + basePat + ")(" + notePat + ")$").exec(base);
+  if (m && m[1] && m[2]) {
+    base = m[1].trim();
+    note = m[2].trim().replace(/^[（(]([^）)]+)[）)]$/, "$1").trim();
+  }
+  return { name: base, note, raw: s };
+}
+const normBusName = s => splitBusRouteName(s).name;
+function splitBusWithIdx(raw, cityList) {
+  const sp = splitBusRouteName(raw);
+  if (sp.note || !Array.isArray(cityList) || !cityList.length) return sp;
+  const s = sp.name;
+  let best = "";
+  for (const rec of cityList) {
+    const cand = String((rec && rec[1]) || "").trim();
+    if (!cand || cand === s || cand.length >= s.length || !s.startsWith(cand)) continue;
+    const nxt = s.slice(cand.length);
+    if (/^[0-9A-Za-z區副延繞支反東西南北]/.test(nxt) || /^幹線/.test(nxt)) continue;
+    if (!splitBusRouteName(cand).note && cand.length > best.length) best = cand;
+  }
+  if (!best) return sp;
+  const note = s.slice(best.length).trim().replace(/^[（(]([^）)]+)[）)]$/, "$1").trim();
+  return { name: best, note, raw: sp.raw };
+}
+if (typeof window !== "undefined") { window.splitBusRouteName = splitBusRouteName; window.normBusName = normBusName; }
 const BIKE_TYPE = { 1: "YouBike 1.0", 2: "YouBike 2.0", 3: "T-Bike", 4: "P-Bike", 5: "K-Bike" };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1377,7 +1412,7 @@ async function refreshNwtRoutes(routes, opt = {}) {
     const u = uidOf(r);
     if (!u) return false;
     const hasLive = (r.sec != null && r.sec >= 0) || (r.EstimateTime != null && r.EstimateTime >= 0);
-    if (hasLive && !r.noLive) return false;
+    if (!opt.fresh && hasLive && !r.noLive) return false;
     return isTpeR(u) || isNwtR(u) || isTaoR(u) || isThbR(u) || isCitybusR(u) || isHszR(u) || isTxgR(u) || isTnnR(u) || isKhhR(u) || isKinR(u);
   };
   const list = (routes || []).filter(isCand);
@@ -2914,11 +2949,12 @@ function pageAfter(path, j) {
   if (h.v && h.v.empty) return pageLive("empty");
   return pageLive("none");
 }
-async function routePageLive(routeUID, route, dirNum, sor) {
+async function routePageLive(routeUID, route, dirNum, sor, fresh = false) {
+  const ttl = fresh ? 0 : 15000, pdaTtl = fresh ? 0 : 20000;
   if (isTpeR(routeUID) || isNwtR(routeUID)) {
-    const pda = await pdaRouteEta(routeUID, 20000);
+    const pda = await pdaRouteEta(routeUID, pdaTtl);
     if (pda && Array.isArray(pda.list) && pda.list.length) return { ...pda, live: "ok" };
-    const od = await odRouteEta(routeUID, true, route);
+    const od = await odRouteEta(routeUID, true, route, ttl);
     if (od && Array.isArray(od.list) && od.list.length) return { ...od, live: "ok" };
     const p = (routeUID || "").slice(0, 3), rid = (routeUID || "").slice(3);
     const pdaPath = `/pda/route?c=${p}&rid=${rid}`;
@@ -2931,43 +2967,55 @@ async function routePageLive(routeUID, route, dirNum, sor) {
   if (!sor || !Array.isArray(sor) || !sor.length) return pageLive("none");
   if (isTaoR(routeUID)) {
     const path = `/tyebus?route=${enc(routeUID)}`;
-    return pageAfter(path, await taoRouteEta(routeUID));
+    return pageAfter(path, await taoRouteEta(routeUID, ttl));
   }
   if (isThbR(routeUID)) {
     const subs = thbSubs(routeUID, dirNum, sor);
     if (!subs.length) return pageLive("none");
     const path = `/thb?sub=${subs.join(",")}&route=${routeUID}`;
-    return pageAfter(path, await thbRouteEta(routeUID, dirNum, sor));
+    return pageAfter(path, await thbRouteEta(routeUID, dirNum, sor, ttl));
   }
   if (isCitybusR(routeUID)) {
     if (!citybusStops(routeUID, sor)) return pageLive("none");
     const subs = [...new Set((sor || []).filter(x => x.RouteUID === routeUID && x.SubRouteUID).map(x => x.SubRouteUID))].slice(0, 8).join(",");
     const path = `/citybus?route=${enc(routeUID)}&name=${enc(route)}&stops=${enc(citybusStops(routeUID, sor))}${subs ? "&subs=" + enc(subs) : ""}`;
-    return pageAfter(path, await citybusRouteEta(routeUID, route, sor));
+    return pageAfter(path, await citybusRouteEta(routeUID, route, sor, ttl));
   }
-  if (isHszR(routeUID)) return pageAfter(`/hszbus?route=${enc(routeUID)}&name=${enc(route)}`, await hszRouteEta(routeUID, route, sor));
-  if (isTxgR(routeUID)) return pageAfter(`/tcgo?route=${enc(routeUID)}&name=${enc(route)}`, await tcgoRouteEta(routeUID, route, sor));
-  if (isTnnR(routeUID)) return pageAfter(`/tnbus?route=${enc(routeUID)}&name=${enc(route)}`, await tnbusRouteEta(routeUID, route, sor));
-  if (isKhhR(routeUID)) return pageAfter(`/twh?route=${enc(routeUID)}&name=${enc(route)}`, await twhRouteEta(routeUID, route, sor));
+  if (isHszR(routeUID)) return pageAfter(`/hszbus?route=${enc(routeUID)}&name=${enc(route)}`, await hszRouteEta(routeUID, route, sor, ttl));
+  if (isTxgR(routeUID)) return pageAfter(`/tcgo?route=${enc(routeUID)}&name=${enc(route)}`, await tcgoRouteEta(routeUID, route, sor, ttl));
+  if (isTnnR(routeUID)) return pageAfter(`/tnbus?route=${enc(routeUID)}&name=${enc(route)}`, await tnbusRouteEta(routeUID, route, sor, ttl));
+  if (isKhhR(routeUID)) return pageAfter(`/twh?route=${enc(routeUID)}&name=${enc(route)}`, await twhRouteEta(routeUID, route, sor, ttl));
   if (isKinR(routeUID)) {
     const ids = kinbusIds(routeUID, sor);
     const path = `/kinbus?route=${enc(routeUID)}&name=${enc(route)}${ids.length ? `&ids=${ids.join(",")}` : ""}`;
-    return pageAfter(path, await kinbusRouteEta(routeUID, route, sor));
+    return pageAfter(path, await kinbusRouteEta(routeUID, route, sor, null, ttl));
   }
-  return pageAfter(`/od/eta?route=${routeUID}&near=1`, await odRouteEta(routeUID, true, route));
+  return pageAfter(`/od/eta?route=${routeUID}&near=1`, await odRouteEta(routeUID, true, route, ttl));
 }
-async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
+async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName, fresh = false }) {
   routeUID = String(routeUID || "").replace(/^TW[:_]/i, "").replace(/_[01]$/, "");
-  route = normBusName(route);
+  const spIn = splitBusRouteName(route);
+  route = spIn.name;
+  let routeNote = spIn.note;
   const k = routeKind(routeUID);
   if (!k) throw new Error("缺少路線識別資訊");
   try {
     const cityList = await busCity(k.city || (k.path === "InterCity" ? "InterCity" : "")).catch(() => []);
     const offRec = Array.isArray(cityList) && cityList.find(r => r && r[0] === routeUID);
-    if (offRec && offRec[1]) route = offRec[1];
+    if (offRec && offRec[1]) {
+      const spOff = splitBusWithIdx(offRec[1], cityList);
+      route = spOff.name || route;
+      if (!routeNote && spOff.note) routeNote = spOff.note;
+    } else if (!routeNote && spIn.raw) {
+      const spIdx = splitBusWithIdx(spIn.raw, cityList);
+      route = spIdx.name || route;
+      routeNote = spIdx.note;
+    }
   } catch (e) {}
   // 站序永久保存（IndexedDB sor|路線）；預估資料出現站序裡沒有的站，或找不到這條路線，就重抓
-  const sorKey = `${k.path}|${route}`, sc = await IDB.get("sor|" + sorKey);
+  const sorKey = `${k.path}|${route}`;
+  let sc = await IDB.get("sor|" + sorKey);
+  if (!sc && spIn.raw && spIn.raw !== route) sc = await IDB.get("sor|" + `${k.path}|${spIn.raw}`).catch(() => null);
   // 雲端 KV 的全 23 地區站序是手機端唯一來源；同名的其他路線保留在同一份快取裡。
   const sorCloud = async (base = []) => {
     const l = (await cloudSor([routeUID]).catch(() => ({})))[routeUID];
@@ -2977,7 +3025,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
     return d;
   };
   let sor = sc ? sc.d : await sorCloud().then(d => d || []);
-  const odR = await routePageLive(routeUID, route, dirNum, sor);
+  const odR = await routePageLive(routeUID, route, dirNum, sor, !!fresh);
   const live = odR && odR.live || "none";
   const etas = live === "ok" ? (odR.list || []) : [];
   const near = live === "ok" && Array.isArray(odR.near) ? odR.near : [];
@@ -3001,7 +3049,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   const hitN = r => etaU.size ? (r.Stops || []).filter(x => etaU.has(x.StopUID)).length : 0;
   cand.sort((a, b) => hitN(b) - hitN(a) || (b.Stops || []).length - (a.Stops || []).length);
   const stops = ((cand[0] && cand[0].Stops) || []).slice().sort((a, b) => (a.StopSequence || 0) - (b.StopSequence || 0));
-  if (!stops.length) return { routeUID, route, dirs: [dirNum], dest: { 0: null, 1: null }, stops: [], live };
+  if (!stops.length) return { routeUID, route, ...(routeNote ? { routeNote } : {}), dirs: [dirNum], dest: { 0: null, 1: null }, stops: [], live, liveSrc: (odR && odR.src) || null };
 
   const em = {};
   for (const t of etas) {
@@ -3033,7 +3081,7 @@ async function routeView({ routeUID, route, dirNum = 0, stopUID, stopName }) {
   busHeal([routeUID]);
 
   return {
-    routeUID, route, dirNum, live, dirs: dirs.length ? dirs : [dirNum],
+    routeUID, route, ...(routeNote ? { routeNote } : {}), dirNum, live, liveSrc: (odR && odR.src) || null, dirs: dirs.length ? dirs : [dirNum],
     dest: oneWayDest({ 0: destOf(routeUID, 0, destMap), 1: destOf(routeUID, 1, destMap) }, dirs, dirNum, stops),
     stops: stops.map(s => {
       const nm = (s.StopName && s.StopName.Zh_tw) || "?";
@@ -6967,20 +7015,21 @@ const UID_CITY_SET = new Set(Object.values(UID_CITY));
 // 搜尋結果點進去：用站牌位置查一次附近預估到站（Worker 共用快取20秒），只留同名站牌
 async function stopAt({ name, lat, lon, r = 0, uLat = null, uLon = null }) {
   const rad = Math.min(Math.max(r + 60, 80), 400);
-  const eta = await busNearEta(lat.toFixed(4), lon.toFixed(4), rad, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`);
+  const eta = await busNearEta(lat.toFixed(4), lon.toFixed(4), rad, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat.toFixed(4), lon.toFixed(4), rad)}&%24top=400&%24format=JSON`, null, true);
   try { placeHeal(eta.map(e => ({ uid: e.StopUID, name: e.StopName && e.StopName.Zh_tw }))); } catch (e) {}
   const routes = {};
   for (const it of eta) {
     if (((it.StopName && it.StopName.Zh_tw) || "") !== name) continue;
     const dirNum = it.Direction === 1 ? 1 : 0, sec = typeof it.EstimateTime === "number" ? it.EstimateTime : null;
-    const x = { route: (it.RouteName && it.RouteName.Zh_tw) || "?", routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null, noLive: !!it.noLive, noRoutes: !!it.noRoutes, src: it.src || "pda-stop" };
+    const spNm = splitBusRouteName((it.RouteName && it.RouteName.Zh_tw) || "?");
+    const x = { route: spNm.name || "?", ...(spNm.note ? { routeNote: spNm.note } : {}), routeUID: it.RouteUID || null, dirNum, stopUID: it.StopUID || null, sec, status: it.StopStatus ?? 0, next: it.NextBusTime || null, noLive: !!it.noLive, noRoutes: !!it.noRoutes, src: it.src || "pda-stop" };
     const k = `${x.routeUID}|${dirNum}|${x.stopUID || ""}`, old = routes[k];
     if (!old || (sec !== null && (old.sec === null || sec < old.sec))) routes[k] = x;
   }
   const rawList = Object.values(routes);
   const hasReal = rawList.some(x => x.routeUID && !x.noRoutes);
   const list = hasReal ? rawList.filter(x => !x.noRoutes) : rawList;
-  await refreshNwtRoutes(list, { max: Math.max(list.length, 50), stopName: name }).catch(() => {});
+  await refreshNwtRoutes(list, { max: Math.max(list.length, 50), stopName: name, fresh: true }).catch(() => {});
   let destMap = {}; try { destMap = await loadRouteDest("main", list.map(x => x.routeUID)); } catch (e) {}
   for (const x of list) x.dest = destOf(x.routeUID, x.dirNum, destMap);
   return { name, lat, lon, dist: uLat == null ? null : haversine(uLat, uLon, lat, lon), bear: null, side: null, bearTxt: null, routes: list };
@@ -7154,10 +7203,20 @@ function planClean(routes, yb) {
       const lineCode = t.lineCode || s.lineCode || "";
       const mode = PLAN_MODE(s);
       const nbn = typeof normBusName === "function" ? normBusName : (v => String(v || "").trim().replace(/^([A-Za-z\u4e00-\u9fff]{0,8}\d+[A-Za-z0-9區副延繞支跳蛙]*)路$/, "$1"));
+      const sbn = typeof splitBusRouteName === "function" ? splitBusRouteName : (v => {
+        const sv = String(v || "").trim(); let b = sv, nt = "";
+        const mLu = /^((?:[A-Za-z\u4e00-\u9fff]{0,6}\d+[A-Za-z0-9區副延繞支反跳蛙]*?))路($|(?:不經|經|往返|往|延駛|繞駛|改道|去程|返程|狗狗公車|寵物公車|預約公車|半趟|半|\(|（).*)$/.exec(b);
+        if (mLu) b = mLu[1] + (mLu[2] || "");
+        const m = new RegExp("^((?:(?:市民小巴|內科|內快|棕|紅|藍|綠|橘|黃|小|F|R|BL|BR|G|O|E|T|A)?\\d+[A-Za-z0-9]*(?:區間車|區間|區|副線|副|延|繞|支|反|正|左|右|東|西|南|北|直達車|直達|承德|重慶|[\\u4e00-\\u9fff]{0,4}幹線)?|(?:[\\u4e00-\\u9fff]{2,5}幹線)|南軟[\\u4e00-\\u9fff]{2,3}))([（(].*|(?:狗狗公車|寵物公車|預約公車|去程半趟|返程半趟|去程半|返程半|去程|返程|假日|上午|下午|不經|經|往返|往|延駛|繞駛|改道|半趟).*|(?:大南|中興|三重|大都會|光華|指南|欣欣|新店|首都|東南|臺北客運|台北客運|淡水客運|基隆客運|統聯|國光).*|[^\\d\\s(（]{1,8}(?:發半趟|發車).*)$").exec(b);
+        if (m && m[1] && m[2]) { b = m[1].trim(); nt = m[2].trim().replace(/^[（(]([^）)]+)[）)]$/, "$1").trim(); }
+        return { name: b || nbn(sv), note: nt, raw: sv };
+      });
       const rawNm = t.shortName || t.name || "";
-      const nm = mode === "bus" ? nbn(rawNm) : rawNm;
-      const longNm = mode === "bus" && t.longName && nbn(t.longName) === nm ? "" : (t.longName || "");
-      legs.push({ kind, mode, name: nm, longName: longNm, headsign: r.source !== "google" && /環狀輕軌/.test((t.shortName || t.name || "") + (t.longName || "")) ? "" : planHead(t.headsign), color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
+      const sp = mode === "bus" ? sbn(rawNm) : { name: rawNm, note: "" };
+      const nm = sp.name;
+      const routeNote = mode === "bus" ? (t.routeNote || sp.note || "") : "";
+      const longNm = mode === "bus" && t.longName && sbn(t.longName).name === nm ? "" : (t.longName || "");
+      legs.push({ kind, mode, name: nm, ...(routeNote ? { routeNote } : {}), longName: longNm, headsign: r.source !== "google" && /環狀輕軌/.test((t.shortName || t.name || "") + (t.longName || "")) ? "" : planHead(t.headsign), color: /^[0-9a-f]{6}$/i.test(t.route_color || "") ? "#" + t.route_color.toUpperCase() : null,
         number: t.number || "", agency: agId, agencyName: (s.agency && s.agency.name) || "", from, to, dur,
         stops: (s.intermediateStops || []).map(x => pPlace(x.departure || x.arrival)), ...(uid ? { routeUID: uid } : {}), ...(city ? { city } : {}), ...(t.dir != null ? { dir: t.dir === 1 ? 1 : 0 } : {}), ...(stopUID ? { stopUID } : {}), ...(toStopUID ? { toStopUID } : {}), ...(s.stopCount ? { stopCount: s.stopCount } : {}), ...(t.trainType ? { trainType: t.trainType } : {}), ...(t.est ? { est: true } : {}), ...(t.liveDep ? { liveDep: true } : {}), ...(s.timeSrc ? { timeSrc: s.timeSrc } : {}), ...(lineOp ? { lineOp } : {}), ...(lineCode ? { lineCode } : {}), ...(pts && pts.length >= 2 ? { shape: { coords: pts } } : {}) });
     }
@@ -8401,22 +8460,21 @@ async function otpEnrichRail(routes) {
 }
 
 async function otpCalibrateBus(routes) {
+  const sbn = typeof splitBusRouteName === "function" ? splitBusRouteName : v => ({ name: String(v || "").trim(), note: "" });
   for (const r of routes || []) {
     for (let idx = 0; idx < (r.legs || []).length; idx++) {
       const l = r.legs[idx];
       if (l.kind !== "transit" || l.mode !== "bus") continue;
+      const spLeg = sbn(l.name);
+      l.name = spLeg.name || l.name;
+      if (!l.routeNote && spLeg.note) l.routeNote = spLeg.note;
       let city = l.city || STOP_CITY[(l.routeUID || "").slice(0, 3)];
       const b = await planBusMatch(l).catch(() => null);
-      if (b && b.route && !/[大南三重指南欣欣大都會光華光南客運總站發半趟]/.test(b.route)) {
-        l.name = b.route;
-        l.routeUID = b.routeUID;
-        l.city = b.city || city;
-        city = l.city;
-        l.dir = b.dirNum;
-        l.stopUID = b.stopUID;
-        l.toStopUID = b.alightUID || l.toStopUID;
-      } else if (b) {
-        l.name = b.route || l.name;
+      if (b) {
+        const spB = sbn(b.route || l.name);
+        l.name = spB.name || l.name;
+        const rn = l.routeNote || b.routeNote || spB.note || "";
+        if (rn) l.routeNote = rn; else delete l.routeNote;
         l.routeUID = b.routeUID || l.routeUID;
         l.city = b.city || city;
         city = l.city;
@@ -8514,6 +8572,436 @@ async function otpCalibrateBus(routes) {
   }
 }
 
+// v2.60.14（第 4 條）：為 OTP 公車段補齊同向所有經過路線（起點站→迄點站同方向站序，絕不放反方向；不呼叫 TDX、沿用既有的 200m/300m 併站規則）
+async function otpEnrichBusAlts(routes, { when, time } = {}) {
+  if (!Array.isArray(routes) || !routes.length) return;
+  const nowMs = Date.now();
+  const baseMs = (when === "dep" || when === "arr") && time ? (tms(time) || nowMs) : nowMs;
+  const wantLive = when === "now" || Math.abs(baseMs - nowMs) <= 90 * 60000;
+  const uidOfS = s => Array.isArray(s) ? s[0] : ((s && (s.StopUID || s.u)) || "");
+  const nmOfS = s => Array.isArray(s) ? (s[1] || "") : ((s && ((s.StopName && s.StopName.Zh_tw) || s.name)) || "");
+  const posOfS = s => Array.isArray(s) ? s[2] : (s && (s.P || (s.StopPosition && s.StopPosition.PositionLat != null ? [s.StopPosition.PositionLat, s.StopPosition.PositionLon] : null)));
+
+  const matchStopIdx = (st, startIdx, stopUID, p, maxDist) => {
+    if (stopUID) {
+      const si = st.findIndex((x, j) => j >= startIdx && uidOfS(x) === stopUID);
+      if (si >= 0) return si;
+    }
+    const pNm = p && p.name ? pn(p.name) : "";
+    if (pNm) {
+      const ni = st.findIndex((x, j) => {
+        if (j < startIdx || pn(nmOfS(x)) !== pNm) return false;
+        const q = posOfS(x);
+        if (!q || !p || p.lat == null) return true;
+        return haversine(p.lat, p.lon, q[0], q[1]) <= 500;
+      });
+      if (ni >= 0) return ni;
+    }
+    if (p && p.lat != null) {
+      let best = -1, bd = maxDist;
+      for (let j = startIdx; j < st.length; j++) {
+        const q = posOfS(st[j]);
+        if (!q) continue;
+        const dd = haversine(p.lat, p.lon, q[0], q[1]);
+        if (dd <= bd) { bd = dd; best = j; }
+      }
+      return best;
+    }
+    return -1;
+  };
+
+  const seqMatch = (st, l) => {
+    if (!Array.isArray(st) || st.length < 2) return null;
+    const bi = matchStopIdx(st, 0, l.stopUID, l.from, 200);
+    if (bi < 0) return null;
+    const ai = matchStopIdx(st, bi + 1, l.toStopUID, l.to, 300);
+    if (ai <= bi) return null;
+    return { bi, ai };
+  };
+
+  const rideSecOf = (st, bi, ai, fallbackDur) => {
+    const seqPts = st.map(s => ({ P: posOfS(s) }));
+    if (seqPts[bi].P && seqPts[ai].P) return Math.max(60, rpRide(seqPts, bi, ai) * 60);
+    return fallbackDur || 600;
+  };
+
+  const schedDepAt = (rec, bi, refMs) => {
+    if (!rec || !Array.isArray(rec.tr) || !rec.tr.length) return null;
+    const tpeDate = new Date(refMs + 8 * 36e5);
+    const dayStartMs = Date.UTC(tpeDate.getUTCFullYear(), tpeDate.getUTCMonth(), tpeDate.getUTCDate()) - 8 * 36e5;
+    const dow = tpeDate.getUTCDay();
+    let bestDep = null;
+    for (const tr of rec.tr) {
+      const [mask, base, pi, sp] = tr;
+      if (sp !== -1 && sp != null && sp !== "") continue;
+      if (!((mask >> dow) & 1)) continue;
+      const pat = (rec.p || [])[pi] || [];
+      const off = pat[bi];
+      if (off == null || off < 0) continue;
+      const dep = dayStartMs + (base + off) * 60000;
+      if (dep >= refMs - 60000 && (bestDep == null || dep < bestDep)) bestDep = dep;
+    }
+    return bestDep;
+  };
+
+  const nearMemo = new Map();
+  const etaMemoMap = new Map();
+  const bdCache = new Map();
+  const idxCache = new Map();
+  const sorCache = new Map();
+
+  const loadCityIdx = async city => {
+    if (idxCache.has(city)) return idxCache.get(city);
+    const cMem = idxMem || await IDB.get("busidx").catch(() => null);
+    let list = (cMem && cMem.cities && cMem.cities[city]) || null;
+    if (!list) list = await busCity(city).catch(() => []);
+    idxCache.set(city, Array.isArray(list) ? list : []);
+    return idxCache.get(city);
+  };
+
+  const loadSorFor = async (city, uid, rawName, cleanName) => {
+    const kMem = "uid|" + uid;
+    if (sorMem.get(kMem)) return sorMem.get(kMem);
+    if (sorCache.has(uid)) return sorCache.get(uid);
+    const k = routeKind(uid);
+    const path = (k && k.path) || (city === "InterCity" ? "InterCity" : city);
+    const tried = [];
+    for (const nm of [...new Set([rawName, cleanName].filter(Boolean))]) {
+      const sk = `sor|${path}|${nm}`;
+      if (sorCache.has(sk)) { tried.push(...(sorCache.get(sk) || [])); continue; }
+      const sc = await IDB.get(sk).catch(() => null);
+      const arr = (sc && Array.isArray(sc.d)) ? sc.d : [];
+      sorCache.set(sk, arr);
+      tried.push(...arr);
+    }
+    const mine = tried.filter(x => x && x.RouteUID === uid);
+    if (mine.length) sorMem.set(kMem, mine);
+    sorCache.set(uid, mine);
+    return mine;
+  };
+
+  for (const r of routes) {
+    for (let legIdx = 0; legIdx < (r.legs || []).length; legIdx++) {
+      const l = r.legs[legIdx];
+      if (l.kind !== "transit" || l.mode !== "bus" || !l.from || !l.to) continue;
+      const uidPfx = (l.routeUID || "").slice(0, 3).toUpperCase();
+      const legCity = l.city || STOP_CITY[uidPfx] || "";
+      const geoCities = l.from.lat != null ? busGeoCities(l.from.lat, l.from.lon) : [];
+      const cities = [...new Set([legCity, ...geoCities].filter(Boolean))].slice(0, 2);
+      if (!cities.length) continue;
+
+      const candByKey = new Map();
+      const legDepMs = tms(l.from.time) || baseMs;
+
+      // Tier 1a: 本機 bd 時刻表（帶完整站序與發車時間）
+      for (const city of cities) {
+        let bdDoc = bdCache.get(city);
+        if (bdDoc === undefined) {
+          bdDoc = await IDB.get("bd|" + city).catch(() => null);
+          bdCache.set(city, bdDoc || null);
+        }
+        const recs = bdDoc && Array.isArray(bdDoc.recs) ? bdDoc.recs : [];
+        for (const rec of recs) {
+          if (!rec || !rec.u || !Array.isArray(rec.st)) continue;
+          const m = seqMatch(rec.st, l);
+          if (!m) continue;
+          const depSched = schedDepAt(rec, m.bi, legDepMs);
+          candByKey.set(`${rec.u}|${rec.d === 1 ? 1 : 0}`, {
+            uid: rec.u,
+            rawName: rec.n || rec.u,
+            dir: rec.d === 1 ? 1 : 0,
+            st: rec.st,
+            bi: m.bi,
+            ai: m.ai,
+            city,
+            schedDepMs: depSched,
+          });
+        }
+      }
+
+      // Tier 1b: 本機 busidx + IDB sor
+      for (const city of cities) {
+        const list = await loadCityIdx(city);
+        if (!list.length) continue;
+        // 預先從 IDB 取回本縣市已存站序
+        const uniqNames = [...new Set(list.flatMap(it => [it[1], splitBusWithIdx(it[1], list).name]).filter(Boolean))];
+        const pth = city === "InterCity" ? "InterCity" : "City/" + city;
+        await Promise.all(uniqNames.map(async nm => {
+          const sk = `sor|${pth}|${nm}`;
+          if (!sorCache.has(sk)) {
+            const sc = await IDB.get(sk).catch(() => null);
+            sorCache.set(sk, (sc && Array.isArray(sc.d)) ? sc.d : []);
+          }
+        }));
+        for (const rec of list) {
+          const uid = rec && rec[0], rawName = rec && rec[1];
+          if (!uid || !rawName) continue;
+          const sp = splitBusWithIdx(rawName, list);
+          const dirs = await loadSorFor(city, uid, rawName, sp.name);
+          for (const dObj of dirs) {
+            const st = dObj.Stops || [];
+            const m = seqMatch(st, l);
+            if (!m) continue;
+            const dNum = dObj.Direction === 1 ? 1 : 0;
+            const ck = `${uid}|${dNum}`;
+            if (!candByKey.has(ck)) {
+              candByKey.set(ck, { uid, rawName, cityList: list, dir: dNum, st, bi: m.bi, ai: m.ai, city });
+            }
+          }
+        }
+      }
+
+      // Tier 2: 非 TDX 上車站探索（只在現在出發需要即時或 Tier 1 找不到額外路線時觸發）
+      const nearEtaMap = new Map();
+      if (l.from.lat != null && l.from.lon != null && (wantLive || candByKey.size <= 1)) {
+        const nKey = `${(+l.from.lat).toFixed(4)},${(+l.from.lon).toFixed(4)}`;
+        if (!nearMemo.has(nKey)) {
+          nearMemo.set(nKey, busNearEta((+l.from.lat).toFixed(4), (+l.from.lon).toFixed(4), 200, "main", "", null, false).catch(() => []));
+        }
+        const nearRows = await nearMemo.get(nKey);
+        const missingUids = [];
+        for (const nr of nearRows || []) {
+          if (!nr || !nr.RouteUID || nr.noRoutes) continue;
+          const dNum = nr.Direction === 1 ? 1 : 0;
+          if (typeof nr.EstimateTime === "number" && (nr.StopStatus ?? 0) === 0) {
+            const ek = `${nr.RouteUID}|${dNum}|${nr.StopUID || ""}`;
+            const prevSec = nearEtaMap.get(ek);
+            if (prevSec == null || nr.EstimateTime < prevSec) nearEtaMap.set(ek, nr.EstimateTime);
+          }
+          if (!candByKey.has(`${nr.RouteUID}|${dNum}`) && !sorMem.get("uid|" + nr.RouteUID)) {
+            missingUids.push(nr.RouteUID);
+          }
+        }
+        const uniqMissing = [...new Set(missingUids)].filter(u => !sorCache.has(u));
+        if (uniqMissing.length) {
+          const kvSor = await cloudSor(uniqMissing).catch(() => ({}));
+          for (const [u, arr] of Object.entries(kvSor || {})) {
+            if (!Array.isArray(arr) || !arr.length) continue;
+            sorMem.set("uid|" + u, arr);
+            sorCache.set(u, arr);
+          }
+          for (const nr of nearRows || []) {
+            if (!nr || !nr.RouteUID) continue;
+            const dirs = sorCache.get(nr.RouteUID) || [];
+            for (const dObj of dirs) {
+              const m = seqMatch(dObj.Stops || [], l);
+              if (!m) continue;
+              const dNum = dObj.Direction === 1 ? 1 : 0;
+              const ck = `${nr.RouteUID}|${dNum}`;
+              if (!candByKey.has(ck)) {
+                const k = routeKind(nr.RouteUID);
+                candByKey.set(ck, { uid: nr.RouteUID, rawName: (nr.RouteName && nr.RouteName.Zh_tw) || nr.RouteUID, dir: dNum, st: dObj.Stops || [], bi: m.bi, ai: m.ai, city: (k && k.city) || cities[0] });
+              }
+            }
+          }
+        }
+      }
+
+      if (!candByKey.size) continue;
+
+      // 先保留既有 OTP/mergeBusAlts 的替代方案，依正規化路線名建立 Map
+      const mergedByNorm = new Map();
+      const baseAlts = Array.isArray(l.alts) && l.alts.length ? l.alts : [{
+        name: l.name, ...(l.routeNote ? { routeNote: l.routeNote } : {}),
+        routeUID: l.routeUID || "", city: l.city || "", dir: l.dir,
+        stopUID: l.stopUID || "", toStopUID: l.toStopUID || "",
+        from: { ...l.from }, to: { ...l.to }, dur: l.dur, timeSrc: l.timeSrc || "",
+        ...(l.est ? { est: true } : {})
+      }];
+      for (const a of baseAlts) {
+        const spA = splitBusRouteName(a.name || "");
+        const item = { ...a, name: spA.name || a.name, ...(a.routeNote || spA.note ? { routeNote: a.routeNote || spA.note } : {}) };
+        mergedByNorm.set(item.name, item);
+      }
+
+      // 查詢非 TDX 即時（僅 wantLive 且候選缺即時秒數時，依路線UID去重）
+      const extraList = [...candByKey.values()];
+      if (wantLive) {
+        await Promise.all(extraList.map(async c => {
+          const spC = c.cityList ? splitBusWithIdx(c.rawName, c.cityList) : splitBusRouteName(c.rawName);
+          const stopB = c.st[c.bi];
+          const bUid = uidOfS(stopB);
+          let liveSec = nearEtaMap.get(`${c.uid}|${c.dir}|${bUid}`);
+          if (liveSec == null && mergedByNorm.has(spC.name)) {
+            const ex = mergedByNorm.get(spC.name);
+            if (ex.next && ex.next.src === "live" && ex.next.sec != null) liveSec = ex.next.sec;
+          }
+          if (liveSec == null) {
+            try {
+              const etas = await etaMemo(etaMemoMap, { routeUID: c.uid, route: spC.name, dirNum: c.dir });
+              const hit = (etas || []).filter(t => t.RouteUID === c.uid && t.StopUID === bUid && etaDirOk(t, c.dir, c.uid) && (t.StopStatus ?? 0) === 0 && typeof t.EstimateTime === "number")
+                .sort((x, y) => x.EstimateTime - y.EstimateTime)[0];
+              if (hit) liveSec = hit.EstimateTime;
+            } catch (e) {}
+          }
+          if (liveSec != null) c.liveSec = liveSec;
+        }));
+      }
+
+      for (const c of extraList) {
+        const spC = c.cityList ? splitBusWithIdx(c.rawName, c.cityList) : splitBusRouteName(c.rawName);
+        const mainName = spC.name || c.rawName;
+        const stopB = c.st[c.bi], stopA = c.st[c.ai];
+        const bUid = uidOfS(stopB), aUid = uidOfS(stopA);
+        const bPos = posOfS(stopB), aPos = posOfS(stopA);
+        const rideSec = rideSecOf(c.st, c.bi, c.ai, l.dur);
+
+        let depMs = null, next = null, timeSrc = "sor";
+        if (c.liveSec != null) {
+          depMs = nowMs + c.liveSec * 1000;
+          const depIso = isoTpe(depMs);
+          next = { time: depIso, src: "live", sec: c.liveSec };
+          timeSrc = "live";
+        } else if (c.schedDepMs != null) {
+          depMs = c.schedDepMs;
+          const depIso = isoTpe(depMs);
+          next = { time: depIso, src: "schedule" };
+          timeSrc = "schedule";
+        }
+
+        const candAlt = {
+          name: mainName,
+          ...(spC.note ? { routeNote: spC.note } : {}),
+          routeUID: c.uid,
+          city: c.city,
+          dir: c.dir,
+          stopUID: bUid,
+          toStopUID: aUid,
+          from: { name: nmOfS(stopB) || l.from.name, type: "stop", ...(bPos ? { lat: bPos[0], lon: bPos[1] } : {}), time: depMs != null ? isoTpe(depMs) : "" },
+          to: { name: nmOfS(stopA) || l.to.name, type: "stop", ...(aPos ? { lat: aPos[0], lon: aPos[1] } : {}), time: depMs != null ? isoTpe(depMs + rideSec * 1000) : "" },
+          dur: rideSec,
+          timeSrc,
+          ...(next ? { next } : {})
+        };
+
+        const existing = mergedByNorm.get(mainName);
+        if (!existing) {
+          mergedByNorm.set(mainName, candAlt);
+        } else {
+          // 保留既有主/最快時間或升級為有即時的一班；同名正線優先於半趟註記
+          const exDep = existing.next ? tms(existing.next.time) : (existing.from && existing.from.time ? tms(existing.from.time) : null);
+          const exIsLive = existing.next && existing.next.src === "live";
+          const candIsLive = candAlt.next && candAlt.next.src === "live";
+          if (!existing.routeUID && candAlt.routeUID) {
+            existing.routeUID = candAlt.routeUID;
+            existing.dir = candAlt.dir;
+            existing.stopUID = candAlt.stopUID;
+            existing.toStopUID = candAlt.toStopUID;
+          }
+          if ((!exIsLive && candIsLive) || (exDep == null && depMs != null) || (exDep != null && depMs != null && exIsLive === candIsLive && depMs < exDep)) {
+            mergedByNorm.set(mainName, candAlt);
+          }
+        }
+      }
+
+      let walkBeforeMs = 0, preAllNonTransit = true;
+      for (let k = 0; k < legIdx; k++) {
+        const pl = r.legs[k];
+        if (pl.kind === "walk" || pl.kind === "bike") walkBeforeMs += (pl.dur || 0) * 1000;
+        else if (pl.kind !== "wait") { preAllNonTransit = false; break; }
+      }
+      const depOfAlt = a => a.next ? tms(a.next.time) : (a.from && a.from.time ? tms(a.from.time) : null);
+      const minReachMs = wantLive ? (nowMs + walkBeforeMs - 30000) : -Infinity;
+      const reachRank = a => {
+        const dt = depOfAlt(a);
+        if (dt == null) return -1;
+        return (!wantLive || dt >= minReachMs) ? 1 : 0;
+      };
+      const nextAlts = [...mergedByNorm.values()];
+      nextAlts.sort((a, b) => {
+        const ra = reachRank(a), rb = reachRank(b);
+        if (ra !== rb) return rb - ra;
+        const ta = depOfAlt(a), tb = depOfAlt(b);
+        if (ta != null && tb != null && ta !== tb) return ta - tb;
+        if (ta != null && tb == null) return -1;
+        if (ta == null && tb != null) return 1;
+        return String(a.name || "").localeCompare(String(b.name || ""), "zh-Hant");
+      });
+      if (nextAlts.length) {
+        const best = nextAlts[0];
+        const bestDep = depOfAlt(best);
+        const curDep = l.from && l.from.time ? tms(l.from.time) : null;
+        if (bestDep != null && ((best.next && best.next.src === "live") || curDep == null || bestDep < curDep)) {
+          l.name = best.name || l.name;
+          if (best.routeNote) l.routeNote = best.routeNote; else delete l.routeNote;
+          if (best.routeUID) l.routeUID = best.routeUID;
+          if (best.city) l.city = best.city;
+          if (best.dir != null) l.dir = best.dir;
+          if (best.stopUID) l.stopUID = best.stopUID;
+          if (best.toStopUID) l.toStopUID = best.toStopUID;
+          if (best.dur) l.dur = best.dur;
+          if (best.timeSrc) l.timeSrc = best.timeSrc;
+          if (best.next && best.next.src === "live") l.liveDep = true;
+          const arrMs = bestDep + (l.dur || 0) * 1000;
+          l.from = { ...l.from, ...(best.from || {}), time: isoTpe(bestDep).slice(0, 19) };
+          l.to = { ...l.to, ...(best.to || {}), time: isoTpe(arrMs).slice(0, 19) };
+          if (preAllNonTransit) {
+            r.start = wantLive ? Math.max(nowMs, bestDep - walkBeforeMs) : (bestDep - walkBeforeMs);
+            let cur = r.start;
+            for (let k = 0; k < legIdx; k++) {
+              const pl = r.legs[k];
+              if (pl.kind === "walk" || pl.kind === "bike") {
+                pl.from = { ...pl.from, time: isoTpe(cur).slice(0, 19) };
+                cur += (pl.dur || 0) * 1000;
+                pl.to = { ...pl.to, time: isoTpe(cur).slice(0, 19) };
+              } else if (pl.kind === "wait") {
+                pl.dur = Math.max(0, Math.round((bestDep - cur) / 1000));
+                pl.from = { ...pl.from, time: isoTpe(cur).slice(0, 19) };
+                pl.to = { ...pl.to, time: isoTpe(bestDep).slice(0, 19) };
+                cur = bestDep;
+              }
+            }
+          }
+          let curTime = arrMs;
+          for (let j = legIdx + 1; j < r.legs.length; j++) {
+            const nextL = r.legs[j];
+            if (nextL.kind === "walk" || nextL.kind === "bike") {
+              nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+              curTime += (nextL.dur || 0) * 1000;
+              nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+            } else if (nextL.kind === "wait") {
+              const nextTransit = r.legs[j + 1];
+              if (nextTransit && nextTransit.kind === "transit") {
+                const targetDep = tms(nextTransit.from.time);
+                if (targetDep >= curTime) {
+                  nextL.dur = Math.round((targetDep - curTime) / 1000);
+                  nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                  nextL.to = { ...nextL.to, time: isoTpe(targetDep).slice(0, 19) };
+                } else {
+                  nextL.dur = 0;
+                  nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                  nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+                }
+                break;
+              } else {
+                nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                curTime += (nextL.dur || 0) * 1000;
+                nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
+              }
+            } else if (nextL.kind === "transit") {
+              const origDep = tms(nextL.from.time);
+              if (curTime > origDep) {
+                const shift = curTime - origDep;
+                nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
+                const newArr = tms(nextL.to.time) + shift;
+                nextL.to = { ...nextL.to, time: isoTpe(newArr).slice(0, 19) };
+                curTime = newArr;
+              }
+              break;
+            }
+          }
+          const lastL = r.legs[r.legs.length - 1];
+          const lastEnd = lastL && lastL.to && lastL.to.time ? tms(lastL.to.time) : curTime;
+          if (lastEnd != null) r.end = lastEnd;
+          if (r.start != null && r.end != null) r.dur = Math.max(1, Math.round((r.end - r.start) / 60000));
+        }
+      }
+      if (nextAlts.length > 1) l.alts = nextAlts;
+      else if (nextAlts.length === 1 && Array.isArray(l.alts)) l.alts = nextAlts;
+    }
+  }
+}
+
 // v2.60.7：OpenTripPlanner（經 Worker POST /otp/plan，要登入）：全國時刻表＋YouBike 即時車位。
 // 有路線就直接用，不再問 Google／TDX；沒登入、OTP 沒設定（503）、找不到（404）、逾時（15 秒）或任何錯誤都回 null，照原本流程規劃
 const OTP_MS = 15000;
@@ -8527,11 +9015,12 @@ async function otpPlanTry({ o, d, modes, yb, when, time }) {
   if (!j || j.result !== "success" || !j.data || !Array.isArray(j.data.routes)) return null;
   const out0 = planClean(j.data.routes, yb).filter(r => !r.approx);
   if (!out0.length) return null;
-  await otpEnrichRail(out0).catch(e => console.warn("otpEnrichRail", e));
-  await otpCalibrateBus(out0).catch(e => console.warn("otpCalibrateBus", e));
+  if (typeof otpEnrichRail === "function") await otpEnrichRail(out0).catch(e => console.warn("otpEnrichRail", e));
+  if (typeof otpCalibrateBus === "function") await otpCalibrateBus(out0).catch(e => console.warn("otpCalibrateBus", e));
   const out = (typeof BusDirect !== "undefined" && typeof BusDirect.mergeBusAlts === "function")
     ? BusDirect.mergeBusAlts(out0)
     : out0;
+  if (typeof otpEnrichBusAlts === "function") await otpEnrichBusAlts(out, { when, time }).catch(e => console.warn("otpEnrichBusAlts", e));
   const walkOf = r => r.legs.reduce((a, l) => a + (l.kind === "walk" ? l.dur : 0), 0);
   out.sort((a, b) => (a.end - b.end) || a.dur - b.dur || a.transfers - b.transfers || walkOf(a) - walkOf(b));
   const wantMrt = Array.isArray(modes) && modes.map(String).includes("6");
@@ -9660,15 +10149,22 @@ async function planBusMatch(leg) {
   const rawAg = String(leg.agency || "");
   const rawPfx = rawAg.slice(0, 3).toUpperCase();
   const uid = String(leg.routeUID || (STOP_CITY[rawPfx] && rawAg.length > 3 ? rawAg : "")).replace(/^TW[:_]/i, "").replace(/_[01]$/, "");
-  const cleanName = normBusName(leg.name);
+  const spLeg = splitBusRouteName(leg.name);
+  const cleanName = spLeg.name;
   const ag = (uid || rawAg).slice(0, 3).toUpperCase(), c0 = leg.city || STOP_CITY[ag] || UIDC[ag];
   if (uid) {
     const k = routeKind(uid);
     if (k) {
       const list = await busCity(c0 || k.city || (k.path === "InterCity" ? "InterCity" : "")).catch(() => []);
       const rec = list.find(r => r[0] === uid);
+      const spRec = rec && rec[1] ? splitBusWithIdx(rec[1], list) : spLeg;
+      const routeNm = spRec.name || cleanName;
+      const noteNm = leg.routeNote || (spRec && spRec.note) || spLeg.note || "";
       let sor = [];
-      try { sor = await sorOf(k, (rec && rec[1]) || cleanName, uid); } catch (e) { if (isRate(e)) throw e; }
+      try { sor = await sorOf(k, routeNm, uid); } catch (e) { if (isRate(e)) throw e; }
+      if (!sor.length && rec && rec[1] && rec[1] !== routeNm) {
+        try { sor = await sorOf(k, rec[1], uid); } catch (e) { if (isRate(e)) throw e; }
+      }
       const dirs = sor.filter(x => x.RouteUID === uid);
       if (leg.dir != null) dirs.sort((a, b) => ((a.Direction === 1 ? 1 : 0) === (leg.dir === 1 ? 1 : 0) ? 0 : 1) - ((b.Direction === 1 ? 1 : 0) === (leg.dir === 1 ? 1 : 0) ? 0 : 1));
       let best = null;
@@ -9686,12 +10182,12 @@ async function planBusMatch(leg) {
       }
       if (best) {
         const rDest = rec ? (best.dirNum === 1 ? rec[2] : rec[3]) : (leg.headsign || (leg.to && leg.to.name) || "");
-        return { routeUID: uid, route: (rec && rec[1]) || cleanName, dirNum: best.dirNum, stopUID: best.stopUID, stopName: best.stopName, dest: rDest, city: k.city || c0 || "InterCity", path: k.path, exact: best.sc === 0 };
+        return { routeUID: uid, route: routeNm, ...(noteNm ? { routeNote: noteNm } : {}), dirNum: best.dirNum, stopUID: best.stopUID, stopName: best.stopName, alightUID: best.alightUID, dest: rDest, city: k.city || c0 || "InterCity", path: k.path, exact: best.sc === 0 };
       }
       if (leg.stopUID) {
         const dirNum = leg.dir === 1 ? 1 : 0;
         const rDest = rec ? (dirNum === 1 ? rec[2] : rec[3]) : (leg.headsign || (leg.to && leg.to.name) || "");
-        return { routeUID: uid, route: (rec && rec[1]) || cleanName, dirNum, stopUID: leg.stopUID, stopName: (leg.from && leg.from.name) || "", dest: rDest, city: k.city || c0 || "InterCity", path: k.path, exact: true };
+        return { routeUID: uid, route: routeNm, ...(noteNm ? { routeNote: noteNm } : {}), dirNum, stopUID: leg.stopUID, stopName: (leg.from && leg.from.name) || "", alightUID: leg.toStopUID || null, dest: rDest, city: k.city || c0 || "InterCity", path: k.path, exact: true };
       }
     }
   }
@@ -9703,16 +10199,22 @@ async function planBusMatch(leg) {
   for (const city of order) {
     const list = await busCity(city);
     const cands = list.filter(r => {
-      const rPn = pn(normBusName(r[1]));
+      const rPn = pn(splitBusWithIdx(r[1], list).name);
       if (rPn === legPn) return true;
       if (legClean && rPn === legClean) return true;
       if (legPn.startsWith(rPn)) return true;
       return false;
     });
-    cands.sort((a, b) => (pn(normBusName(a[1])) === legPn ? 0 : 1) - (pn(normBusName(b[1])) === legPn ? 0 : 1));
+    cands.sort((a, b) => {
+      const sa = splitBusWithIdx(a[1], list), sb = splitBusWithIdx(b[1], list);
+      const ea = pn(sa.name) === legPn ? 0 : 1, eb = pn(sb.name) === legPn ? 0 : 1;
+      if (ea !== eb) return ea - eb;
+      return (sa.note ? 1 : 0) - (sb.note ? 1 : 0);
+    });
     for (const r of cands) {
       const k = routeKind(r[0]); if (!k) continue;
-      let sor; try { sor = await sorOf(k, r[1], r[0]); } catch (e) { if (isRate(e)) throw e; continue; }
+      const spR = splitBusWithIdx(r[1], list);
+      let sor; try { sor = await sorOf(k, spR.name || r[1], r[0]); } catch (e) { if (isRate(e)) throw e; continue; }
       let best = null;
       for (const dir of sor.filter(x => x.RouteUID === r[0])) {
         const st = dir.Stops || [], nm = x => (x.StopName && x.StopName.Zh_tw) || "";
@@ -9722,7 +10224,10 @@ async function planBusMatch(leg) {
         const sc = bi < 0 ? 9 : ai > bi ? 0 : 1;
         if (sc < 9 && (!best || sc < best.sc)) best = { sc, dirNum: dir.Direction === 1 ? 1 : 0, stopUID: st[bi].StopUID, stopName: nm(st[bi]), alightUID: ai > 0 ? st[ai].StopUID : null };
       }
-      if (best) return { routeUID: r[0], route: r[1], dirNum: best.dirNum, stopUID: best.stopUID, stopName: best.stopName, dest: best.dirNum === 1 ? r[2] : r[3], city: k.city || city, path: k.path, exact: best.sc === 0 };
+      if (best) {
+        const noteNm = leg.routeNote || spR.note || spLeg.note || "";
+        return { routeUID: r[0], route: spR.name, ...(noteNm ? { routeNote: noteNm } : {}), dirNum: best.dirNum, stopUID: best.stopUID, stopName: best.stopName, alightUID: best.alightUID, dest: best.dirNum === 1 ? r[2] : r[3], city: k.city || city, path: k.path, exact: best.sc === 0 };
+      }
     }
   }
   return null;
@@ -9738,7 +10243,9 @@ function etaMemo(memo, b) {
 // 一條路線在這一站的即時：最近一班＋之後幾班（秒）
 async function busLiveOf(leg, memo) {
   const b = await planBusMatch(leg); if (!b) return { miss: true };
-  const o = { open: { type: "route", r: { routeUID: b.routeUID, route: b.route, dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact, routeUID: b.routeUID, name: leg.name };
+  const route = normBusName(b.route);
+  const routeNote = b.routeNote || leg.routeNote || splitBusRouteName(b.route).note || "";
+  const o = { open: { type: "route", r: { routeUID: b.routeUID, route, ...(routeNote ? { routeNote } : {}), dirNum: b.dirNum, stopUID: b.stopUID, stopName: b.stopName, dest: b.dest } }, exact: b.exact, routeUID: b.routeUID, name: route };
   return { o, b };
 }
 async function busLiveEtas(o, b, memo) {

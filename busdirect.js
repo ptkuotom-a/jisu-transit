@@ -1187,6 +1187,7 @@
     return busDiff;
   }
   const altOf = l => ({ name: l.name || "", routeUID: l.routeUID || "", city: l.city || "", dir: l.dir, stopUID: l.stopUID || "", toStopUID: l.toStopUID || "",
+    ...(l.routeNote ? { routeNote: l.routeNote } : {}),
     from: { ...l.from }, to: { ...l.to }, dur: l.dur, timeSrc: l.timeSrc || "", ...(l.est ? { est: true } : {}) });
   // 同一段（同一組上下車站附近）有多條路線能到：合併成一條方案。代表那條取最早抵達（同時抵達取晚出發），這一段列出全部路線（alts，依上車時間）
   function mergeBusAlts(list) {
@@ -1257,6 +1258,7 @@
           if (pick.a && nm2(pick.a.name) !== nm2(l.name)) {   // 最近那班是別條路線：這一段改用那條的名稱與代碼
             const a = pick.a;
             l.name = a.name; if (a.routeUID) l.routeUID = a.routeUID; if (a.city) l.city = a.city; if (a.dir != null) l.dir = a.dir;
+            if (a.routeNote) l.routeNote = a.routeNote; else delete l.routeNote;
             if (a.stopUID) l.stopUID = a.stopUID; if (a.toStopUID) l.toStopUID = a.toStopUID;
           }
           if (Array.isArray(l.alts)) {   // 列出各路線的下一班（有即時用即時），最近那班排第一
