@@ -548,6 +548,18 @@ html.locked,html.locked body{overflow:hidden}
 .xboard .chev{color:var(--muted);font-size:16px;font-weight:700;margin-left:6px;line-height:1}
 .xboard .pos-hint{margin-top:7px;font-size:12px;font-weight:700;color:var(--text)}
 .xboard .pos-hint b{color:var(--blue)}
+/* v2.60.16：高鐵自由座等候時間預估（完全依高鐵官網 StationCrowdForecast.json 6 等級，無資料/失敗/非今日/05:00前隱藏） */
+.thsr-cw{display:inline-flex;align-items:center;gap:4px;vertical-align:middle;line-height:1;flex:none}
+.thsr-cw svg{height:14px;width:auto;display:block;flex:none}
+.thsr-cw-inline{display:inline-flex;align-items:center;gap:5px;margin-left:8px;vertical-align:middle;flex:none}
+.thsr-cw-lbl{font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap}
+.xst.thsr-dep .nm{display:flex;align-items:center;flex-wrap:wrap;gap:2px 4px}
+.xst.thsr-dep .nm small{margin-left:4px}
+.tmain .td.thsr-td{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.tmain .td.thsr-td .tdn{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.num .fx-thead .thsr-cw,.num .thsr-cw{display:inline-flex;margin-top:0;width:auto}
+.tth .thsr-cw{margin-left:6px}
+.thsr-crowd-note{margin:8px 2px 4px;font-size:12px;line-height:1.45;color:var(--muted)}
 /* v2.35.0 公車目的地篩選 */
 .bf{margin:2px 0 12px;display:flex;gap:10px;align-items:center}
 .bf .box{flex:1;min-width:0;height:44px;display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid transparent;border-radius:14px;padding:0 6px 0 14px;font-size:15px;color:var(--muted);transition:border-color .15s,background .15s}
@@ -2174,7 +2186,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.15';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.17';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -4477,6 +4489,16 @@ async function loadRail(auto) {
   if (!S.rail || (S.railLoading && !(auto !== true && S.railAuto))) return;   // v2.49.1：手動更新優先，定時更新結果作廢
   S.railLoading = true; S.railAuto = auto === true;
   const want = S.rail, tok = S.railTok = (S.railTok || 0) + 1;
+  S.railCrowd = null;
+  const ctok = S.railCrowdTok = (S.railCrowdTok || 0) + 1;
+  if (want && (want.op === 'THSR' || want.kind === 'thsr') && thsrCanFetchToday()) {
+    thsrFetchCrowdFresh().then(d => {
+      if (ctok === S.railCrowdTok && S.rail === want) {
+        S.railCrowd = d;
+        renderRail();
+      }
+    }).catch(() => {});
+  }
   try {
     const r = await api('railBoard', { op:want.op, kind:want.kind, ids:want.ids, name:want.name, auto:auto === true });
     if (tok !== S.railTok) return;
@@ -4528,11 +4550,15 @@ const SEAT_TXT = { ok:'有位', few:'少量', full:'售完' };
 const CROWD_TAG = { low:['低', '#89B638'], mid:['中', '#F3D726'], busy:['偏高', '#F19818'], high:['高', '#D5131A'] };
 const crowdTag = c => { const x = CROWD_TAG[c]; return x ? ` <small title="擁擠度：${x[0]}" style="font-size:11px;font-weight:700;color:${x[1]}">${x[0]}</small>` : ''; };
 const crowdLeg = (ts, op) => ts.some(t => CROWD_TAG[t.crowd]) ? `<div class="ttleg">擁擠度（${op === 'TYMC' ? '桃捷官網・最擠車廂' : '北捷官網'}）：${Object.values(CROWD_TAG).map(([s, c]) => `<b style="color:${c}">${s}</b>`).join('　')}</div>` : '';
-function trainRow(kind, op, t) {
+function trainRow(kind, op, t, stObj, grp) {
   if (kind === 'tra') return `<div class="trow tra-row"><span class="ttime">${esc(t.time)}</span>
     <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.type || '')} ${esc(t.no)}次</div></span>${trainCd(t, true)}</div>`;
-  if (kind === 'thsr') return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
-    <span class="tmain"><div class="td">往 ${esc(t.dest || '?')}</div><div class="tt">${esc(t.no)}次${t.seats ? `・標準 <b class="seat ${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b>・商務 <b class="seat ${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b>` : ''}</div></span>${trainCd(t)}</div>`;
+  if (kind === 'thsr') {
+    const sc = (S.railCrowd && thsrCanFetchToday()) ? thsrStationCode(stObj || S.rail) : null;
+    const crowd = sc ? thsrCrowdLookup(S.railCrowd, sc, thsrTrainRunDirect(sc, t, grp), thsrTrainHour(t)) : null;
+    return `<div class="trow"><span class="ttime">${esc(t.time)}</span>
+    <span class="tmain"><div class="td thsr-td"><span class="tdn">往 ${esc(t.dest || '?')}</span>${crowd ? thsrCrowdIconHtml(crowd) : ''}</div><div class="tt">${esc(t.no)}次${t.seats ? `・標準 <b class="seat ${t.seats.std}">${SEAT_TXT[t.seats.std] || '—'}</b>・商務 <b class="seat ${t.seats.biz}">${SEAT_TXT[t.seats.biz] || '—'}</b>` : ''}</div></span>${trainCd(t)}</div>`;
+  }
   if (t.time) return `<div class="trow"><span class="tmain"><div class="td tdf"><span class="tdn">${lineBadge(op, t.line)}往 ${esc(t.dest)}</span></div></span>${cdPill(t.eta, t.est ? '估算' : '表定')}</div>`;
   return `<div class="trow"><span class="tmain"><div class="td tdf"><span class="tdn">${lineBadge(op, t.line)}往 ${esc(t.dest)}</span>${t.ex ? ` <small style="font-size:11px;font-weight:700;color:${EX_COL}">直達</small>` : ''}${crowdTag(t.crowd)}</div></span>${cdPill(t.eta, '即時', { live: true, label: t.label })}</div>`;
 }
@@ -4667,8 +4693,10 @@ function railTabsTrain(R, D, G) {
   const tabs = G.map(g => ({ key:g.label, label:g.label, g }));
   const sel = tabs.find(t => t.key === S.railTab[R.name])?.key || tabs[0].key, T = tabs.find(t => t.key === sel);
   const id = R.name + sel, all = S.ttAll[id], n = T.g.trains.length, show = all ? n : 5;
-  return `<div class="lblk">` + segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}</div><div class="board">` +
-    T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('') + `</div>` + moreBtn(id, n, show) + `</div>`;
+  const rowsHtml = T.g.trains.slice(0, show).map(t => t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t, R, T.g)}</button>` : trainRow(D.kind, R.op, t, R, T.g)).join('');
+  const crowdNote = (D.kind === 'thsr' && rowsHtml.includes('data-thsr-crowd="1"')) ? `<div class="thsr-crowd-note">圖示是該站、該方向、該時段的「自由座等候」時間預估${thsrUpdateHM(S.railCrowd) ? `（高鐵官網 ${esc(thsrUpdateHM(S.railCrowd))} 更新）` : '（高鐵官網）'}，不是對號座剩餘座位。</div>` : '';
+  return `<div class="lblk">` + segTabs(R.name, tabs, sel) + `<div class="tgrp">${D.kind === 'tra' ? '時刻表＋即時誤點' : '時刻表＋剩餘座位'}</div>` + crowdNote + `<div class="board">` +
+    rowsHtml + `</div>` + moreBtn(id, n, show) + `</div>`;
 }
 // 切換方向分頁：重新繪製後，新內容從切換方向的那一側滑入（和主分頁一樣）
 const tabBody = b => b ? [...b.children].filter(e => !e.classList.contains('seg') && !e.classList.contains('lsec') && !e.classList.contains('pghost') && !e.classList.contains('pgfix')) : [];
@@ -4825,7 +4853,7 @@ function railHtml() {
       const G = (D.groups || [{ label:'', trains:D.trains }]).filter(g => g.trains.length);
       if (D.kind === 'metro' && (G.length || (D.tt || []).length)) h += railTabsMetro(R, D, G);
       else if ((D.kind === 'tra' || D.kind === 'thsr') && G.length) h += railTabsTrain(R, D, G);
-      else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length}班</span></div>` : ''}<div class="board">${g.trains.map(t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t)}</button>` : trainRow(D.kind, R.op, t)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
+      else h += G.length ? G.map(g => `${g.label ? `<div class="tgrp">${esc(g.label)}<span>${g.trains.length}班</span></div>` : ''}<div class="board">${g.trains.map(t => (D.kind === 'tra' || D.kind === 'thsr') && t.no ? `<button class="lnk trlnk" data-act="trainOpen" data-i="${reg({ kind:D.kind, no:t.no })}">${trainRow(D.kind, R.op, t, R, g)}</button>` : trainRow(D.kind, R.op, t, R, g)).join('')}</div>`).join('') : `<div class="note">目前沒有即將發車的班次。</div>`;
     }
   }
   return h + '</div></div>';
@@ -4873,6 +4901,16 @@ function stttDate(iso) {   // 日期分頁上有這天就用分頁的滑動切�
 async function loadSttt() {
   const T = S.sttt, R = S.rail; if (!T || !R) return;
   const want = T.date;
+  S.stttCrowd = null;
+  const stok = S.stttCrowdTok = (S.stttCrowdTok || 0) + 1;
+  if ((R.op === 'THSR' || R.kind === 'thsr') && want === thsrTaipeiNow().iso && thsrCanFetchToday()) {
+    thsrFetchCrowdFresh().then(d => {
+      if (stok === S.stttCrowdTok && S.sttt === T && T.date === want) {
+        S.stttCrowd = d;
+        renderSttt();
+      }
+    }).catch(() => {});
+  }
   try { const d = await api('stationTT', { op:R.op, ids:R.ids, name:R.name, lat:R.lat, lon:R.lon, date:want }); if (S.sttt !== T || T.date !== want) return; T.data = T.cache[want] = T.ctlD = d; T.err = null; }
   catch (e) { if (S.sttt !== T || T.date !== want) return; T.err = e.message; }
   if (T.data && T.data.kind === 'metro' && !T.line) { const ls = stttLines(T.data); T.line = ls[0] || ''; }
@@ -4938,7 +4976,8 @@ function ttGrid(items, o) {
   const next = now >= 0 && now < 1e6 ? items.find(x => x.t >= now) : null, nh = next ? Math.floor(next.t / 60) : null;
   let h = `<div class="ttidx" data-noswipe><div>${[...byH.keys()].map(hh => `<button class="${now >= (hh + 1) * 60 ? 'past' : ''}" data-act="ttHr" data-v="${hh}">${p2(hh % 24)}</button>`).join('')}</div></div><div class="ttg">`;
   for (const [hh, l] of byH) {
-    h += `<div class="tth${now >= (hh + 1) * 60 ? ' past' : ''}" id="tth${hh}">${hh === nh ? '<i id="stttNext"></i>' : ''}${p2(hh % 24)} 時${hh >= 24 ? '<small>隔日</small>' : ''}<span>${l.length} 班</span></div>`;
+    const hb = o.hourBadge ? o.hourBadge(hh) : '';
+    h += `<div class="tth${now >= (hh + 1) * 60 ? ' past' : ''}" id="tth${hh}">${hh === nh ? '<i id="stttNext"></i>' : ''}${p2(hh % 24)} 時${hh >= 24 ? '<small>隔日</small>' : ''}${hb}<span>${l.length} 班</span></div>`;
     for (let i = 0; i < l.length; i += 6) {
       const row = l.slice(i, i + 6);
       h += `<div class="ttr">` + row.map(x => `<button class="ttm${now >= 0 && x.t < now ? ' past' : ''}${x === next ? ' next' : ''}${o.sel === x.key ? ' sel' : ''}"${x.col ? ` style="color:${x.col}"` : ''} data-act="ttSel" data-v="${esc(x.key)}"><span class="ttlb">${x.lbh || (x.lb ? esc(x.lb) : '')}${x.low ? '<i class="lf">♿</i>' : ''}</span><span class="ttn">${p2(x.t % 60)}${x.dot ? '<i class="tto"></i>' : ''}</span></button>`).join('');
@@ -5006,22 +5045,35 @@ function stttTrain(R, T, D) {
   h += `<div class="tgrp">${T.dest ? `往 ${esc(destName)}` : `${dn[+T.dir] || ''}・停靠本站`}<span>${list.length}班</span></div>`;
   if (!list.length) return { ctl, body: h + `<div class="note">沒有符合條件的班次。</div>` };
   // v2.44.0：改成時刻表格子。小字＝車種縮寫（區間車不標）＋終點縮寫（高鐵只標不到南港／左營的）；● 本站始發
+  const thsrSt = !tra && S.stttCrowd && T.date === thsrTaipeiNow().iso && thsrCanFetchToday() ? thsrStationCode(R) : null;
+  const thsrRd = thsrSt ? thsrAppDirToRunDirect(T.dir) : null;
+  let thsrStttShown = false;
+  const thsrHourInfo = hh => {
+    if (!thsrSt || thsrRd == null || hh < 5 || hh >= 24) return null;
+    const info = thsrCrowdLookup(S.stttCrowd, thsrSt, thsrRd, hh % 24);
+    if (info) thsrStttShown = true;
+    return info;
+  };
   const used = new Map(), dUsed = new Map();
   const items = list.map(t => {
     const [, ab, col, tyName] = tra ? trAb(t.tf || t.type) : ['', '', '', ''], dd = t.dest && (tra || !/^(南港|左營)(站)?$/.test(t.dest)) ? dAb(t.dest) : '';   // 高鐵：往南港、左營不標
     if (ab) used.set(ab, [ab, col, tyName]); if (dd && dd !== t.dest.replace(/站$/, '')) dUsed.set(dd, t.dest);
     const arr = T.dest ? t.next[T.dest] : null, dur = arr != null ? arr - t.t : null;
+    const cInfo = thsrHourInfo(Math.floor(t.t / 60));
     return { t: t.t, key: t.no, col, lbh: (ab ? `<i class="ty">${esc(ab)}</i>` : '') + (dd ? `<i class="dd">${esc(dd)}</i>` : ''), dot: !!t.start && t.start === R.name,
       det: w => ttDet(tClk(t.t) + (t.t >= 1440 ? ' <small style="font-size:12px;color:var(--muted)">隔日</small>' : ''), w, [
         [tra ? '車種' : '列車', esc(tra ? (t.tf || t.type || '').replace(/\(([^)]*型[^)]*)\)$/, '').trim() : '高鐵')], ['車次', esc(t.no) + ' 次'], ['往', esc(t.dest || '?')],
+        cInfo ? ['自由座等候', `<span style="display:inline-flex;align-items:center;gap:6px">${thsrCrowdIconHtml(cInfo)}<span>${esc(cInfo.text)}</span></span>`] : null,
         t.start && t.start !== R.name ? ['始發', esc(t.start)] : ['注意', '● 本站始發'],
         arr != null ? [`到 ${esc(destName)}`, `${tClk(arr)}（${dur >= 60 ? `${Math.floor(dur / 60)}時${dur % 60 ? `${dur % 60}分` : ''}` : `${dur}分`}）`] : null],
         `<button class="more" data-act="stttTrain" data-v="${esc(t.no)}">停靠站一覽</button>`) };
   });
-  h += stttDone(D, list) + ttGrid(items, { now: D.now, sel: T.sel });
+  h += stttDone(D, list) + ttGrid(items, { now: D.now, sel: T.sel, hourBadge: thsrSt ? hh => thsrCrowdIconHtml(thsrHourInfo(hh)) : null });
   const leg = [...used.values()].map(([ab, col, ty]) => `<b style="color:${col || 'var(--text)'}">${esc(ab)}</b> ${esc(ty)}`);
   const dleg = [...dUsed].map(([a, n]) => `<b>${esc(a)}</b> ${esc(n)}`);
-  h += `<div class="ttleg">${leg.length ? '車種：' + leg.join('　') + (tra ? '　（區間車不標）' : '') + '<br>' : ''}${dleg.length ? '終點：' + dleg.join('　') + (tra ? '' : '　（往南港、左營不標）') + '<br>' : ''}● 本站始發</div>`;
+  const thsrHm = thsrStttShown ? thsrUpdateHM(S.stttCrowd) : '';
+  const thsrLeg = thsrStttShown ? `<br>自由座等候預估（高鐵官網${thsrHm ? `・${esc(thsrHm)} 更新` : ''}）：非對號座剩餘座位` : '';
+  h += `<div class="ttleg">${leg.length ? '車種：' + leg.join('　') + (tra ? '　（區間車不標）' : '') + '<br>' : ''}${dleg.length ? '終點：' + dleg.join('　') + (tra ? '' : '　（往南港、左營不標）') + '<br>' : ''}● 本站始發${thsrLeg}</div>`;
   return { ctl, body: h };
 }
 function stttMetro(R, T, D) {
@@ -5198,12 +5250,13 @@ function closeRoute(quiet) {
   }
   if ((S.page === 'sttt' || (S.page === 'rail' && S.railSubTab === 'tt')) && S.rail) {
     if (!quiet) { popAnim(); return; }
-    S.page = 'rail'; S.railSubTab = 'live'; S.line = null; S.lineFrom = null; renderRail(); $('#routePage').scrollTop = S.railScroll || 0; return;
+    S.stttCrowd = null; S.page = 'rail'; S.railSubTab = 'live'; S.line = null; S.lineFrom = null; renderRail(); $('#routePage').scrollTop = S.railScroll || 0; return;
   }
+  if (S.page === 'planDetail' && S.plan) S.plan.thsrCrowd = null;
   if (S.back && S.back.length) { stackPop(quiet); return; }   // 路線規劃的頁面堆疊：回到上一頁
   S.back = [];
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
-  S.line = null; S.route = null; S.rail = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render();
+  S.line = null; S.route = null; S.rail = null; S.railCrowd = null; S.stttCrowd = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render();
   setTimeout(() => { if (!S.page && typeof fxMapRelease === 'function') fxMapRelease(); }, 400); }   // v2.51.7：離開規劃頁釋放地圖
 async function loadRoute(scroll, auto, fresh) {
   if (!S.route) return;
@@ -6328,10 +6381,11 @@ async function mapPickOk(btn) {
 
 /* 路線詳情：分段清單（上下車站、沿途停靠站、出入口）＋地圖＋即時到站 */
 function openPlanDetail(i) {
-  const P = S.plan; P.sel = i; P.live = {}; P.open = {}; P.liveAt = 0; P.liveErr = null;
+  const P = S.plan; P.sel = i; P.live = {}; P.open = {}; P.liveAt = 0; P.liveErr = null; P.thsrCrowd = null;
   stackPush(() => { S.page = 'planDetail'; planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); });
   planLoadLive();
   planLoadCarpos();
+  planLoadThsrCrowd(i);
   planFillShape(i);
 }
 async function planFillShape(i) {
@@ -6418,8 +6472,8 @@ function xStLab(l, end, L) {
   return ids.length ? ids.join(' / ') : ln ? (LINE_NAME[ln[0]] || {})[ln[1]] || MODE_ZH[l.mode] : MODE_ZH[l.mode] || '';
 }
 const xT = t => t ? hmOf(Date.parse(t + '+08:00')) : '';
-function xStation(time, name, lab, sq, color, cls = '') {
-  return `<div class="xst ${cls}"><div class="t">${time || ''}</div><div class="bd${color ? '' : ' lm'}"${color ? ` style="${chipStyle(color)}"` : ''}>${sq}</div><div class="nm">${esc(name || '')}${lab ? `<small>${esc(lab)}</small>` : ''}</div></div>`;
+function xStation(time, name, lab, sq, color, cls = '', extra = '') {
+  return `<div class="xst ${cls}"><div class="t">${time || ''}</div><div class="bd${color ? '' : ' lm'}"${color ? ` style="${chipStyle(color)}"` : ''}>${sq}</div><div class="nm">${esc(name || '')}${lab ? `<small>${esc(lab)}</small>` : ''}${extra || ''}</div></div>`;
 }
 function xWalkRow(l) {
   const m = Math.max(1, Math.round(l.dur / 60));
@@ -6722,6 +6776,177 @@ function xBoard(l, i, r, T, posInT) {
   return `<div class="xboard" data-leg="${i}"><div class="pos-lbl">乘車位置</div><div class="cars"><div class="car${cls('rear')}">後段</div><div class="car${cls('mid')}">中段</div><div class="car head${cls('front')}">前段</div><span class="chev">›</span></div><div class="pos-hint">坐<b>${esc(segTxt)}</b>，下車離${esc(b.target)}最近</div></div>`;
 }
 window.__carpos = { loadIndex: carposLoadIndex, loadStation: carposLoadStation, resolveLegCarpos: carposResolveLeg, cache: CARPOS_CACHE, sysCode: carposSysCode, dirSign: carposDirSign };
+// v2.60.17：高鐵自由座等候時間預估（改由已登入 Worker 代抓、絕不快取；TDX/Google/OTP=0）
+const THSR_CROWD_PATH = '/thsr-crowd';
+const THSR_STATIONS = [
+  ['NanGang', '0990', '南港', 'nangang'],
+  ['TaiPei', '1000', '台北', 'taipei'],
+  ['BanQiao', '1010', '板橋', 'banqiao'],
+  ['TaoYuan', '1020', '桃園', 'taoyuan'],
+  ['XinZhu', '1030', '新竹', 'hsinchu'],
+  ['MiaoLi', '1035', '苗栗', 'miaoli'],
+  ['TaiZhong', '1040', '台中', 'taichung'],
+  ['ZhangHua', '1043', '彰化', 'changhua'],
+  ['YunLin', '1047', '雲林', 'yunlin'],
+  ['JiaYi', '1050', '嘉義', 'chiayi'],
+  ['TaiNan', '1060', '台南', 'tainan'],
+  ['ZuoYing', '1070', '左營', 'zuoying'],
+];
+const THSR_CODE_INDEX = Object.fromEntries(THSR_STATIONS.map(([c], idx) => [c, idx]));
+const THSR_CROWD_LEVELS = {
+  0: { bars: 0, color: '#7A7D79', text: '尚無資料' },
+  1: { bars: 1, color: '#6B9D25', text: '20分鐘以內' },
+  2: { bars: 2, color: '#FAC736', text: '約20～40分鐘' },
+  3: { bars: 3, color: '#FAC736', text: '約40～60分鐘' },
+  4: { bars: 4, color: '#CF150F', text: '約60～80分鐘' },
+  5: { bars: 5, color: '#CF150F', text: '80分鐘以上' },
+};
+function thsrStationCode(input) {
+  if (!input) return null;
+  if (typeof input === 'object') {
+    if (input.StationCode) { const c = thsrStationCode(input.StationCode); if (c) return c; }
+    if (input.id) { const c = thsrStationCode(input.id); if (c) return c; }
+    if (Array.isArray(input.ids)) for (const id of input.ids) { const c = thsrStationCode(id); if (c) return c; }
+    if (input.name) { const c = thsrStationCode(input.name); if (c) return c; }
+    return null;
+  }
+  const raw = String(input).trim();
+  if (!raw) return null;
+  const cleanId = raw.replace(/^(THSR|TW)[:_]/i, '');
+  const low = cleanId.toLowerCase().replace(/\s+/g, '');
+  const zhClean = raw.replace(/\s+/g, '').replace(/臺/g, '台').replace(/^(台灣)?高鐵/, '').replace(/(高鐵站|高鐵|車站|站)$/, '');
+  for (const [code, tdxId, zhName, enName] of THSR_STATIONS) {
+    if (raw === code || low === code.toLowerCase() || cleanId === tdxId || zhClean === zhName || low === enName) return code;
+  }
+  return null;
+}
+// 方向對調（不可弄反）：App / groupTrains 0=南下、1=北上；官網 JSON RunDirect 1=南下、0=北上
+function thsrAppDirToRunDirect(dir) {
+  if (dir === 0 || dir === '0') return 1;
+  if (dir === 1 || dir === '1') return 0;
+  const s = String(dir || '');
+  if (s.includes('南下')) return 1;
+  if (s.includes('北上')) return 0;
+  return null;
+}
+function thsrLegRunDirect(l) {
+  if (!l) return null;
+  const f = thsrStationCode(l.from?.name || l.from?.id || l.from);
+  const t = thsrStationCode(l.to?.name || l.to?.id || l.to)
+    || thsrStationCode(String(l.headsign || '').replace(/^往\s*/, ''))
+    || (Array.isArray(l.stops) && l.stops.length ? thsrStationCode(l.stops[l.stops.length - 1]?.name) : null);
+  if (f && t && f !== t) return THSR_CODE_INDEX[t] > THSR_CODE_INDEX[f] ? 1 : 0;
+  return thsrAppDirToRunDirect(l.dir);
+}
+function thsrTrainRunDirect(stCode, t, grp) {
+  const byDir = thsrAppDirToRunDirect(t?.dir ?? grp?.dir ?? grp?.label);
+  if (byDir != null) return byDir;
+  const destCode = thsrStationCode(t?.dest);
+  if (stCode && destCode && stCode !== destCode) return THSR_CODE_INDEX[destCode] > THSR_CODE_INDEX[stCode] ? 1 : 0;
+  return null;
+}
+function thsrTaipeiNow(nowMs) {
+  const ms = typeof nowMs === 'number' ? nowMs : (typeof window.__thsrNowMs === 'number' ? window.__thsrNowMs : Date.now());
+  const d = new Date(ms + 8 * 3600000);
+  const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  return { iso, hour: d.getUTCHours(), min: d.getUTCMinutes() };
+}
+function thsrParseTaipeiDateTime(val) {
+  if (val == null) return null;
+  if (typeof val === 'number') return thsrTaipeiNow(val);
+  const s = String(val).trim();
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(s);
+  if (m && !/(Z|[+-]\d{2}:?\d{2})$/.test(s)) return { iso: m[1], hour: +m[2], min: +m[3] };
+  const ms = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(s) ? s : s + '+08:00');
+  return Number.isFinite(ms) ? thsrTaipeiNow(ms) : null;
+}
+const thsrCanFetchToday = (nowMs) => thsrTaipeiNow(nowMs).hour >= 5;
+function thsrTrainHour(t) {
+  if (!t) return null;
+  const m = /^(\d{1,2}):\d{2}/.exec(String(t.time || ''));
+  if (m) return +m[1] % 24;
+  if (typeof t.t === 'number' && Number.isFinite(t.t)) return Math.floor(t.t / 60) % 24;
+  return null;
+}
+function thsrCrowdLookup(data, stCode, runDirect, hour) {
+  if (!data || !Array.isArray(data.Data) || !stCode || (runDirect !== 0 && runDirect !== 1)) return null;
+  if (hour == null || hour < 5 || hour > 23) return null;
+  if (stCode === 'NanGang' && runDirect === 0) return null;   // 南港無北上
+  if (stCode === 'ZuoYing' && runDirect === 1) return null;   // 左營無南下
+  const stRows = data.Data.filter(x => x && x.StationCode === stCode && Number(x.RunDirect) === runDirect);
+  if (!stRows.length) return null;   // 端點站無該方向資料：直接隱藏
+  const hit = stRows.find(x => Number(x.Hour) === Number(hour));
+  const raw = hit ? Number(hit.BoundStatus) : 0;
+  const lvl = (raw >= 1 && raw <= 5) ? raw : 0;
+  return { level: lvl, ...THSR_CROWD_LEVELS[lvl] };
+}
+function thsrCrowdIconHtml(info, opts = {}) {
+  if (!info) return '';
+  const lvl = info.level;
+  const title = `自由座等候：${info.text}`;
+  const lbl = opts.withLabel ? '<span class="thsr-cw-lbl">自由座等候</span>' : '';
+  if (lvl === 0) {
+    return `${lbl}<span class="thsr-cw" data-thsr-crowd="1" data-level="0" title="${esc(title)}" aria-label="${esc(title)}"><svg viewBox="0 0 18 14" aria-hidden="true"><rect x="2" y="5.7" width="14" height="2.6" rx="1.3" fill="#7A7D79"/></svg></span>`;
+  }
+  const activeCol = THSR_CROWD_LEVELS[lvl]?.color || '#6B9D25';
+  const inactiveCol = '#666966';
+  let figs = '';
+  for (let i = 0; i < 5; i++) {
+    const on = i < lvl;
+    const fill = on ? activeCol : inactiveCol;
+    const cx = (3.3 + i * 7.6).toFixed(1);
+    const rx = (3.3 + i * 7.6 - 2.5).toFixed(1);
+    figs += `<g${on ? ' data-active="1"' : ''} fill="${fill}"><circle cx="${cx}" cy="3.0" r="2.0"/><rect x="${rx}" y="5.8" width="5.0" height="9.2" rx="1.6"/></g>`;
+  }
+  return `${lbl}<span class="thsr-cw" data-thsr-crowd="1" data-level="${lvl}" title="${esc(title)}" aria-label="${esc(title)}"><svg viewBox="0 0 37 16" aria-hidden="true">${figs}</svg></span>`;
+}
+function thsrUpdateHM(data) {
+  const m = /(\d{2}:\d{2})\s*$/.exec(String(data?.UpdateTime || ''));
+  return m ? m[1] : '';
+}
+async function thsrFetchCrowdFresh() {
+  if (!thsrCanFetchToday()) return null;
+  const sess = typeof getSession === 'function' ? getSession() : null;
+  if (!sess || !sess.token) return null;
+  let proxy = '';
+  try {
+    const saved = (localStorage.getItem('jisu_proxy') || '').trim();
+    const raw = (saved || (S.proxy && S.proxy.url) || (window.JISU_CONFIG && window.JISU_CONFIG.proxy) || '').trim().replace(/\/+$/, '');
+    if (/^https:\/\//.test(raw) && !raw.includes('YOUR-SUBDOMAIN')) proxy = raw;
+  } catch (e) {}
+  if (!proxy) return null;
+  try {
+    const res = await fetch(proxy + THSR_CROWD_PATH, {
+      cache: 'no-store',
+      headers: { 'x-session': sess.token },
+    });
+    if (!res || !res.ok) return null;
+    const j = await res.json();
+    if (!j || !Array.isArray(j.Data)) return null;
+    return j;
+  } catch (e) {
+    return null;
+  }
+}
+async function planLoadThsrCrowd(selIdx, tok) {
+  const P = S.plan, r = P && P.res && P.res[selIdx];
+  if (!P || !r || !Array.isArray(r.legs) || !thsrCanFetchToday()) return;
+  const todayIso = thsrTaipeiNow().iso;
+  const hasTodayThsr = r.legs.some(l => {
+    if (!l || l.kind !== 'transit' || l.mode !== 'thsr') return false;
+    const dt = thsrParseTaipeiDateTime(l.from?.time ?? r.start);
+    return dt && dt.iso === todayIso;
+  });
+  if (!hasTodayThsr) return;
+  const curTok = tok ?? (P.thsrCrowdTok = (P.thsrCrowdTok || 0) + 1);
+  const d = await thsrFetchCrowdFresh();
+  if (!d) return;
+  if (S.plan === P && P.sel === selIdx && P.thsrCrowdTok === curTok && S.page === 'planDetail') {
+    P.thsrCrowd = d;
+    renderPage();
+  }
+}
+window.__thsrCrowd = { PATH: THSR_CROWD_PATH, STATIONS: THSR_STATIONS, LEVELS: THSR_CROWD_LEVELS, stationCode: thsrStationCode, appDirToRunDirect: thsrAppDirToRunDirect, legRunDirect: thsrLegRunDirect, trainRunDirect: thsrTrainRunDirect, lookup: thsrCrowdLookup, iconHtml: thsrCrowdIconHtml, taipeiNow: thsrTaipeiNow, parseDateTime: thsrParseTaipeiDateTime, canFetchToday: thsrCanFetchToday };
 function xLeg(l, i, L, c, r, T, posInT) {
   const P = S.plan, m = Math.max(1, Math.round(l.dur / 60)), stops = l.stops || [], open2 = P.open[i];
   if (l.kind === 'bike') {
@@ -6798,6 +7023,8 @@ function detailHtml() {
   const P = S.plan, r = P && P.res && P.res[P.sel];
   if (!r) return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button></div></div>`;
   const legs = r.legs, LV = P.live || {}, thruN = legs.reduce((a, l) => a + ((l.thru || []).length), 0);
+  const todayIso = thsrTaipeiNow().iso, canThsrCrowd = !!(P.thsrCrowd && thsrCanFetchToday());
+  let thsrCrowdShown = false;
   let h = `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button>
     <div class="rhead pdh"><h1>${minTxt(r.dur)}</h1><span class="dirbtn"><span>${hmOf(r.start)}–${hmOf(r.end)}</span></span></div>
     <div class="rmeta">${esc(P.o?.name || '')} → ${esc(P.d?.name || '')}・${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}${thruN ? `・免轉乘${thruN}次` : ''}${P.liveLoading ? '・讀取即時資料中…' : ''}</div>${pupd(P.liveAt, P.liveErr)}</div>
@@ -6814,7 +7041,19 @@ function detailHtml() {
       const l = legs[i], c = legColor(l), L = LV[i];
       const fromName = l.kind === 'bike' ? (l.rent || (l.from && l.from.name) || 'YouBike') : l.from.name;
       const toName = l.kind === 'bike' ? (l.ret || (l.to && l.to.name) || 'YouBike') : l.to.name;
-      h += xStation(xT(l.from.time), fromName, xStLab(l, 'from', L), '發', i === 0 ? null : c);
+      let depExtra = '', depCls = '';
+      if (canThsrCrowd && l.kind === 'transit' && l.mode === 'thsr') {
+        const dt = thsrParseTaipeiDateTime(l.from?.time ?? r.start);
+        if (dt && dt.iso === todayIso) {
+          const info = thsrCrowdLookup(P.thsrCrowd, thsrStationCode(l.from?.name), thsrLegRunDirect(l), dt.hour);
+          if (info) {
+            depCls = 'thsr-dep';
+            depExtra = `<span class="thsr-cw-inline">${thsrCrowdIconHtml(info, { withLabel: true })}</span>`;
+            thsrCrowdShown = true;
+          }
+        }
+      }
+      h += xStation(xT(l.from.time), fromName, xStLab(l, 'from', L), '發', i === 0 ? null : c, depCls, depExtra);
       h += xLeg(l, i, L, c, r, T, k);
       h += xStation(xT(l.to.time), toName, xStLab(l, 'to', L), '到', i === legs.length - 1 ? null : c);
       const j = T[k + 1];
@@ -6822,7 +7061,9 @@ function detailHtml() {
     });
     if (i1 < legs.length - 1) { legs.slice(i1 + 1).forEach(l => { h += xWalkRow(l); }); h += xStation(hmOf(r.end), P.d?.name || '終點', '', '到', null, 'xo'); }
   }
-  return h + `</div>${r.busNote ? `<div class="sub pnote" style="margin-top:14px">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="margin-top:14px;color:var(--warn)">${esc(r.tightNote)}</div>` : ''}<div class="sub" style="margin-top:14px">${r.src === 'otp' ? '時刻為 OpenTripPlanner 規劃結果（全國公共運輸時刻表＋YouBike 即時車位）' : r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : r.src === 'self' ? '路線資料：依台鐵、高鐵、捷運、輕軌官方時刻表自己排出（文湖線、台中捷運沒有時刻表，依班距估計；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；公車接駁的等車與行駛時間為估計，第一段公車有即時預估就用即時）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
+  const thsrHm = thsrCrowdShown ? thsrUpdateHM(P.thsrCrowd) : '';
+  const thsrNoteHtml = thsrCrowdShown ? `<div class="thsr-crowd-note">高鐵出發站圖示為「自由座等候」時間預估（高鐵官網${thsrHm ? `・${esc(thsrHm)} 更新` : ''}），非對號座剩餘座位。</div>` : '';
+  return h + `</div>${thsrNoteHtml}${r.busNote ? `<div class="sub pnote" style="margin-top:14px">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="margin-top:14px;color:var(--warn)">${esc(r.tightNote)}</div>` : ''}<div class="sub" style="margin-top:14px">${r.src === 'otp' ? '時刻為 OpenTripPlanner 規劃結果（全國公共運輸時刻表＋YouBike 即時車位）' : r.src === 'google' ? (r.legs.some(l => l.tt) ? '路線資料：Google 地圖；班次時刻已依官方時刻表校正（台鐵、高鐵含車次；公車、文湖線、台中捷運維持 Google 規劃時間）' : '路線資料：Google 地圖（時刻為 Google 規劃結果，沒有車次號碼和沿途停靠站）') : r.src === 'tt' ? '路線資料：官方時刻表（深夜 TDX 查不到路線，依台鐵／高鐵時刻表列出直達車）' : r.src === 'self' ? '路線資料：依台鐵、高鐵、捷運、輕軌官方時刻表自己排出（文湖線、台中捷運沒有時刻表，依班距估計；轉乘時間：同站 3 分，出站 3 分＋每 100 公尺 1 分；公車接駁的等車與行駛時間為估計，第一段公車有即時預估就用即時）' : (r.legs.some(l => l.tt) ? '路線為 TDX 規劃結果，班次時刻已依官方時刻表校正（台鐵、高鐵含車次；文湖線、台中捷運、公車沒有時刻表，維持 TDX 規劃時間）' : '時刻為 TDX 規劃結果')}；粗線＝搭車（依系統／路線上色），虛線＋⇄＝轉乘，斜切＝同一班車續坐；轉乘的步行時間取自規劃結果。</div></div>`;
 }
 function legOpen(i) {
   const L = (S.plan.live || {})[i];
@@ -8942,19 +9183,28 @@ async function demo(action, p) {
       if (eta != null) return eta <= 0 ? '進站中' : `${eta}<span class="fx-numsub">分</span>`;
       return esc(t.time || '—');
     };
-    const head = g => `<span class="fx-thead">${multi && g.line ? lineBadge(r.op === 'TRTC' && g.line === 'Y' ? 'NTMC' : r.op, g.line) : ''}${esc(g.label)}</span>`;
+    const head = (g, crowdIco = '') => `<span class="fx-thead">${multi && g.line ? lineBadge(r.op === 'TRTC' && g.line === 'Y' ? 'NTMC' : r.op, g.line) : ''}${esc(g.label)}${crowdIco}</span>`;
     const trInfo = t => [((t.type || '').replace(/\(.*$/, '').trim()) || (D.kind === 'thsr' ? '高鐵' : ''), t.no ? t.no + ' 次' : '', t.dest ? '往' + String(t.dest).replace(/^往\s*/, '') : ''].filter(Boolean).join(' ');
+    const isThsr = D.kind === 'thsr', thsrSt = isThsr && S.railCrowd && thsrCanFetchToday() ? thsrStationCode(r) : null;
+    let thsrShown = false;
     const tiles = G.map(g => {
       const t = g.trains[0], sub = tra ? `<span class="fx-tinfo">${esc(trInfo(t))}</span>` : (g.src === 'tt' ? '<span class="fx-tinfo">表定</span>' : '');
-      const inner = `<b class="c-ok">${val(t)}</b><span>${head(g)}</span>${sub}`;
+      const crowd = thsrSt ? thsrCrowdLookup(S.railCrowd, thsrSt, thsrTrainRunDirect(thsrSt, t, g), thsrTrainHour(t)) : null;
+      if (crowd) thsrShown = true;
+      const inner = `<b class="c-ok">${val(t)}</b><span>${head(g, crowd ? thsrCrowdIconHtml(crowd) : '')}</span>${sub}`;
       return tra && t.no ? `<button class="num fx-ntile" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${inner}</button>` : `<div class="num">${inner}</div>`;
     });
     if (tiles.length) h += `<div class="nums" style="margin:14px 0 8px">${tiles.join('')}</div>`;
     h += S.railError ? staleNote() : pupd(S.railAt);   // v2.50.0：車站卡片也標資料更新時間
     // v2.50.1：完整車站頁拿掉；台鐵／高鐵點一班＝看這班車停靠站，其他只顯示
-    const row = t => tra && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t)}</button>` : trainRow(D.kind, r.op, t);
+    const row = (t, g) => tra && t.no ? `<button class="lnk" data-act="trainOpen" data-i="${reg({ kind: D.kind, no: t.no })}">${trainRow(D.kind, r.op, t, r, g)}</button>` : trainRow(D.kind, r.op, t, r, g);
     const rest = G.filter(g => g.trains.length > 1);
-    if (rest.length) h += rest.map(g => `<div class="fx-rdir">${head(g)}${g.src === 'tt' ? '<small style="margin-left:6px;color:var(--muted)">表定（沒有即時資料）</small>' : g.trains.slice(1, 3).some(t => t.tt) ? '<small style="margin-left:6px;color:var(--muted)">含表定</small>' : ''}</div><div class="fx-rlist fx-rnext">${g.trains.slice(1, 3).map(row).join('')}</div>`).join('');
+    const restHtml = rest.length ? rest.map(g => `<div class="fx-rdir">${head(g)}${g.src === 'tt' ? '<small style="margin-left:6px;color:var(--muted)">表定（沒有即時資料）</small>' : g.trains.slice(1, 3).some(t => t.tt) ? '<small style="margin-left:6px;color:var(--muted)">含表定</small>' : ''}</div><div class="fx-rlist fx-rnext">${g.trains.slice(1, 3).map(t => row(t, g)).join('')}</div>`).join('') : '';
+    if (isThsr && (thsrShown || restHtml.includes('data-thsr-crowd="1"'))) {
+      const hm = thsrUpdateHM(S.railCrowd);
+      h += `<div class="thsr-crowd-note">圖示是該站、該方向、該時段的「自由座等候」時間預估${hm ? `（高鐵官網 ${esc(hm)} 更新）` : '（高鐵官網）'}，不是這班車對號座擁擠度。</div>`;
+    }
+    if (rest.length) h += restHtml;
     else if (!G.length) h += `<div class="note">目前沒有列車資訊</div>`;
     if (D.note) h += `<div class="fx-rnote">${esc(D.note)}</div>`;
     return h + btns;
@@ -8980,7 +9230,7 @@ async function demo(action, p) {
     railPrev = undefined;
   };
   const oClose = closeSheet;
-  closeSheet = function () { if (S.sheet && S.sheet.type === 'fxRail') restoreRail(); return oClose.apply(this, arguments); };
+  closeSheet = function () { if (S.sheet && S.sheet.type === 'fxRail') { S.railCrowd = null; S.stttCrowd = null; restoreRail(); } return oClose.apply(this, arguments); };
 
   document.addEventListener('click', e => {
     const el = e.target.closest && e.target.closest('[data-act^="fx"]'); if (!el) return;
