@@ -1224,7 +1224,7 @@
     const R = JSON.parse(JSON.stringify(route));
     const legs = R.legs, slack = ((opt && opt.slackSec) || 30) * 1000;
     const num = v => typeof v === "number" && isFinite(v);
-    let ready = nowMs, changed = false, recatch = null, seenTransit = false;
+    let ready = nowMs, changed = false, metaChanged = false, recatch = null, seenTransit = false;
     for (let i = 0; i < legs.length; i++) {
       const l = legs[i];
       if (l.kind === "walk" || l.kind === "bike") { ready += Math.round((l.dur || 0) * 1000); continue; }
@@ -1268,11 +1268,27 @@
             }
             l.alts.sort((x, y) => (x.next ? parseTpe(x.next.time) : Infinity) - (y.next ? parseTpe(y.next.time) : Infinity));
           }
-          l.liveFix = { src: pick.src, tag: pick.src === "live" ? (missedLive ? "趕不上前一班・改搭下一班（即時）" : "即時校正") : (missedLive ? "趕不上即時那班・改用下一班表定" : "沒有即時・用表定"), missed: missedLive, at: nowMs };
+          l.liveFix = { src: pick.src, ...(pick.sec != null ? { sec: pick.sec } : {}), tag: pick.src === "live" ? (missedLive ? "趕不上前一班・改搭下一班（即時）" : "即時校正") : (missedLive ? "趕不上即時那班・改用下一班表定" : "沒有即時・用表定"), missed: missedLive, at: nowMs };
           if (pick.src === "live") l.timeSrc = "livefix";
+          metaChanged = true;
         } else {
-          dep = s0; ride = a0 - s0;   // 保留原表定
-          l.liveFix = { src: "none", tag: "趕不上・沒有下一班資料，保留原表定", missed: true, at: nowMs };
+          const origRide = Math.max(60000, a0 - s0);
+          if (s0 < ready - slack) {
+            dep = Math.max(s0, ready);
+            ride = origRide;
+            l.liveFix = { src: "none", tag: "趕不上原班次・查無後續班次，依轉乘時間估算", missed: true, shifted: true, at: nowMs };
+          } else {
+            dep = s0;
+            ride = origRide;   // 保留原表定
+            l.liveFix = { src: "none", tag: "趕不上・沒有下一班資料，保留原表定", missed: true, at: nowMs };
+          }
+          if (Array.isArray(l.alts)) {
+            for (const a of l.alts) {
+              const best = schC.filter(c => c.a === a && ok(c))[0] || null;
+              a.next = best ? { time: isoTpe(best.dep), src: best.src } : null;
+            }
+          }
+          metaChanged = true;
         }
       } else if (seenTransit || l.mode !== "bus") {
         // 沒有即時的車：只檢查接不接得上
@@ -1288,9 +1304,9 @@
       }
       ready = dep + ride;
     }
-    if (changed) syncRouteTimes(R);
-    if (changed || recatch) R.liveFixed = true;
-    return { route: R, changed, recatch };
+    if (changed || metaChanged) syncRouteTimes(R);
+    if (changed || metaChanged || recatch) R.liveFixed = true;
+    return { route: R, changed: changed || metaChanged, recatch };
   }
 
   // ===== v2.51.7：同一班車、同樣上下車時間、只差步行的方案合併成一條（留走路較短的） =====

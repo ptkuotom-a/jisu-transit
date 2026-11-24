@@ -2054,8 +2054,11 @@ async function locate(fresh = false) {
   if (locBootDone) return locateSlow();
   locBootDone = true;
 
-  // 1. 先看 localStorage 裡上次的位置（v2.49.27：開 App 第一次直接用，不限 2 分鐘）
-  let saved = null;
+  const STALE_LOC_MS = 10 * 60 * 1000;
+  const freshOpen = typeof window !== "undefined" && window.__jisuFreshLoc && window.__jisuFreshLoc.t && (Date.now() - window.__jisuFreshLoc.t <= 60000) ? window.__jisuFreshLoc : null;
+
+  // 1. 先看 localStorage 裡上次的位置（僅 10 分鐘內才視為新鮮可直接開機；超過 10 分鐘僅作無 GPS 時的最後備援，避免先畫舊位置再跳兩次）
+  let saved = null, staleSaved = null;
   if (!fresh) {
     try {
       const raw = localStorage.getItem("jisu_last_loc");
@@ -2064,7 +2067,9 @@ async function locate(fresh = false) {
         const isStaleMock = typeof window !== "undefined" && window.mockLoc &&
           (Math.abs(parsed.latitude - window.mockLoc.latitude) > 0.001 || Math.abs(parsed.longitude - window.mockLoc.longitude) > 0.001);
         if (!isStaleMock && parsed && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
-          saved = parsed;
+          const isFresh = (typeof window !== "undefined" && window.mockLoc) || (parsed.t && Date.now() - parsed.t <= STALE_LOC_MS);
+          if (isFresh) saved = parsed;
+          else staleSaved = parsed;
         }
       }
     } catch (e) {}
@@ -2132,14 +2137,16 @@ async function locate(fresh = false) {
     );
   });
 
-  // 背景定位：新位置離剛剛查的位置超過 100 公尺才重查一次附近
-  let usedLoc = saved || null;
+  // 背景定位：以高精度優先，去重避免「粗定位跳一次、高精度再跳一次」的雙重重查
+  let usedLoc = freshOpen || saved || null;
+  let highDone = false, relocDone = false;
   const onBgLoc = newLoc => {
     if (!newLoc || !Number.isFinite(newLoc.latitude) || !Number.isFinite(newLoc.longitude)) return;
     try { localStorage.setItem("jisu_last_loc", JSON.stringify(newLoc)); } catch (e) {}
     if (usedLoc && usedLoc !== newLoc) {
       const moved = haversine(usedLoc.latitude, usedLoc.longitude, newLoc.latitude, newLoc.longitude);
-      if (moved > 100) {
+      if (moved > 100 && !relocDone) {
+        relocDone = true;
         usedLoc = newLoc;
         lastLoc = newLoc;
         pendingRelocLoc = newLoc;
@@ -2152,13 +2159,13 @@ async function locate(fresh = false) {
     lastLoc = newLoc;
   };
 
-  highPromise.then(onBgLoc, () => lowPromise.then(onBgLoc)).catch(() => {});
-  lowPromise.then(onBgLoc).catch(() => {});
+  highPromise.then(loc => { highDone = true; onBgLoc(loc); }, () => lowPromise.then(onBgLoc)).catch(() => {});
+  lowPromise.then(loc => { if (!highDone && loc && (!loc.accuracy || loc.accuracy <= 80)) onBgLoc(loc); }).catch(() => {});
 
-  if (saved) {
-    lastLoc = usedLoc = saved;
+  if (freshOpen || saved) {
+    lastLoc = usedLoc = freshOpen || saved;
     if (typeof window !== "undefined" && window.BOOT_PERF) {
-      window.BOOT_PERF.locType = "cache";
+      window.BOOT_PERF.locType = freshOpen ? "open" : "cache";
     }
     if (typeof window !== "undefined") {
       window.__jisuLocating = false;
@@ -2167,14 +2174,19 @@ async function locate(fresh = false) {
     return lastLoc;
   }
 
-  // 沒有存過位置時：等定位
+  // 沒有新鮮存檔時：等定位（給高精度最多 800ms 優先權，避免先用粗定位跳一次）
   if (typeof window !== "undefined") {
     window.__jisuLocating = true;
     if (typeof window.renderStatus === "function") window.renderStatus();
   }
 
+  const lowAfterDelay = new Promise((res, rej) => {
+    const t = setTimeout(() => lowPromise.then(res, rej), 800);
+    highPromise.then(() => clearTimeout(t), () => { clearTimeout(t); lowPromise.then(res, rej); });
+  });
+
   try {
-    const loc = await Promise.race([lowPromise, highPromise]);
+    const loc = await Promise.race([highPromise, lowAfterDelay]);
     lastLoc = usedLoc = loc;
     if (typeof window !== "undefined") {
       window.__jisuLocating = false;
@@ -2190,10 +2202,11 @@ async function locate(fresh = false) {
         if (typeof window.renderStatus === "function") window.renderStatus();
       }
       if (lastLoc) return lastLoc;
+      if (staleSaved) return lastLoc = usedLoc = staleSaved;
       throw new Error("沒有定位權限：到 iPhone 設定 › 隱私權與安全性 › 定位服務 › Safari 網站，改成「使用 App 期間」並開啟「精確位置」");
     }
     try {
-      const loc = await highPromise;
+      const loc = await Promise.race([highPromise, lowPromise]);
       lastLoc = usedLoc = loc;
       if (typeof window !== "undefined") {
         window.__jisuLocating = false;
@@ -2208,6 +2221,7 @@ async function locate(fresh = false) {
         if (typeof window.renderStatus === "function") window.renderStatus();
       }
       if (lastLoc) return lastLoc;
+      if (staleSaved) return lastLoc = usedLoc = staleSaved;
       throw new Error("無法取得定位，請稍後再試");
     }
   }
@@ -3130,7 +3144,8 @@ const BR_STN = { TRTC: { R22A: "RA", G03A: "GA" } }, BR_BASE = { RA: "R", GA: "G
 const BR_DEST = { "新北投": "RA", "小碧潭": "GA" };
 function brLine(op, line, sid, did, dname) {
   const m = BR_STN[op]; if (!m || !line || BR_BASE[line]) return line;
-  const b = m[String(sid || "").toUpperCase()] || m[String(did || "").toUpperCase()] || BR_DEST[dname] || null;
+  const dn = String(dname || "").replace(/站$/, "").trim();
+  const b = m[String(sid || "").toUpperCase()] || m[String(did || "").toUpperCase()] || BR_DEST[dn] || null;
   return b && BR_BASE[b] === line ? b : line;
 }
 const lineOf = (op, id) => { if (op === "TRA" || op === "THSR") return null; const m = String(id || "").match(/^[A-Z]+/); return m ? m[0] : null; };
@@ -8566,7 +8581,7 @@ async function otpCalibrateBus(routes) {
           }
         }
         r.end = curTime;
-        r.dur = Math.round((r.end - r.start) / 60000);
+        r.dur = Math.max(1, Math.round((r.end - r.start) / 60000));
       }
     }
   }
@@ -8838,6 +8853,37 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
         }));
       }
 
+      let walkBeforeMs = 0, preAllNonTransit = true, readyMs = wantLive ? nowMs : baseMs, prevReadyMs = null;
+      for (let k = 0; k < legIdx; k++) {
+        const pl = r.legs[k];
+        if (pl.kind === "walk" || pl.kind === "bike") walkBeforeMs += (pl.dur || 0) * 1000;
+        else if (pl.kind !== "wait") { preAllNonTransit = false; break; }
+      }
+      if (preAllNonTransit) {
+        readyMs = (wantLive ? nowMs : baseMs) + walkBeforeMs;
+      } else {
+        let prevArrMs = null, xferWalkMs = 0;
+        for (let k = legIdx - 1; k >= 0; k--) {
+          const pl = r.legs[k];
+          if (pl.kind === "transit" || (pl.kind === "bike" && pl.to && pl.to.time)) {
+            prevArrMs = pl.to && pl.to.time ? tms(pl.to.time) : null;
+            break;
+          }
+          if (pl.kind === "walk" || pl.kind === "bike") xferWalkMs += (pl.dur || 0) * 1000;
+        }
+        if (prevArrMs != null) {
+          prevReadyMs = prevArrMs + xferWalkMs;
+          readyMs = wantLive ? Math.max(nowMs, prevReadyMs) : prevReadyMs;
+        } else {
+          readyMs = (wantLive ? nowMs : baseMs) + walkBeforeMs;
+        }
+      }
+      const depOfAlt = a => a.next ? tms(a.next.time) : (a.from && a.from.time ? tms(a.from.time) : null);
+      const minReachMs = Math.max(
+        wantLive ? (readyMs - 30000) : -Infinity,
+        !preAllNonTransit && prevReadyMs != null ? (prevReadyMs - 30000) : -Infinity
+      );
+
       for (const c of extraList) {
         const spC = c.cityList ? splitBusWithIdx(c.rawName, c.cityList) : splitBusRouteName(c.rawName);
         const mainName = spC.name || c.rawName;
@@ -8871,41 +8917,40 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
           to: { name: nmOfS(stopA) || l.to.name, type: "stop", ...(aPos ? { lat: aPos[0], lon: aPos[1] } : {}), time: depMs != null ? isoTpe(depMs + rideSec * 1000) : "" },
           dur: rideSec,
           timeSrc,
-          ...(next ? { next } : {})
+          ...(next && (minReachMs === -Infinity || depMs == null || depMs >= minReachMs) ? { next } : {})
         };
 
         const existing = mergedByNorm.get(mainName);
         if (!existing) {
           mergedByNorm.set(mainName, candAlt);
         } else {
-          // 保留既有主/最快時間或升級為有即時的一班；同名正線優先於半趟註記
           const exDep = existing.next ? tms(existing.next.time) : (existing.from && existing.from.time ? tms(existing.from.time) : null);
-          const exIsLive = existing.next && existing.next.src === "live";
-          const candIsLive = candAlt.next && candAlt.next.src === "live";
+          const exIsLive = !!(existing.next && existing.next.src === "live");
+          const candIsLive = !!(candAlt.next && candAlt.next.src === "live");
+          const exOk = exDep != null && (minReachMs === -Infinity || exDep >= minReachMs);
+          const candOk = depMs != null && (minReachMs === -Infinity || depMs >= minReachMs);
           if (!existing.routeUID && candAlt.routeUID) {
             existing.routeUID = candAlt.routeUID;
             existing.dir = candAlt.dir;
             existing.stopUID = candAlt.stopUID;
             existing.toStopUID = candAlt.toStopUID;
           }
-          if ((!exIsLive && candIsLive) || (exDep == null && depMs != null) || (exDep != null && depMs != null && exIsLive === candIsLive && depMs < exDep)) {
+          if ((!exOk && candOk) || (candOk === exOk && ((!exIsLive && candIsLive) || (exDep == null && depMs != null) || (exDep != null && depMs != null && exIsLive === candIsLive && depMs < exDep)))) {
             mergedByNorm.set(mainName, candAlt);
           }
         }
       }
 
-      let walkBeforeMs = 0, preAllNonTransit = true;
-      for (let k = 0; k < legIdx; k++) {
-        const pl = r.legs[k];
-        if (pl.kind === "walk" || pl.kind === "bike") walkBeforeMs += (pl.dur || 0) * 1000;
-        else if (pl.kind !== "wait") { preAllNonTransit = false; break; }
+      for (const a of mergedByNorm.values()) {
+        if (a.next && minReachMs > -Infinity) {
+          const nt = tms(a.next.time);
+          if (nt != null && nt < minReachMs) delete a.next;
+        }
       }
-      const depOfAlt = a => a.next ? tms(a.next.time) : (a.from && a.from.time ? tms(a.from.time) : null);
-      const minReachMs = wantLive ? (nowMs + walkBeforeMs - 30000) : -Infinity;
       const reachRank = a => {
         const dt = depOfAlt(a);
         if (dt == null) return -1;
-        return (!wantLive || dt >= minReachMs) ? 1 : 0;
+        return (minReachMs === -Infinity || dt >= minReachMs) ? 1 : 0;
       };
       const nextAlts = [...mergedByNorm.values()];
       nextAlts.sort((a, b) => {
@@ -8921,7 +8966,8 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
         const best = nextAlts[0];
         const bestDep = depOfAlt(best);
         const curDep = l.from && l.from.time ? tms(l.from.time) : null;
-        if (bestDep != null && ((best.next && best.next.src === "live") || curDep == null || bestDep < curDep)) {
+        const bestReachable = reachRank(best) === 1;
+        if (bestDep != null && bestReachable && ((best.next && best.next.src === "live") || curDep == null || bestDep < curDep || (minReachMs > -Infinity && curDep < minReachMs))) {
           l.name = best.name || l.name;
           if (best.routeNote) l.routeNote = best.routeNote; else delete l.routeNote;
           if (best.routeUID) l.routeUID = best.routeUID;
@@ -8951,6 +8997,18 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
                 cur = bestDep;
               }
             }
+          } else {
+            for (let k = legIdx - 1; k >= 0; k--) {
+              const pl = r.legs[k];
+              if (pl.kind === "wait") {
+                const startW = prevReadyMs != null ? prevReadyMs : (tms(pl.from && pl.from.time) || bestDep);
+                pl.dur = Math.max(0, Math.round((bestDep - startW) / 1000));
+                pl.from = { ...pl.from, time: isoTpe(startW).slice(0, 19) };
+                pl.to = { ...pl.to, time: isoTpe(bestDep).slice(0, 19) };
+                break;
+              }
+              if (pl.kind === "transit") break;
+            }
           }
           let curTime = arrMs;
           for (let j = legIdx + 1; j < r.legs.length; j++) {
@@ -8967,12 +9025,12 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
                   nextL.dur = Math.round((targetDep - curTime) / 1000);
                   nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
                   nextL.to = { ...nextL.to, time: isoTpe(targetDep).slice(0, 19) };
+                  curTime = targetDep;
                 } else {
                   nextL.dur = 0;
                   nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
                   nextL.to = { ...nextL.to, time: isoTpe(curTime).slice(0, 19) };
                 }
-                break;
               } else {
                 nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
                 curTime += (nextL.dur || 0) * 1000;
@@ -8980,14 +9038,17 @@ async function otpEnrichBusAlts(routes, { when, time } = {}) {
               }
             } else if (nextL.kind === "transit") {
               const origDep = tms(nextL.from.time);
+              const origArr = tms(nextL.to.time);
               if (curTime > origDep) {
                 const shift = curTime - origDep;
                 nextL.from = { ...nextL.from, time: isoTpe(curTime).slice(0, 19) };
-                const newArr = tms(nextL.to.time) + shift;
+                const newArr = origArr + shift;
                 nextL.to = { ...nextL.to, time: isoTpe(newArr).slice(0, 19) };
+                if (Array.isArray(nextL.stops)) for (const st of nextL.stops) { const t = tms(st.time); if (t != null) st.time = isoTpe(t + shift).slice(0, 19); }
                 curTime = newArr;
+              } else {
+                curTime = origArr != null ? origArr : curTime;
               }
-              break;
             }
           }
           const lastL = r.legs[r.legs.length - 1];
@@ -10088,9 +10149,20 @@ async function gmapImg({ poly, o, d, x }) {
     return URL.createObjectURL(await r.blob());
   } catch (e) { return null; }
 }
-const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`);
-const geocodeAddress = ({ q, near }) => authedGet(`/geocode?q=${enc(q)}${near ? "&near=" + near : ""}`);
-const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`);
+const fixDupHao = s => typeof s === "string" ? s.replace(/號{2,}/g, "號") : s;
+const cleanGeoItem = it => {
+  if (!it || typeof it !== "object") return it;
+  const copy = { ...it };
+  for (const k of ["name", "addr", "address", "poi", "area", "sub", "display", "label", "road"]) {
+    if (typeof copy[k] === "string") copy[k] = fixDupHao(copy[k]);
+  }
+  return copy;
+};
+const cleanGeoResp = res => Array.isArray(res) ? res.map(cleanGeoItem) : (res && typeof res === "object" ? cleanGeoItem(res) : res);
+if (typeof window !== "undefined") window.fixDupHao = fixDupHao;
+const geoSearch = ({ q, near }) => authedGet(`/geo?q=${enc(q)}${near ? "&near=" + near : ""}`).then(cleanGeoResp);
+const geocodeAddress = ({ q, near }) => authedGet(`/geocode?q=${enc(q)}${near ? "&near=" + near : ""}`).then(cleanGeoResp);
+const geoReverse = ({ lat, lon }) => authedGet(`/geo?lat=${lat}&lon=${lon}`).then(cleanGeoResp);
 
 // ---------- 對回 App 的資料：車站（名稱＋座標）、公車路線（名稱＋營運縣市＋站序） ----------
 const pn = x => normZh(x).replace(/\(.*?\)|（.*?）/g, "").replace(/站$/, "").replace(/\s/g, "");
