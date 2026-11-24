@@ -226,6 +226,8 @@ html,body{overscroll-behavior:none}
 .kv{display:flex;justify-content:space-between;padding:12px 2px;border-top:1px solid var(--line);font-size:16px}
 .kv span{color:var(--muted)}
 .btns{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:18px}
+.btns.fx-rbtns{grid-template-columns:1fr 1fr}
+.btns.fx-rbtns .fx-full{grid-column:1/-1}
 .btn{height:56px;border-radius:999px;font-weight:800;font-size:17px;display:flex;align-items:center;justify-content:center;gap:8px}
 .btn svg{width:22px;height:22px}
 .btn.pri{background:var(--lime);color:var(--ink)}
@@ -2089,7 +2091,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 .hm-upd-btn{width:36px;height:36px;padding:0;justify-content:center}
 .hm-upd-btn svg{width:17px;height:17px}
 #sheet.fx-tall > .fx-ttctl{flex:none;margin-bottom:4px!important}
-.fx-ttl:has(.ttdet){padding-bottom:calc(140px + env(safe-area-inset-bottom,0px))}
+.fx-ttl:has(.ttdet),.sttlist:has(.ttdet){padding-bottom:calc(160px + env(safe-area-inset-bottom,0px))}
 .hm-upd-r2{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap}
 .hm-upd-meta{display:none;font-size:11px;color:var(--muted);flex:none}
 .hm-upd.has-head .hm-upd-meta:not(:empty){display:inline}
@@ -2186,7 +2188,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.17';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.18';   // 要跟 sw.js 的 VERSION（jisu-v2.60.0）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2230,7 +2232,7 @@ const S = {
   tab:'home', q:'', data:null, loading:false, error:null, lastFetch:0, busAt:0, bikeAt:0, railNearAt:0, partErr:{},
   settings:{busR:300, bikeR:500, railWalk:1.5, railFar:1, railSys:null, auto:10},   // v2.49.0 auto＝定時更新秒數（固定 10）   // railFarTra／railFarThsr 在讀設定時補上
   railTab:{}, ttAll:{}, rail:null, railData:null, railLoading:false, railError:null, page:null,
-  favs:{bus:[], bike:[]},
+  favs:{bus:[], bike:[], rail:[]},
   route:null, routeData:null, routeLoading:false, routeError:null,
   sheet:null, proxy:{},
 };
@@ -2275,6 +2277,16 @@ const destTxt = r => r.dest ? `往 ${r.dest}` : (r.dirNum === 1 ? '返程' : '�
 const busKey = f => `${f.routeUID}|${f.dirNum}|${f.stopUID}`;
 const isFavBus = f => S.favs.bus.some(x => busKey(x) === busKey(f));
 const isFavBike = uid => S.favs.bike.some(x => x.uid === uid);
+const railFavKey = r => r ? `${r.op || ''}|${Array.isArray(r.ids) && r.ids.length ? [...r.ids].sort().join(',') : (r.name || '')}` : '';
+const isFavRail = r => !!(r && (S.favs.rail || []).some(x => railFavKey(x) === railFavKey(r) || (x.op === r.op && x.name === r.name)));
+const toFavRail = r => ({
+  op: r.op, kind: r.kind || (r.op === 'TRA' ? 'tra' : r.op === 'THSR' ? 'thsr' : 'metro'),
+  sys: r.sys || (typeof SYS_ZH !== 'undefined' && SYS_ZH[r.op]) || '', name: r.name,
+  ids: Array.isArray(r.ids) ? [...r.ids] : [], lines: Array.isArray(r.lines) ? [...r.lines] : [],
+  ...(r.lat != null ? { lat: r.lat, lon: r.lon } : {}),
+  ...(r.navLat != null ? { navLat: r.navLat, navLon: r.navLon } : {}),
+  ...(r.exit ? { exit: r.exit } : {}),
+});
 
 /* ---------- render ---------- */
 // 頂部標題（圖示＋文字）：點分頁時立即淡入淡出換成新分頁；手指滑動時依進度交叉淡化
@@ -2445,31 +2457,140 @@ let stopGridCache = new Map();
 let stopGridPending = new Set();
 let stopDebounceT = 0;
 let lastOtpStopsData = null;
+let vpRailMarks = [], otpMarks = [];
+let LOCAL_RAIL_CACHE = { raw: null, list: [] };
+const BR_STN_UI = { TRTC: { R22A: 'RA', G03A: 'GA' } }, BR_HUB_UI = { TRTC: { R22: 'RA', G03: 'GA' } };
+const ALL_RAIL_OPS_RE = /^(TRA|THSR|TRTC|NTMC|TYMC|TMRT|KRTC|KLRT|NTDLRT|NTALRT)/i;
+function localRailGroups() {
+  let raw = '';
+  try { raw = localStorage.getItem('jisu_rail_stations') || ''; } catch (e) { return []; }
+  if (!raw) { LOCAL_RAIL_CACHE = { raw: '', list: [] }; return []; }
+  if (raw === LOCAL_RAIL_CACHE.raw) return LOCAL_RAIL_CACHE.list;
+  try {
+    const c = JSON.parse(raw), groups = {};
+    for (const v of Object.values((c && c.systems) || {})) {
+      for (const s of (v && v.stations) || []) {
+        if (!s || !s.op || !s.id || s.lat == null || s.lon == null) continue;
+        const k = s.op + '|' + s.name;
+        const l = (BR_STN_UI[s.op] || {})[s.id] || ((s.op === 'TRA' || s.op === 'THSR') ? null : ((String(s.id).match(/^[A-Z]+/) || [])[0] || null));
+        const hub = (BR_HUB_UI[s.op] || {})[s.id];
+        if (!groups[k]) {
+          groups[k] = { op: s.op, sys: s.sys || (typeof SYS_ZH !== 'undefined' && SYS_ZH[s.op]) || '', kind: s.kind || (s.op === 'TRA' ? 'tra' : s.op === 'THSR' ? 'thsr' : 'metro'), name: s.name, lat: s.lat, lon: s.lon, ids: [s.id], lines: [l, hub].filter(Boolean) };
+        } else {
+          if (!groups[k].ids.includes(s.id)) groups[k].ids.push(s.id);
+          for (const x of [l, hub]) if (x && !groups[k].lines.includes(x)) groups[k].lines.push(x);
+        }
+      }
+    }
+    const list = Object.values(groups);
+    LOCAL_RAIL_CACHE = { raw, list };
+    return list;
+  } catch (e) { return []; }
+}
+function inferOtpRailOp(s) {
+  const m = ALL_RAIL_OPS_RE.exec(String((s && (s.id || s.gtfsId)) || '').replace(/^TW[:_]/i, ''));
+  return m ? m[1].toUpperCase() : 'TRTC';
+}
+function matchLocalRail(s) {
+  const groups = localRailGroups();
+  if (!groups.length || !s) return null;
+  const rawId = String(s.id || '').replace(/^TW[:_]/i, '');
+  const cleanId = rawId.replace(/^[A-Z]+[_:-]/i, '');
+  const opHint = ALL_RAIL_OPS_RE.exec(rawId)?.[1]?.toUpperCase() || null;
+  for (const g of groups) {
+    if (opHint && g.op !== opHint) continue;
+    if (g.ids.some(id => id === rawId || id === cleanId)) return g;
+  }
+  const nm = String(s.name || '').replace(/(火車站|車站|站)$/, '').replace(/\s+/g, '');
+  if (!nm || s.lat == null || s.lon == null) return null;
+  let best = null, bd = Infinity;
+  for (const g of groups) {
+    const gn = String(g.name || '').replace(/(火車站|車站|站)$/, '').replace(/\s+/g, '');
+    if (gn !== nm) continue;
+    const d = Math.hypot((g.lat - s.lat) * 111000, (g.lon - s.lon) * 101000);
+    if (d <= 500 && d < bd) { bd = d; best = g; }
+  }
+  return best;
+}
+function openOtpBusStop(s) {
+  const near = S.data && Array.isArray(S.data.busStops) ? S.data.busStops.find(x => x.name === s.name && x.lat != null && Math.abs(x.lat - s.lat) < 0.0006 && Math.abs(x.lon - s.lon) < 0.0006) : null;
+  if (near) { stopSheet(near); return; }
+  if (!Array.isArray(s.routes) || !s.routes.length) {
+    const uid = s.id ? String(s.id).replace(/^TW[:_]/i, '') : null;
+    const s0 = { name: s.name || '公車站牌', lat: s.lat, lon: s.lon, stopUID: uid, dist: null, routes: [] };
+    stopSheet(s0);
+    if (uid && typeof api === 'function') {
+      $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
+      api('stopAt', { stopUID: uid, name: s0.name, lat: s0.lat, lon: s0.lon, uLat: S.data?.lat, uLon: S.data?.lon })
+        .then(st => { if (S.sheet?.s === s0) stopSheet(st, true); })
+        .catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg({ stopUID: uid, name: s0.name, lat: s0.lat, lon: s0.lon })}"`); });
+    }
+    return;
+  }
+  stopSheet(s);
+}
+function renderViewportRailPins() {
+  if (!MAP || !window.maplibregl) return;
+  vpRailMarks.forEach(m => m.remove());
+  vpRailMarks = [];
+  const b = MAP.getBounds();
+  if (!b) return;
+  const groups = localRailGroups();
+  if (!groups.length) return;
+  const minLon = b.getWest() - 0.002, maxLon = b.getEast() + 0.002;
+  const minLat = b.getSouth() - 0.002, maxLat = b.getNorth() + 0.002;
+  const cLat = (minLat + maxLat) / 2, cLon = (minLon + maxLon) / 2;
+  const allow = Array.isArray(S.settings?.railSys) && S.settings.railSys.length ? new Set(S.settings.railSys) : null;
+  const vis = groups.filter(r => (!allow || allow.has(r.op)) && r.lat >= minLat && r.lat <= maxLat && r.lon >= minLon && r.lon <= maxLon)
+    .sort((a, x) => ((a.lat - cLat) ** 2 + (a.lon - cLon) ** 2) - ((x.lat - cLat) ** 2 + (x.lon - cLon) ** 2))
+    .slice(0, 60);
+  for (const r of vis) {
+    if (mapMarks.some(m => { const ll = m.getLngLat(); return Math.abs(ll.lat - r.lat) < 0.00012 && Math.abs(ll.lng - r.lon) < 0.00012; })) continue;
+    const el = document.createElement('button');
+    el.className = 'mpin rl';
+    el.dataset.railOp = r.op;
+    el.innerHTML = sysIcon(r.op);
+    el.setAttribute('aria-label', r.name || '');
+    el.addEventListener('click', e => { e.stopPropagation(); openRail(r); });
+    vpRailMarks.push(new maplibregl.Marker({ element: el }).setLngLat([r.lon, r.lat]).addTo(MAP));
+  }
+}
 function applyOtpStops(data) {
   if (!MAP || !data) return;
   lastOtpStopsData = data;
-  const add = (o, cls, svg, fn) => {
-    if (o.lat == null || mapMarks.some(m => {
-      const ll = m.getLngLat();
-      return Math.abs(ll.lat - o.lat) < 0.0001 && Math.abs(ll.lng - o.lon) < 0.0001;
-    })) return;
+  otpMarks.forEach(m => m.remove());
+  otpMarks = [];
+  const nearExist = (lat, lon) => [mapMarks, vpRailMarks, otpMarks].some(arr => arr.some(m => {
+    const ll = m.getLngLat();
+    return Math.abs(ll.lat - lat) < 0.0001 && Math.abs(ll.lng - lon) < 0.0001;
+  }));
+  const add = (o, cls, svg, fn, extra = {}) => {
+    if (o.lat == null || o.lon == null || nearExist(o.lat, o.lon)) return;
     const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg;
+    if (extra.railOp) el.dataset.railOp = extra.railOp;
     el.setAttribute('aria-label', o.name || '');
     el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
-    mapMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP));
+    otpMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP));
   };
-  (data.bikes || []).slice(0, 30).forEach(b => add(b, 'bk', I.bike, bikeSheet));
-  (data.stops || []).slice(0, 50).forEach(s => {
-    const isRail = s.mode === 'SUBWAY' || s.mode === 'RAIL' || s.mode === 'METRO' || s.mode === 'TRAM';
-    if (isRail) {
-      add(s, 'rl', I.rail || sysIcon('METRO'), o => openRail({ op: 'TRTC', kind: 'metro', name: o.name, lat: o.lat, lon: o.lon, ids: [o.id] }));
-    } else {
-      add(s, 'bs', I.busFill, stopSheet);
-    }
+  const allStops = data.stops || [];
+  const isRailMode = s => s.mode === 'SUBWAY' || s.mode === 'RAIL' || s.mode === 'METRO' || s.mode === 'TRAM';
+  const railStops = allStops.filter(isRailMode);
+  const busStops = allStops.filter(s => !isRailMode(s));
+  const allow = Array.isArray(S.settings?.railSys) && S.settings.railSys.length ? new Set(S.settings.railSys) : null;
+  railStops.slice(0, 30).forEach(s => {
+    const matched = matchLocalRail(s);
+    const op = matched ? matched.op : inferOtpRailOp(s);
+    if (allow && !allow.has(op)) return;
+    const rObj = matched || { op, kind: op === 'TRA' ? 'tra' : op === 'THSR' ? 'thsr' : 'metro', sys: (typeof SYS_ZH !== 'undefined' && SYS_ZH[op]) || '', name: s.name, lat: s.lat, lon: s.lon, ids: [s.id], lines: [] };
+    add(s, 'rl', sysIcon(op), () => openRail(rObj), { railOp: op });
   });
+  busStops.slice(0, 50).forEach(s => add(s, 'bs', I.busFill, openOtpBusStop));
+  (data.bikes || []).slice(0, 30).forEach(b => add(b, 'bk', I.bike, bikeSheet));
 }
 function fetchOtpStopsInView() {
-  if (!MAP || typeof getSession !== 'function' || !getSession()) return;
+  if (!MAP) return;
+  if (typeof renderViewportRailPins === 'function') renderViewportRailPins();
+  if (typeof getSession !== 'function' || !getSession()) return;
   const b = MAP.getBounds();
   if (!b) return;
   const minLon = +b.getWest().toFixed(4), minLat = +b.getSouth().toFixed(4);
@@ -2499,20 +2620,65 @@ function fetchOtpStopsInView() {
     return;
   }
 
-  for (const t of missing) stopGridPending.add(t.key);
+  if (maxLat - minLat > 0.15 || maxLon - minLon > 0.15) {
+    const cachedStops = [], cachedBikes = [];
+    const seenC = new Set();
+    for (const t of needed) {
+      const c = stopGridCache.get(t.key);
+      if (!c) continue;
+      for (const s of (c.stops || [])) { if (!seenC.has(s.id)) { seenC.add(s.id); cachedStops.push(s); } }
+      for (const bk of (c.bikes || [])) { if (!seenC.has(bk.id)) { seenC.add(bk.id); cachedBikes.push(bk); } }
+    }
+    if (cachedStops.length || cachedBikes.length) applyOtpStops({ stops: cachedStops, bikes: cachedBikes });
+    return;
+  }
 
-  const qMinLat = +(Math.min(...missing.map(t => t.la)) * 0.01).toFixed(4);
-  const qMaxLat = +((Math.max(...missing.map(t => t.la)) + 1) * 0.01).toFixed(4);
-  const qMinLon = +(Math.min(...missing.map(t => t.lo)) * 0.01).toFixed(4);
-  const qMaxLon = +((Math.max(...missing.map(t => t.lo)) + 1) * 0.01).toFixed(4);
+  const toRad = d => d * Math.PI / 180;
+  const boxDiagM = (la1, lo1, la2, lo2) => {
+    const p1 = toRad(la1), p2 = toRad(la2), dp = p2 - p1, dl = toRad(lo2 - lo1);
+    const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    return 12742000 * Math.asin(Math.sqrt(Math.min(1, a)));
+  };
+
+  let qTiles = missing;
+  const qMinLat0 = +(Math.min(...missing.map(t => t.la)) * 0.01).toFixed(4);
+  const qMaxLat0 = +((Math.max(...missing.map(t => t.la)) + 1) * 0.01).toFixed(4);
+  const qMinLon0 = +(Math.min(...missing.map(t => t.lo)) * 0.01).toFixed(4);
+  const qMaxLon0 = +((Math.max(...missing.map(t => t.lo)) + 1) * 0.01).toFixed(4);
+  if (boxDiagM(qMinLat0, qMinLon0, qMaxLat0, qMaxLon0) > 5800) {
+    const cLat = (minLat + maxLat) / 2, cLon = (minLon + maxLon) / 2;
+    const sorted = missing.slice().sort((x, y) => {
+      const dx = ((x.la + 0.5) * 0.01 - cLat) ** 2 + ((x.lo + 0.5) * 0.01 - cLon) ** 2;
+      const dy = ((y.la + 0.5) * 0.01 - cLat) ** 2 + ((y.lo + 0.5) * 0.01 - cLon) ** 2;
+      return dx - dy;
+    });
+    qTiles = [];
+    let cMinLa = Infinity, cMaxLa = -Infinity, cMinLo = Infinity, cMaxLo = -Infinity;
+    for (const t of sorted) {
+      const nMinLa = Math.min(cMinLa, t.la), nMaxLa = Math.max(cMaxLa, t.la);
+      const nMinLo = Math.min(cMinLo, t.lo), nMaxLo = Math.max(cMaxLo, t.lo);
+      if (boxDiagM(nMinLa * 0.01, nMinLo * 0.01, (nMaxLa + 1) * 0.01, (nMaxLo + 1) * 0.01) <= 5500) {
+        qTiles.push(t);
+        cMinLa = nMinLa; cMaxLa = nMaxLa; cMinLo = nMinLo; cMaxLo = nMaxLo;
+      }
+    }
+    if (!qTiles.length) return;
+  }
+
+  for (const t of qTiles) stopGridPending.add(t.key);
+
+  const qMinLat = +(Math.min(...qTiles.map(t => t.la)) * 0.01).toFixed(4);
+  const qMaxLat = +((Math.max(...qTiles.map(t => t.la)) + 1) * 0.01).toFixed(4);
+  const qMinLon = +(Math.min(...qTiles.map(t => t.lo)) * 0.01).toFixed(4);
+  const qMaxLon = +((Math.max(...qTiles.map(t => t.lo)) + 1) * 0.01).toFixed(4);
 
   if (typeof authedGet === 'function') {
     return authedGet(`/otp/stops?bbox=${qMinLon},${qMinLat},${qMaxLon},${qMaxLat}`).then(j => {
-      for (const t of missing) stopGridPending.delete(t.key);
+      for (const t of qTiles) stopGridPending.delete(t.key);
       if (j && j.result === "success" && j.data) {
         const stops = j.data.stops || [], bikes = j.data.bikes || [];
         const curT = Date.now();
-        for (const t of missing) {
+        for (const t of qTiles) {
           const tileMinLat = +(t.la * 0.01).toFixed(4), tileMaxLat = +((t.la + 1) * 0.01).toFixed(4);
           const tileMinLon = +(t.lo * 0.01).toFixed(4), tileMaxLon = +((t.lo + 1) * 0.01).toFixed(4);
           const tileStops = stops.filter(s => s.lat >= tileMinLat && s.lat < tileMaxLat && s.lon >= tileMinLon && s.lon < tileMaxLon);
@@ -2531,14 +2697,15 @@ function fetchOtpStopsInView() {
       }
       return j;
     }).catch(e => {
-      for (const t of missing) stopGridPending.delete(t.key);
+      for (const t of qTiles) stopGridPending.delete(t.key);
       throw e;
     });
   }
 }
 function onMapMoveIdle() {
+  if (typeof renderViewportRailPins === 'function') renderViewportRailPins();
   clearTimeout(stopDebounceT);
-  stopDebounceT = setTimeout(() => { fetchOtpStopsInView(); }, 650);
+  stopDebounceT = setTimeout(() => { Promise.resolve(fetchOtpStopsInView()).catch(() => {}); }, 650);
 }
 
 function mountMap() {
@@ -2575,7 +2742,8 @@ function mountMap() {
       MAP.on('dragstart', () => { mapUserMoved = true; if (locfOn) LOCF.onDrag(); });
       MAP.on('load', () => {
         const m = mapEl.querySelector('.mapload'); if (m) m.remove();
-        fetchOtpStopsInView();
+        renderViewportRailPins();
+        Promise.resolve(fetchOtpStopsInView()).catch(() => {});
       });
       MAP.on('error', () => {});
     }
@@ -2583,6 +2751,8 @@ function mountMap() {
     COMPASS.syncMap();
     const D = S.data;
     if (D && D === mapKey) {
+      if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();
+      renderViewportRailPins();
       if (lastOtpStopsData) applyOtpStops(lastOtpStopsData);
       return;
     }
@@ -2592,22 +2762,26 @@ function mountMap() {
       const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg; el.setAttribute('aria-label', o.name + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side === '對向' ? ' 對面' : ''));
       el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
       mapMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP)); };
+    if (!meMark) { const el = document.createElement('div'); el.className = 'mdot';
+      el.innerHTML = '<svg class="mfan" viewBox="-100 -100 200 200" aria-hidden="true"><defs><radialGradient id="meHeadingFan" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100"><stop offset="0" stop-color="#4b8cff" stop-opacity=".65"/><stop offset="1" stop-color="#4b8cff" stop-opacity="0"/></radialGradient></defs><path d="M0 0 L-50 -86.603 A100 100 0 0 1 50 -86.603 Z" fill="url(#meHeadingFan)"/></svg>';
+      meMark = new maplibregl.Marker({ element: el }); }
     if (D) {
       (D.bikes || []).slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
       (D.busStops || []).slice(0, 40).forEach(s => add(s, 'bs', I.busFill, stopSheet));
       (D.rail || []).filter(r => r.lat != null).slice(0, 10).forEach(r => add(r, 'rl', sysIcon(r.op), openRail));
-      if (!meMark) { const el = document.createElement('div'); el.className = 'mdot';
-        el.innerHTML = '<svg class="mfan" viewBox="-100 -100 200 200" aria-hidden="true"><defs><radialGradient id="meHeadingFan" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100"><stop offset="0" stop-color="#4b8cff" stop-opacity=".65"/><stop offset="1" stop-color="#4b8cff" stop-opacity="0"/></radialGradient></defs><path d="M0 0 L-50 -86.603 A100 100 0 0 1 50 -86.603 Z" fill="url(#meHeadingFan)"/></svg>';
-        meMark = new maplibregl.Marker({ element: el }); }
       const g = GEO_LAST && Date.now() - GEO_LAST.t < 60000 ? GEO_LAST : D;
       if (g && g.lat != null) meMark.setLngLat([g.lon, g.lat]).addTo(MAP);
       walkRingsUpdate(D);
       if (locfOn) LOCF.sync(true);
       else if (!mapUserMoved) MAP.jumpTo({ center: [D.lon, D.lat], bearing:COMPASS.mapBearing() });
-      if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();
+    } else {
+      const g = GEO_LAST && Date.now() - GEO_LAST.t < 60000 ? GEO_LAST : null;
+      if (g && g.lat != null) meMark.setLngLat([g.lon, g.lat]).addTo(MAP);
     }
+    if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();
+    renderViewportRailPins();
     if (lastOtpStopsData) applyOtpStops(lastOtpStopsData);
-    setTimeout(fetchOtpStopsInView, 400);
+    setTimeout(() => { renderViewportRailPins(); Promise.resolve(fetchOtpStopsInView()).catch(() => {}); }, 400);
   }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
 /* ---------- 手機方向：感測事件只更新 CSS 與首頁地圖 bearing ---------- */
@@ -2970,6 +3144,8 @@ const OPEN_CENTER = (() => {
       if (meMark) { meMark.setLngLat([fixP.lon, fixP.lat]); if (!meMark._map) meMark.addTo(MAP); }
       MAP.jumpTo({ center: [fixP.lon, fixP.lat], padding: LOCF.pad(), bearing: COMPASS.mapBearing() });
       window.__openCenter = { lat: fixP.lat, lon: fixP.lon, t: Date.now() };
+      if (typeof renderViewportRailPins === 'function') renderViewportRailPins();
+      if (typeof fetchOtpStopsInView === 'function') Promise.resolve(fetchOtpStopsInView()).catch(() => {});
     } catch (e) { done = false; }
   }
   function start() {
@@ -3286,10 +3462,10 @@ function uniqRoutes(d) {
   return [...seen.values()];
 }
 function vFavs() {
-  const fb = S.favs.bus, fk = S.favs.bike;
-  if (!fb.length && !fk.length) {
-    return `<div class="empty"><div class="star">${I.star}</div><h3>收藏常搭的站牌和 YouBike</h3>
-      <p>在路線頁點站牌旁的星號，或在 YouBike 站點按「收藏」，出門前一眼看到還有幾分鐘、還有幾台車。</p></div>`;
+  const fb = S.favs.bus || [], fk = S.favs.bike || [], fr = S.favs.rail || [];
+  if (!fb.length && !fk.length && !fr.length) {
+    return `<div class="empty"><div class="star">${I.star}</div><h3>收藏常搭的站牌、YouBike 和車站</h3>
+      <p>在路線頁點站牌旁的星號，或在 YouBike／車站資訊頁按「收藏」，出門前一眼看到即時資訊。</p></div>`;
   }
   const live = S.data?.favs || { bus:{}, bike:{} };
   let h = '';
@@ -3308,6 +3484,13 @@ function vFavs() {
     h += `<button class="card" data-act="bikeSheet" data-i="${reg({ ...f, ...(b || {}), uid:f.uid, name:f.name, src:b?.src || null, fromFav:true })}">
       <span class="badge">${I.bike}</span>
       <span class="body"><div class="title">${esc(f.name)}</div><div class="desc">${d}</div></span><span class="chev">${I.chev}</span></button>`;
+  }
+  for (const f of fr) {
+    const badges = (f.lines || []).map(l => lineBadge(f.op, l)).join('');
+    h += `<button class="card" data-act="rail" data-i="${reg(f)}">
+      <span class="badge sysb">${sysIcon(f.op)}</span>
+      <span class="body"><div class="title">${esc(f.name)}</div><div class="desc fx-rsys" style="white-space:normal">${f.sys ? `<span class="sys" style="margin:0">${esc(f.sys)}</span>` : ''}${badges}</div></span>
+      <span class="chev">${I.chev}</span></button>`;
   }
   return h + bikeSrcNote(fk.map(f => live.bike?.[f.uid]));
 }
@@ -4808,12 +4991,14 @@ function stationFixedTopHtml(R, isTT) {
   const primaryLine = (R.lines && R.lines[0]) || '';
   const lineCol = (LINE_COLOR[R.op] || {})[primaryLine] || '#C6F135';
   const info = [R.sys, codes.join('・'), R.dist != null ? '距離 ' + distTxt(R.dist) : '', R.exit ? (/出口/.test(R.exit) ? R.exit : R.exit + ' 出口') : ''].filter(Boolean).map(esc).join('・');
+  const isFavR = isFavRail(R);
   return `<div class="rt2-fixed-top">
     <div class="rt2-top">
       <div class="rt2-bar">
         <button class="rt2-cir" data-act="closeRoute" aria-label="返回">${I.back}</button>
         <div class="rt2-title">${(R.lines || []).map(l => lineBadge(R.op, l)).join('')}${esc(R.name)}</div>
         <div class="rt2-acts">
+          <button class="rt2-cir ${isFavR ? 'on' : ''}" data-act="favRail" data-i="${reg(R)}" aria-label="${isFavR ? '取消收藏車站' : '收藏車站'}">${isFavR ? I.star : I.starO}</button>
           <button class="rt2-cir" data-act="nav" data-lat="${R.navLat ?? R.lat}" data-lon="${R.navLon ?? R.lon}" aria-label="導航到車站">${I.nav}</button>
           <button class="rt2-cir" data-act="shareRoute" aria-label="分享車站">${I.share}</button>
         </div>
@@ -4992,16 +5177,52 @@ const curTT = () => (S.page === 'bustt' || (S.page === 'route' && S.routeSubTab 
 // 跳到某個整點：只捲清單本身（.sttlist），不用 scrollIntoView，免得 iOS 連整頁一起捲
 const ttJump = (hh, smooth) => { const L = document.querySelector('#routePage .sttlist'), h = L && L.querySelector('#tth' + hh); if (h) L.scrollTo({ top: Math.max(0, h.offsetTop - 4), behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' }); };
 // v2.46.3：展開的車次方框被清單下緣（或蓋在上面的底部功能列／提醒列）擋住時，捲清單讓方框底部留 8px；已完整可見就不捲
-function ttShowDet() {
-  const L = document.querySelector('#routePage .sttlist'), d = L && L.querySelector('.ttdet'); if (!d) return;
-  const lr = L.getBoundingClientRect(); let lim = lr.bottom;
-  for (const b of [$('#tabbar'), $('#rbar')]) {   // 功能列在路線頁底下（z-index 較低）時不算；真的蓋在上面才以它的上緣為界
-    if (!b || b.hidden) continue; const r = b.getBoundingClientRect(); if (!r.height || r.top >= lim) continue;
-    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (hit && b.contains(hit)) lim = r.top;
+function ensureTtDetVisible(list) {
+  if (!list) return;
+  const d = list.querySelector('.ttdet'); if (!d) return;
+  const lr = list.getBoundingClientRect();
+  let visTop = lr.top + 6, visBot = lr.bottom;
+  const host = list.closest('#sheet') || list.closest('#routePage') || document;
+  for (const b of host.querySelectorAll('.fx-ttctl, .stctl, .stpin, .rt2-fixed-top, .ptop, .fx-tthd')) {
+    if (list.contains(b)) {
+      const pos = getComputedStyle(b).position;
+      if (pos !== 'sticky' && pos !== 'fixed') continue;
+    }
+    const br = b.getBoundingClientRect();
+    if (!br.height || br.bottom <= lr.top || br.top >= lr.bottom) continue;
+    if (br.top <= lr.top + 24) visTop = Math.max(visTop, br.bottom + 6);
   }
-  const dr = d.getBoundingClientRect(), over = dr.bottom - (lim - 8); if (over <= 0) return;
-  const s = L.querySelector('.ttm.sel'), room = (s ? s.getBoundingClientRect().top : dr.top) - lr.top - 4;   // 方框太高時，至少讓點的那班留在清單上緣
-  const dy = Math.min(over, Math.max(0, room)); if (dy > 0) L.scrollTo({ top: L.scrollTop + dy, behavior: reduceMotion() ? 'auto' : 'smooth' });
+  const sb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sab')) || 34;
+  if (list.closest('#sheet')) {
+    visBot = Math.min(visBot, innerHeight - sb) - 10;
+  } else {
+    for (const b of [$('#tabbar'), $('#rbar')]) {
+      if (!b || b.hidden) continue; const br = b.getBoundingClientRect();
+      if (!br.height || br.top >= visBot) continue;
+      const hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+      if (hit && b.contains(hit)) visBot = Math.min(visBot, br.top);
+    }
+    visBot -= 8;
+  }
+  const dr = d.getBoundingClientRect(), s = list.querySelector('.ttm.sel'), sr = s ? s.getBoundingClientRect() : null;
+  const topTarget = sr ? Math.min(sr.top, dr.top) : dr.top;
+  let dy = 0;
+  if (topTarget < visTop) {
+    dy = topTarget - visTop;
+  } else if (dr.bottom > visBot) {
+    const over = dr.bottom - visBot;
+    const anchorTop = sr ? sr.top : dr.top;
+    dy = Math.min(over, Math.max(0, anchorTop - visTop));
+  }
+  if (Math.abs(dy) >= 1) {
+    list.scrollTo({ top: Math.max(0, list.scrollTop + dy), behavior: reduceMotion() ? 'auto' : 'smooth' });
+  }
+}
+if (typeof window !== 'undefined') window.ensureTtDetVisible = ensureTtDetVisible;
+function ttShowDet() {
+  const run = () => ensureTtDetVisible(document.querySelector('#routePage .sttlist'));
+  run();
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
 }
 // v2.46.3 整點索引列：按住上下拖曳即時跳到手指所在的整點（像 Yahoo!乗換案内）；點一下照舊走 ttHr。綁在 #routePage 上（render 會重建清單）
 (() => {
@@ -5253,6 +5474,7 @@ function closeRoute(quiet) {
     S.stttCrowd = null; S.page = 'rail'; S.railSubTab = 'live'; S.line = null; S.lineFrom = null; renderRail(); $('#routePage').scrollTop = S.railScroll || 0; return;
   }
   if (S.page === 'planDetail' && S.plan) S.plan.thsrCrowd = null;
+  while (S.back && S.back.length && S.back[S.back.length - 1].page === S.page) S.back.pop();
   if (S.back && S.back.length) { stackPop(quiet); return; }   // 路線規劃的頁面堆疊：回到上一頁
   S.back = [];
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
@@ -5692,8 +5914,11 @@ function busTripSheet(key) {   // 停靠站一覽：這一班在各站的表定�
 }
 
 /* ---------- sheets ---------- */
-function openSheet(html) { const w = $('#sheetWrap'); $('#sheet').innerHTML = '<div class="grab"></div>' + html; w.hidden = false; requestAnimationFrame(() => w.classList.add('open')); }
-function closeSheet() { const w = $('#sheetWrap'), sh = $('#sheet'); w.classList.remove('open'); setTimeout(() => { w.hidden = true; S.sheet = null; if (sh) { sh.style.transform = ''; sh.style.transition = ''; } if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
+let sheetSeq = 0;
+function bumpSheetSeq() { return ++sheetSeq; }
+window.__bumpSheetSeq = bumpSheetSeq;
+function openSheet(html) { bumpSheetSeq(); const w = $('#sheetWrap'); $('#sheet').innerHTML = '<div class="grab"></div>' + html; w.hidden = false; requestAnimationFrame(() => w.classList.add('open')); }
+function closeSheet() { const seq = sheetSeq, w = $('#sheetWrap'), sh = $('#sheet'); w.classList.remove('open'); setTimeout(() => { if (seq !== sheetSeq) return; w.hidden = true; S.sheet = null; if (sh) { sh.style.transform = ''; sh.style.transition = ''; } if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
 function stopSheet(s, nwtDone) {
   S.sheet = { type:'stop', s };
   const rCount = (s.routes || []).filter(r => r.routeUID && !r.noRoutes).length;
@@ -5865,7 +6090,7 @@ function renderPage() {
   if (S.page === 'planDetail') mountPlanMap();
 }
 if (typeof window !== 'undefined') window.renderPage = renderPage;
-function stackPush(fn) { S.back = S.back || []; S.back.push({ page:S.page, scroll:$('#routePage').scrollTop }); pushAnim(fn); }
+function stackPush(fn) { S.back = S.back || []; const prevPage = S.page, prevRoute = S.route, entry = { page: prevPage, scroll: $('#routePage').scrollTop }; S.back.push(entry); pushAnim(fn); if (S.page === prevPage && S.route === prevRoute && S.back[S.back.length - 1] === entry) S.back.pop(); }
 function stackRestore(e) { S.page = e.page; S.rail = null; S.line = null; S.route = null; renderPage(); $('#routePage').scrollTop = e.scroll || 0; }
 function stackPop(quiet) {
   const e = S.back.pop(), pg = $('#routePage');
@@ -5884,6 +6109,12 @@ function stackPop(quiet) {
 }
 // 右滑返回時墊在底下的頁面
 function underPage() {
+  if (S.page === 'line' && S.fxLineFromCard) {
+    const p = S.fxLineReturn && S.fxLineReturn.prevPage;
+    if (p && PLAN_PAGES.includes(p)) { const keep = S.page; S.page = p; const html = pageHtml(p); S.page = keep; return { html, scroll: S.fxLineReturn.prevScroll || 0 }; }
+    if (S.back && S.back.length) { const e = S.back[S.back.length - 1], keep = S.page; S.page = e.page; const html = pageHtml(e.page); S.page = keep; return { html, scroll: e.scroll || 0, rp: e.rp }; }
+    return null;
+  }
   if ((S.page === 'line' || S.page === 'sttt' || (S.page === 'rail' && S.railSubTab === 'tt')) && S.rail) return railUnder();
   if ((S.page === 'bustt' || (S.page === 'route' && S.routeSubTab === 'tt')) && S.route) return railUnder();
   if (S.back && S.back.length) { const e = S.back[S.back.length - 1], keep = S.page; S.page = e.page; const html = pageHtml(e.page); S.page = keep; return { html, scroll: e.scroll || 0, rp: e.rp }; }
@@ -6076,12 +6307,20 @@ function segBar(r) {
 }
 // v2.60.6：OTP 的 YouBike 段：路線卡在路段列下面寫「借車站 借車 → 還車站 還車」（可借、可還數有給就附上）
 const ybRentNote = r => r.legs.filter(l => l.kind === 'bike' && l.rent && l.ret).map(l => `<div class="sub pnote ybrr"><span style="color:${SEG_BIKE}">YouBike</span> ${esc(l.rent)} 借車${l.bikes != null ? `（可借${l.bikes}）` : ''} → ${esc(l.ret)} 還車${l.docks != null ? `（可還${l.docks}）` : ''}</div>`).join('');
+function firstBoardTxt(l) {
+  if (!l) return '';
+  const m = MODE_ZH[l.mode] || '';
+  const tag = m ? `（${m}）` : '';
+  const name = l.from && l.from.name ? l.from.name : '';
+  const tm = l.from && l.from.time ? hmOf(Date.parse(l.from.time + '+08:00')) : '';
+  return `${name}${tag}${tm}上車`;
+}
 function planCard(r, i) {
   const tr = r.legs.filter(l => l.kind === 'transit'), walk = Math.round(r.legs.filter(l => l.kind === 'walk').reduce((a, l) => a + l.dur, 0) / 60);
   const first = tr[0];
   return `<button class="pr" data-act="planOpen" data-i="${reg({ i })}">
     <div class="pr-h"><span class="dur">${minTxt(r.dur)}</span><span class="tm">${hmOf(r.start)}–${hmOf(r.end)}</span></div>
-    <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(first.from.name || '')}${hmOf(Date.parse(first.from.time + '+08:00'))}上車</span>` : ''}</div>
+    <div class="pr-m"><span>${r.transfers ? `轉乘${r.transfers}次` : '不用轉乘'}</span>${walk > 0 ? `<span>步行${walk}分</span>` : ''}${first ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(firstBoardTxt(first))}</span>` : ''}</div>
     ${segBar(r)}${ybRentNote(r)}${r.altNote ? `<div class="sub pnote">${esc(r.altNote)}</div>` : ''}${r.busNote ? `<div class="sub pnote">${esc(r.busNote)}</div>` : ''}${r.tightNote ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.tightNote)}</div>` : ''}${r.connWarn ? `<div class="sub pnote" style="color:var(--warn)">${esc(r.connWarn)}</div>` : ''}${planSrcLine(r)}${r.note ? `<div class="sub pnote">${esc(r.note)}</div>` : ''}${r.ttNote ? `<div class="sub pnote">${esc(r.ttNote)}</div>` : ''}${r.missed ? `<div class="sub pnote">第一班車已開走，實際出發會再晚一些</div>` : ''}${r.shifted ? `<div class="sub pnote">${r.shifted === 'dep' ? 'TDX 給的班次比指定的出發時間早，已改成搭下一班（時間為估計）' : '原本的第一班已開走，已改成搭下一班（時間為估計）'}</div>` : ''}</button>`;
 }
 // 地址・地標結果的第二行：類型・縣市區（・大範圍提示），讓同名的結果分得出來
@@ -6382,6 +6621,7 @@ async function mapPickOk(btn) {
 /* 路線詳情：分段清單（上下車站、沿途停靠站、出入口）＋地圖＋即時到站 */
 function openPlanDetail(i) {
   const P = S.plan; P.sel = i; P.live = {}; P.open = {}; P.liveAt = 0; P.liveErr = null; P.thsrCrowd = null;
+  if (S.page === 'planDetail') { planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); return; }
   stackPush(() => { S.page = 'planDetail'; planMapKey = null; $('#routePage').scrollTop = 0; renderPage(); });
   planLoadLive();
   planLoadCarpos();
@@ -6980,8 +7220,8 @@ function xLeg(l, i, L, c, r, T, posInT) {
     <button class="xln" data-act="legOpen" data-i="${reg({ i })}">${ic}${title ? `<span class="nmx">${esc(title)}${lNote ? `<small class="rnote">${esc(lNote)}</small>` : ''}</span>` : ''}<span class="dr">${esc(dir)}</span>${open ? `<span class="chev">${I.chev}</span>` : ''}</button>
     <div class="xmt">${xChips(l, L, c)}</div>${xAlts(l)}
     <button class="lstp" data-act="legStops" data-v="${i}">${stops.length ? `搭${stops.length + 1}站・${m}分` : l.stopCount ? `搭${l.stopCount}站・${m}分` : `${m}分`}${stops.length ? `<span>${open2 ? '收合' : '沿途停靠站 ›'}</span>` : ''}</button>
-    ${xBoard(l, i, r, T, posInT)}
     ${open2 ? `<div class="istops">${stops.map(s => `<div><span>${s.time ? hmOf(Date.parse(s.time + '+08:00')) : ''}</span>${esc(s.name || '')}</div>`).join('')}</div>` : ''}
+    ${xBoard(l, i, r, T, posInT)}
     </div></div>`;
   for (const t of l.thru || []) h += `<div class="xsg th" style="--c:${c}"><div class="rl"><div class="sl"></div></div><div class="by">${I.thru}免轉乘 <b>${esc(t.name || '')}</b> ${xT(t.time)}<span class="xc g">同一班車，不用下車</span></div></div>`;
   return h;
@@ -7070,7 +7310,7 @@ function legOpen(i) {
   const rPlan = S.plan && S.plan.res && S.plan.res[S.plan.sel];
   const leg = rPlan && rPlan.legs && rPlan.legs[i];
   if (L && L.open) {
-    if (L.open.type === 'rail') stackPush(() => openRail(L.open.r));
+    if (L.open.type === 'rail') openRail(L.open.r);
     else stackPush(() => openRoute(L.open.r));
     return;
   }
@@ -7488,6 +7728,18 @@ document.addEventListener('click', e => {
       else S.favs.bike.push({ uid:o.uid, name:o.name });
       saveState(); bikeSheet(o); render(); refreshFavsSoon(); break;
     }
+    case 'favRail': {
+      const r = o || S.rail || (S.sheet && S.sheet.type === 'fxRail' ? S.sheet.r : null);
+      if (!r) break;
+      const k = railFavKey(r);
+      S.favs.rail = S.favs.rail || [];
+      if (isFavRail(r)) S.favs.rail = S.favs.rail.filter(x => railFavKey(x) !== k && !(x.op === r.op && x.name === r.name));
+      else S.favs.rail.push(toFavRail(r));
+      saveState();
+      if (S.sheet && S.sheet.type === 'fxRail' && window.fxRefreshRailSheet) window.fxRefreshRailSheet();
+      if (['rail', 'sttt'].includes(S.page)) renderRail();
+      render(); break;
+    }
     case 'saveProxy': saveProxy(); break;
     case 'openAdv': openAdv(); break;
     case 'railSys': {
@@ -7556,7 +7808,7 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
     if (swipeClosing || !pg.classList.contains('open') || e.touches.length !== 1) return;
     if (!$('#sheetWrap').hidden || e.target.closest('input,textarea,select,[data-noswipe]')) return;
     for (let el = e.target; el && el !== pg; el = el.parentElement) {
-      if ((S.page === 'plan' || S.page === 'route' || S.page === 'bustt' || S.page === 'rail' || S.page === 'sttt') && el.closest('.rp-body, .pl2-sheet, .pl2-sheet-in, .rt2-body')) continue;
+      if ((S.page === 'plan' || S.page === 'planDetail' || S.page === 'route' || S.page === 'bustt' || S.page === 'rail' || S.page === 'sttt') && el.closest('.rp-body, .pl2-sheet, .pl2-sheet-in, .rt2-body')) continue;
       if (el.scrollWidth > el.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(el).overflowX)) return;   // 水平捲動區交給捲動
     }
     const t = e.touches[0];
@@ -7635,7 +7887,9 @@ const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matche
       setTimeout(() => {
         try {
           for (const e of pe) e.style.transition = '';
-          const toRail = ((S.page === 'line' || S.page === 'sttt' || (S.page === 'rail' && S.railSubTab === 'tt')) && S.rail) || ((S.page === 'bustt' || (S.page === 'route' && S.routeSubTab === 'tt')) && S.route) || (S.back && S.back.length > 0);
+          const fromCardSheet = S.page === 'line' && S.fxLineFromCard;
+          const keepPlanUnder = fromCardSheet && S.fxLineReturn && S.fxLineReturn.prevPage && PLAN_PAGES.includes(S.fxLineReturn.prevPage);
+          const toRail = (!fromCardSheet && (((S.page === 'line' || S.page === 'sttt' || (S.page === 'rail' && S.railSubTab === 'tt')) && S.rail) || ((S.page === 'bustt' || (S.page === 'route' && S.routeSubTab === 'tt')) && S.route))) || keepPlanUnder || (S.back && S.back.length > 0);
           closeRoute(true);
           if (toRail) { pg.style.transition = 'none'; pg.style.transform = ''; pg.offsetWidth; pg.style.transition = ''; requestAnimationFrame(dropUnder); }
           else { pg.style.transition = ''; pg.style.transform = ''; dropUnder(); }
@@ -8229,9 +8483,14 @@ async function doLogout() {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth(); });
 async function startApp() {
-  if (appStarted) { render(); refresh(); stationLink(); return; }
+  if (appStarted) {
+    render(); refresh(); stationLink();
+    if (typeof MAP !== 'undefined' && MAP) { if (typeof renderViewportRailPins === 'function') renderViewportRailPins(); if (typeof fetchOtpStopsInView === 'function') Promise.resolve(fetchOtpStopsInView()).catch(() => {}); }
+    return;
+  }
   appStarted = true;
   render(); refresh(); renderRemBar(); pollRemind(); stationLink();
+  if (typeof MAP !== 'undefined' && MAP) { if (typeof renderViewportRailPins === 'function') renderViewportRailPins(); if (typeof fetchOtpStopsInView === 'function') Promise.resolve(fetchOtpStopsInView()).catch(() => {}); }
   setTimeout(gsyncAuto, 8000);
 }
 // v2.27：管理者每天（台北日期）第一次打開 app，背景用 TDX 訪客額度檢查時刻表；安靜執行，不擋畫面
@@ -8312,7 +8571,7 @@ async function boot() {
 
   if (!S.data) render();
   try { const st = await api('loadState'); if (st?.settings) Object.assign(S.settings, st.settings); for (const k of ['railFarTra','railFarThsr']) if (S.settings[k] == null) S.settings[k] = S.settings.railFar === 0 ? 0 : 1; S.settings.auto = 10;   // v2.29.0：舊的單一開關拆成台鐵、高鐵兩個
-  if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [] }; } catch (e) {}
+  if (st?.favs) S.favs = { bus:st.favs.bus || [], bike:st.favs.bike || [], rail:st.favs.rail || [] }; } catch (e) {}
   try { S.proxy = (await api('getProxy')) || {}; } catch (e) {}
   if (!DEMO) {
     S.auth = await api('session').catch(() => null);
@@ -9162,7 +9421,10 @@ async function demo(action, p) {
     const D = S.railData;
     const badges = (r.lines || []).map(l => lineBadge(r.op, l)).join('');
     let h = `<h2>${esc(r.name)}</h2><div class="addr fx-rsys">${r.sys ? `<span class="sys" style="margin:0">${esc(r.sys)}</span>` : ''}${badges}${r.dist != null ? `<span style="margin-left:6px">距離${distTxt(r.dist)}</span>` : ''}</div>`;
-    const btns = `<div class="btns" style="${r.lat != null ? '' : 'grid-template-columns:1fr'}">${r.lat != null ? `<button class="btn pri" data-act="nav" data-lat="${r.lat}" data-lon="${r.lon}">${I.nav}步行前往</button>` : ''}<button class="btn sec2" data-act="fxRailTT" data-i="${reg(r)}">${I.clock}完整時刻表</button></div>`;
+    const isFavR = typeof isFavRail === 'function' && isFavRail(r);
+    const favCls = r.lat != null ? 'btn sec2 fx-rfav fx-full' : 'btn sec2 fx-rfav';
+    const favBtn = `<button class="${favCls} ${isFavR ? 'on' : ''}" data-act="favRail" data-i="${reg(r)}">${isFavR ? I.star : I.starO}${isFavR ? '已收藏' : '收藏'}</button>`;
+    const btns = `<div class="btns fx-rbtns">${r.lat != null ? `<button class="btn pri" data-act="nav" data-lat="${r.lat}" data-lon="${r.lon}">${I.nav}步行前往</button>` : ''}<button class="btn sec2" data-act="fxRailTT" data-i="${reg(r)}">${I.clock}完整時刻表</button>${favBtn}</div>`;
     if (!D) {
       h += `<div class="nums" style="margin:14px 0 8px"><div class="num"><b class="c-off">…</b><span>讀取中</span></div><div class="num"><b class="c-off">…</b><span>讀取中</span></div></div>`;
       h += S.railError && !S.railLoading ? `<div class="note">${esc(S.railError)}</div>` : `<div class="rmeta" style="margin:4px 2px">讀取列車資訊中…</div>`;
@@ -9217,12 +9479,16 @@ async function demo(action, p) {
     loadRail();
   };
   const oRenderRail = renderRail;
+  function refreshRailSheet() {
+    if (S.sheet && S.sheet.type === 'fxRail' && S.sheet.r && !document.getElementById('sheetWrap').hidden && !S.fxCardTT) {
+      const sh = document.getElementById('sheet'), y = sh.scrollTop;
+      sh.innerHTML = '<div class="grab"></div>' + railHtmlSheet(S.sheet.r); sh.scrollTop = y;
+    }
+  }
+  window.fxRefreshRailSheet = refreshRailSheet;
   renderRail = function () {
     const r = oRenderRail.apply(this, arguments);
-    if (S.sheet && S.sheet.type === 'fxRail' && S.sheet.r === S.rail && !document.getElementById('sheetWrap').hidden) {
-      const sh = document.getElementById('sheet'), y = sh.scrollTop;
-      sh.innerHTML = '<div class="grab"></div>' + railHtmlSheet(S.rail); sh.scrollTop = y;
-    }
+    if (S.sheet && S.sheet.type === 'fxRail' && S.sheet.r === S.rail) refreshRailSheet();
     return r;
   };
   const restoreRail = () => {
@@ -9557,7 +9823,7 @@ async function demo(action, p) {
   // v2.60.3（第 4 條）：進下一頁前記下這一頁面板的狀態；返回時交給 rpSetup 還原，墊在底下的上一頁也照同樣的面板樣子畫
   const rpSnap = () => { const w = curWrap(); return w && w.dataset.rp ? { key: RP.key, kind: w.dataset.rp, level: RP.level, scroll: RP.scroll, h: RP.h, top: w.style.getPropertyValue('--rp-top') } : null; };
   const oPush = stackPush;
-  stackPush = function () { const r = rpSnap(), out = oPush.apply(this, arguments), e = S.back && S.back[S.back.length - 1]; if (e && r) e.rp = r; return out; };
+  stackPush = function () { const n0 = (S.back || []).length, r = rpSnap(), out = oPush.apply(this, arguments); if (S.back && S.back.length > n0 && r) S.back[S.back.length - 1].rp = r; return out; };
   const oRestore = stackRestore;
   stackRestore = function (e) { RP.back = (e && e.rp) || null; return oRestore.apply(this, arguments); };
   window.fxUnderDress = (under, rp) => {
@@ -9592,7 +9858,45 @@ async function demo(action, p) {
   }).observe(PG, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   const oCloseRoute = closeRoute;
   let closing = false;
+  function finishCardReturn(ret, quiet) {
+    S.fxLineFromCard = false; S.fxLineReturn = null;
+    S.rail = ret.rail; S.railData = ret.railData; S.railAt = ret.railAt || 0; S.railError = ret.railError || null; S.railCrowd = ret.railCrowd || null;
+    railPrev = { rail: null, data: null, at: 0, page: ret.prevPage || null };
+    S.line = null; S.lineFrom = null;
+    if (ret.prevPage && PLAN_PAGES.includes(ret.prevPage)) {
+      S.page = ret.prevPage;
+      PG.classList.add('open'); PG.setAttribute('aria-hidden', 'false');
+      renderPage(); PG.scrollTop = ret.prevScroll || 0;
+    } else {
+      if (!quiet && !RM()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);
+      S.page = null; PG.classList.remove('open'); PG.setAttribute('aria-hidden', 'true');
+      render();
+    }
+    if (ret.mode === 'cardTT') reopenCardTT(ret);
+    else reopenCardLive(ret);
+  }
   closeRoute = function (quiet) {
+    if (S.page === 'line' && S.fxLineFromCard && S.fxLineReturn) {
+      const ret = S.fxLineReturn;
+      if (quiet || RM()) { finishCardReturn(ret, quiet); return; }
+      let under = null;
+      if (ret.prevPage && PLAN_PAGES.includes(ret.prevPage)) {
+        const keep = S.page; S.page = ret.prevPage;
+        under = document.createElement('section'); under.className = 'page under'; under.innerHTML = pageHtml(ret.prevPage);
+        S.page = keep; PG.before(under); setPageScroll(under, ret.prevScroll || 0);
+        slideEls([under], -innerWidth * PARA, 0, NAV_MS);
+      } else {
+        slideEls(baseEls(), -innerWidth * PARA, 0, NAV_MS);
+      }
+      PG.classList.add('drag');
+      slideEls([PG], 0, innerWidth, NAV_MS, () => {
+        finishCardReturn(ret, true);
+        PG.classList.remove('drag');
+        PG.style.transition = 'none'; PG.style.transform = ''; PG.offsetWidth; PG.style.transition = '';
+        if (under) requestAnimationFrame(() => under.remove());
+      });
+      return;
+    }
     if (S.page === 'line' && S.fxLineFromCard) { S.fxLineFromCard = false; S.rail = null; S.railData = null; }
     const wrap = curWrap();
     const willClose = !quiet && !RM() && wrap && !closing && !(S.page === 'bustt' && S.route) && !(S.page === 'route' && S.routeSubTab === 'tt' && S.route) && !((S.page === 'line' || S.page === 'sttt' || (S.page === 'rail' && S.railSubTab === 'tt')) && S.rail) && !(S.back && S.back.length);
@@ -9647,12 +9951,7 @@ async function demo(action, p) {
       list.scrollTop = el ? Math.max(0, el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 6) : 0;
       if (T) T.keep = null;
     } else { const v = T && T.data && T.keep != null ? T.keep : cur; if (T && (T.data || T.err)) T.keep = null; list.scrollTop = v; }
-    if (showDet) { showDet = false; requestAnimationFrame(() => {   // v2.50.1：詳情卡要整張看得到（以螢幕可見底部為準，扣掉 home 列），但不把選到的那班捲出畫面
-      const d = list.querySelector('.ttdet'); if (!d) return;
-      const lr = list.getBoundingClientRect(), r = d.getBoundingClientRect(), sb = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sab')) || 34;
-      const vb = Math.min(lr.bottom, innerHeight - sb) - 12, over = r.bottom - vb, room = r.top - lr.top - 84;
-      if (over > 0) list.scrollBy({ top: Math.max(0, Math.min(over, room)), behavior: RM() ? 'auto' : 'smooth' });
-    }); }
+    if (showDet) { showDet = false; requestAnimationFrame(() => { if (window.ensureTtDetVisible) window.ensureTtDetVisible(list); }); }
     ttFit(list);
   }
   function slideKids(sh, dir) {
@@ -9689,6 +9988,37 @@ async function demo(action, p) {
     }
     slideKids(sh, -1);
   }
+  function reopenCardTT(ret) {
+    if (window.__bumpSheetSeq) window.__bumpSheetSeq();
+    const sh = sheetEl(), w = document.getElementById('sheetWrap');
+    S.rail = ret.rail; S.railData = ret.railData; S.railAt = ret.railAt || 0; S.railError = ret.railError || null; S.railCrowd = ret.railCrowd || null;
+    S.sttt = ret.sttt; S.stttCrowd = ret.stttCrowd || null;
+    S.fxCardTT = true; S.railSubTab = 'tt'; S.sheet = { type: 'fxRail', r: ret.rail };
+    sh.style.transition = ''; sh.style.transform = ''; sh.style.height = '';
+    sh.classList.add('fx-tall');
+    w.hidden = false;
+    renderCardTT();
+    const list = sh.querySelector('.fx-ttl');
+    if (list) list.scrollTop = ret.scrollTop || 0;
+    requestAnimationFrame(() => {
+      w.classList.add('open');
+      const L = sh.querySelector('.fx-ttl');
+      if (L) {
+        if (ret.scrollTop) L.scrollTop = ret.scrollTop;
+        const i = L.querySelector('.ttidx > div');
+        if (i) delete i.dataset.fitH;
+        ttFit(L);
+      }
+    });
+  }
+  function reopenCardLive(ret) {
+    if (window.__bumpSheetSeq) window.__bumpSheetSeq();
+    const sh = sheetEl();
+    S.rail = ret.rail; S.railData = ret.railData; S.railAt = ret.railAt || 0; S.railError = ret.railError || null; S.railCrowd = ret.railCrowd || null;
+    S.fxCardTT = false; S.railSubTab = 'live'; S.sheet = { type: 'fxRail', r: ret.rail };
+    sh.classList.remove('fx-tall'); sh.style.height = ''; sh.style.transform = ''; sh.style.transition = '';
+    openSheet(railHtmlSheet(ret.rail));
+  }
   const oRenderSttt = renderSttt;
   renderSttt = function (scroll) { if (S.fxCardTT && sheetOpen()) return renderCardTT(scroll); return oRenderSttt.apply(this, arguments); };
   const oSelTab = selectRailTab;
@@ -9721,6 +10051,12 @@ async function demo(action, p) {
     if (act === 'fxRailTT' && inSheet && S.sheet && S.sheet.type === 'fxRail') { e.stopPropagation(); openCardTT(S.rail); return; }
     if (act === 'fxTTBack') { e.stopPropagation(); backCardTT(); return; }
     if (inSheet && !S.fxCardTT && S.sheet && S.sheet.type === 'fxRail' && act === 'trainOpen') {   // v2.50.1：車站小卡點一班車
+      S.fxLineReturn = {
+        mode: 'cardLive',
+        prevPage: (S.page && S.page !== 'line') ? S.page : null,
+        prevScroll: PG.scrollTop || 0,
+        rail: S.rail, railData: S.railData, railAt: S.railAt, railError: S.railError, railCrowd: S.railCrowd,
+      };
       railPrev = undefined; S.fxLineFromCard = true;
       closeSheetQuiet();
       setTimeout(() => { if (S.page === 'line' && !PG.classList.contains('open')) { PG.classList.add('open'); PG.setAttribute('aria-hidden', 'false'); } }, 0);
@@ -9735,6 +10071,15 @@ async function demo(action, p) {
     }
     if (act === 'ttSel') showDet = true;
     if (act === 'tripOpen' || act === 'trainOpen' || act === 'stttTrain') {   // v2.50.1：「停靠站一覽」也要先關卡片，不然列車頁開在卡片後面
+      const ttlEl = sheetEl().querySelector('.fx-ttl');
+      S.fxLineReturn = {
+        mode: 'cardTT',
+        prevPage: (S.page && S.page !== 'line') ? S.page : null,
+        prevScroll: PG.scrollTop || 0,
+        rail: S.rail, railData: S.railData, railAt: S.railAt, railError: S.railError, railCrowd: S.railCrowd,
+        sttt: S.sttt, stttCrowd: S.stttCrowd,
+        scrollTop: ttlEl ? ttlEl.scrollTop : 0,
+      };
       railPrev = undefined; S.fxLineFromCard = true; S.fxCardTT = false;
       closeSheetQuiet();
       setTimeout(() => { if (S.page === 'line' && !PG.classList.contains('open')) { PG.classList.add('open'); PG.setAttribute('aria-hidden', 'false'); } }, 0);
