@@ -645,6 +645,16 @@ async function pdaStopEta(city, stopIds, ttl = 20000) {
   return { src: "pda-stop", list: results.flat() };
 }
 
+// v2.60.24：自建即時（micro-1 jisu-live，經 Worker /live/route，TDX 格式）。有資料就用；沒有（沒對照、資料太舊、整線未發車）回 null，呼叫端照原本各城市的查法
+async function jisuRouteEta(routeUID, ttl = 15000) {
+  if (!/^[A-Z]{3}[0-9A-Za-z-]{1,20}$/.test(routeUID || "")) return null;
+  try {
+    const j = await odMemoGet(`/live/route?route=${enc(routeUID)}`, ttl, 6000);
+    return j && Array.isArray(j.list) && j.list.length ? j : null;
+  } catch (e) {
+    return null;
+  }
+}
 async function pdaRouteEta(routeUID, ttl = 20000) {
   const p = (routeUID || "").slice(0, 3);
   if (p !== "TPE" && p !== "NWT") return null;
@@ -1259,6 +1269,8 @@ async function taoRouteEta(routeUID, ttl = 15000) {
   } catch (e) { return null; }
 }
 async function routeEtas(b) {   // 規劃結果用：同 TDX 路線預估到站的格式
+  const jl = await jisuRouteEta(b.routeUID);   // v2.60.24：先讀自建即時
+  if (jl) return jl.list;
   if (isThbR(b.routeUID)) {
     const k = routeKind(b.routeUID), sor = k ? await sorOf(k, b.route, b.routeUID).catch(() => []) : [];
     const official = await thbRouteEta(b.routeUID, b.dirNum === 1 ? 1 : 0, sor);
@@ -2965,6 +2977,8 @@ function pageAfter(path, j) {
 }
 async function routePageLive(routeUID, route, dirNum, sor, fresh = false) {
   const ttl = fresh ? 0 : 15000, pdaTtl = fresh ? 0 : 20000;
+  const jl = await jisuRouteEta(routeUID, ttl);   // v2.60.24：先讀自建即時
+  if (jl) return { ...jl, live: "ok" };
   if (isTpeR(routeUID) || isNwtR(routeUID)) {
     const pda = await pdaRouteEta(routeUID, pdaTtl);
     if (pda && Array.isArray(pda.list) && pda.list.length) return { ...pda, live: "ok" };
