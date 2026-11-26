@@ -242,13 +242,16 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
   const qStop = geoKey ? +geoKey.split(",")[2] : Math.min(r + 100, 1000);
   const gKey = geoKey || (`s|${(+lat).toFixed(3)},${(+lon).toFixed(3)},${qStop}`);
 
-  // v2.49.27: /od/stops、/od/thbstn、/od/eta 同時發出
-  const stopsP = cloudStops(gKey).catch(() => null);
-  const thbP = odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null);
-  const etaP = Promise.race([
+  // v2.60.25：附近有哪些站牌一律先問 OTP（/otp/stops?bus=1，含公路客運、不合併同名站）；OTP 讀不到才退回雲端站牌（/od/stops、/od/thbstn）
+  const otpP = otpNearStops(lat, lon, qStop, fresh);
+  const stopsP = otpP.then(o => o ? { cov: 1, d: o.d.filter(a => !/^THB/.test(a[0])), src: "otp" } : cloudStops(gKey)).catch(() => null);
+  const thbP = otpP.then(o => o ? { list: o.d.filter(a => /^THB/.test(a[0])).map(stopUnpack) } : odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000)).catch(() => null);
+  // v2.60.24：即時改先問自建 jisu-live（/live/stops）；/od/eta 只在自建沒涵蓋的台北、新北、公路客運站才呼叫
+  let etaPromise = null;
+  const etaP = () => etaPromise || (etaPromise = Promise.race([
     odGet(`/od/eta?lat=${lat}&lon=${lon}&r=${r}&nwt=1&thbx=1${fresh ? "&fresh=1" : ""}`),
     new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 11000))
-  ]).catch(() => null);
+  ]).catch(() => null));
 
   // v2.49.27 補充：站牌清單一回來立刻發出 Stage 1 站名卡片（不等 /od/eta）
   stopsP.then(async cs => {
@@ -265,7 +268,7 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     }
   }).catch(() => {});
 
-  const [cs, thbData, od] = await Promise.all([stopsP, thbP, etaP]);
+  const [cs, thbData] = await Promise.all([stopsP, thbP]);
   let covZero = false;
   let c = cs;
   if (cs && cs.cov === 0) {
@@ -290,12 +293,19 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     }
   }
 
-  const liveOk = !!(od && Array.isArray(od.list));
+  // v2.60.24：先問自建（最近的 120 站）；有資料的站不再用 /od/eta、/pda/stops
+  const nearIds = nearSt.map(s => s.StopUID).filter(Boolean).sort((a, b) => (stopDistMap.get(a) ?? 1e9) - (stopDistMap.get(b) ?? 1e9)).slice(0, 120);
+  const jl = nearIds.length ? await jisuStopsEta(nearIds, fresh ? 0 : 15000) : null;
+  const jisuBy = new Map(), jisuStops = new Set();
+  for (const e of (jl && jl.list) || []) { if (!e || !e.RouteUID || !e.StopUID) continue; jisuBy.set(e.RouteUID + "|" + e.StopUID, e); jisuStops.add(e.StopUID); }
+  const needOd = nearSt.some(s => /^(TPE|NWT|THB)/.test(s.StopUID || "") && !jisuStops.has(s.StopUID));
+  const od = needOd ? await etaP() : null;
+  const liveOk = !!(od && Array.isArray(od.list)) || jisuStops.size > 0;
   const okNwt = !!(od && od.nwtOk);
   const okThb = !!(od && (od.thbOk || !(od.thbN > 0)));
   const isCovered = uid => isTpeR(uid) || (okNwt && isNwtR(uid)) || (okThb && isThbR(uid));
   const rawOdRows = (od && Array.isArray(od.list))
-    ? od.list.filter(e => isCovered(e.RouteUID)).map(e => ({ ...e, src: e.src || od.src || "od-eta" }))
+    ? od.list.filter(e => isCovered(e.RouteUID) && !jisuStops.has(e.StopUID)).map(e => ({ ...e, src: e.src || od.src || "od-eta" }))
     : [];
 
   const coveredStopUIDs = new Set(rawOdRows.map(e => e.StopUID).filter(Boolean));
@@ -403,7 +413,31 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     }
   }
 
-  const allRows = [...rawOdRows, ...noLiveRows];
+  // v2.60.24：自建有這條路線在這站的資料 → 填上預估、狀態、車牌、下一班（路線名稱與方向沿用雲端時刻表）
+  for (const r of noLiveRows) {
+    if (!r.RouteUID) continue;
+    const e = jisuBy.get(r.RouteUID + "|" + r.StopUID);
+    if (!e) continue;
+    r.EstimateTime = typeof e.EstimateTime === "number" ? e.EstimateTime : null;
+    r.StopStatus = e.StopStatus;
+    if (e.PlateNumb) r.PlateNumb = e.PlateNumb;
+    if (e.NextBusTime) r.NextBusTime = e.NextBusTime;
+    r.src = "jisu-live";
+    delete r.noLive;
+  }
+  // 雲端時刻表沒列到、但自建有的路線：用自建帶的路線名稱與方向（GTFS 站序）補一列；該站原本「沒有路線」的空白列拿掉
+  const usedJ = new Set(noLiveRows.filter(r => r.src === "jisu-live").map(r => r.RouteUID + "|" + r.StopUID));
+  const stopNm = new Map(nearSt.map(s => [s.StopUID, (s.StopName && s.StopName.Zh_tw) || ""]));
+  const extraJ = [];
+  for (const [k, e] of jisuBy) {
+    if (usedJ.has(k)) continue;
+    extraJ.push({ RouteUID: e.RouteUID, RouteName: e.RouteName || { Zh_tw: "" }, Direction: e.Direction === 1 ? 1 : 0, StopUID: e.StopUID, StopName: { Zh_tw: stopNm.get(e.StopUID) || "" },
+      EstimateTime: typeof e.EstimateTime === "number" ? e.EstimateTime : null, StopStatus: e.StopStatus, ...(e.PlateNumb ? { PlateNumb: e.PlateNumb } : {}), ...(e.NextBusTime ? { NextBusTime: e.NextBusTime } : {}), src: "jisu-live" });
+  }
+  const extraStops = new Set(extraJ.map(r => r.StopUID));
+  const keptNoLive = noLiveRows.filter(r => !(r.noRoutes && extraStops.has(r.StopUID)));
+  noLiveRows.length = 0; noLiveRows.push(...keptNoLive);
+  const allRows = [...rawOdRows, ...noLiveRows, ...extraJ];
   allRows.sort((a, b) => (stopDistMap.get(a.StopUID) ?? Infinity) - (stopDistMap.get(b.StopUID) ?? Infinity));
 
   allRows.liveOk = liveOk;
@@ -413,7 +447,7 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     allRows.noLiveWhy = (!nearSt.length && !allRows.length)
       ? "雲端站牌清單和即時資料都讀不到，請稍後下拉更新"
       : "雲端即時資料讀不到";
-  } else if (noLiveRows.length) {
+  } else if (noLiveRows.some(r => r.noLive)) {
     allRows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
   } else {
     allRows.noLiveWhy = null;
@@ -438,6 +472,7 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
   // 優先保留沒有路線（noRoutes）的站牌與所有缺即時站牌，依站點去重配對 /pda/stops，避免單一站多條線佔滿上限
   const orderedForPda = allRows.filter(r => r.noRoutes).concat(allRows.filter(r => !r.noRoutes));
   for (const r of orderedForPda) {
+    if (r.src === "jisu-live") continue;   // v2.60.24：已有自建資料
     const pfx = (r.StopUID || "").slice(0, 3);
     let city = null, id = "", key = null;
     if (pfx === "TPE" || pfx === "NWT") {
@@ -567,7 +602,7 @@ async function busNearEta(lat, lon, r, profile, tdxUrl, geoKey, fresh, opt = {})
     allRows.noLiveWhy = (!nearSt.length && !allRows.length)
       ? "雲端站牌清單和即時資料都讀不到，請稍後下拉更新"
       : "雲端即時資料讀不到";
-  } else if (noLiveRows.length) {
+  } else if (noLiveRows.some(r => r.noLive)) {
     allRows.noLiveWhy = "這一區沒有免 TDX 的即時資料";
   } else {
     allRows.noLiveWhy = null;
@@ -650,6 +685,27 @@ async function jisuRouteEta(routeUID, ttl = 15000) {
   if (!/^[A-Z]{3}[0-9A-Za-z-]{1,20}$/.test(routeUID || "")) return null;
   try {
     const j = await odMemoGet(`/live/route?route=${enc(routeUID)}`, ttl, 6000);
+    return j && Array.isArray(j.list) && j.list.length ? j : null;
+  } catch (e) {
+    return null;
+  }
+}
+const otpNearMemo = new Map();
+async function otpNearStops(lat, lon, r, fresh) {   // v2.60.25：OTP 公車站牌（站牌清單 10 分鐘內重用；讀不到回 null）
+  const key = `${(+lat).toFixed(4)},${(+lon).toFixed(4)},${r}`, h = otpNearMemo.get(key);
+  if (!fresh && h && Date.now() - h.t < 600000) return h.v;
+  try {
+    const j = await authedGet(`/otp/stops?bus=1&lat=${lat}&lon=${lon}&radius=${Math.max(200, Math.min(1200, +r || 500))}`, 8000);
+    if (!j || j.result !== "success" || !Array.isArray(j.d)) return null;
+    const v = { d: j.d }; otpNearMemo.set(key, { t: Date.now(), v }); if (otpNearMemo.size > 50) otpNearMemo.delete(otpNearMemo.keys().next().value);
+    return v;
+  } catch (e) {
+    return null;
+  }
+}
+async function jisuStopsEta(ids, ttl = 15000) {   // v2.60.24：附近站牌的自建即時（Worker /live/stops，TDX 格式）
+  try {
+    const j = await odMemoGet(`/live/stops?ids=${enc(ids.join(","))}`, ttl, 6000);
     return j && Array.isArray(j.list) && j.list.length ? j : null;
   } catch (e) {
     return null;
@@ -1622,7 +1678,7 @@ async function refreshNwtRoutes(routes, opt = {}) {
 
 async function fillOfficialEta(rows, opt = {}) {
   if (!rows || !Array.isArray(rows) || !rows.length) return rows;
-  const noLiveRows = rows.filter(r => r && (r.noLive || (r.EstimateTime == null && r.sec == null)) && uidOf(r));
+  const noLiveRows = rows.filter(r => r && r.src !== "jisu-live" && (r.noLive || (r.EstimateTime == null && r.sec == null)) && uidOf(r));   // v2.60.24：自建已給狀態（末班、未營運等）的列不再逐條查官方
   if (!noLiveRows.length) return rows;
   await refreshNwtRoutes(noLiveRows, {
     max: NEAR_OFFICIAL_MAX,
@@ -2526,10 +2582,11 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
   const etaP = doBus ? busNearEta(lat, lon, qBus, "main", `${BASE}/advanced/v2/Bus/EstimatedTimeOfArrival/NearBy${nearbyQ(lat, lon, qBus)}&%24top=600&%24format=JSON`, `s|${lat},${lon},${qStop}`, fresh, { auto: !!auto, onStopsEarly: handleStopsEarly, onEarlyRows: handleEarlyBus }) : SKIP;
   const isThbStop = s => /^THB/.test((s && s.StopUID) || "");
   const busP = !doBus ? SKIP : (async () => {
+    const otpS = await otpNearStops(lat, lon, qStop, fresh);   // v2.60.25：站牌清單一律先用 OTP（和 busNearEta 同一份，10 分鐘內重用）
     const [eta, cs, thb] = await Promise.all([
       etaP,
-      cloudStops(`s|${lat},${lon},${qStop}`).catch(() => null),
-      odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
+      otpS ? { cov: 1, d: otpS.d.filter(a => !/^THB/.test(a[0])), src: "otp" } : cloudStops(`s|${lat},${lon},${qStop}`).catch(() => null),
+      otpS ? { list: otpS.d.filter(a => /^THB/.test(a[0])).map(stopUnpack) } : odMemoGet(`/od/thbstn?lat=${lat}&lon=${lon}&r=${qStop}`, fresh ? 0 : 6 * 3600000).catch(() => null)
     ]);
     let city = cs && Array.isArray(cs.d) ? cs.d.map(stopUnpack).filter(s => s.StopPosition && !isThbStop(s)) : [];
     if (!city.length) {
@@ -2539,7 +2596,7 @@ async function nearby({ settings = {}, favs = { bus: [], bike: [] }, only = null
         eta.noLiveWhy = "雲端還沒有這一區的站牌清單，暫無免 TDX 的站牌與到站資料";
       }
     }
-    if (cs && (cs.cov === 1 || cs.src === "od")) {
+    if (cs && cs.src !== "otp" && (cs.cov === 1 || cs.src === "od")) {   // OTP 清單不回報雲端站牌缺漏
       const have = new Set(city.map(s => s.StopUID)), miss = new Map();
       for (const e of eta || []) if (e.StopUID && !isThbStop(e) && !have.has(e.StopUID)) miss.set(e.StopUID, [e.RouteUID || "", e.StopUID, (e.StopName && e.StopName.Zh_tw) || ""]);
       if (miss.size) {
