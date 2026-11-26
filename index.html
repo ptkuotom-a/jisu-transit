@@ -2229,7 +2229,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.20';   // 要跟 sw.js 的 VERSION（jisu-v2.60.20）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.23';   // 要跟 sw.js 的 VERSION（jisu-v2.60.20）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -4922,6 +4922,7 @@ async function loadRail(auto) {
         if (tok === S.railTok && S.rail === want && S.railData === r) {
           S.railData = up; S.railError = null; S.railAt = Date.now();
           if (S.page === 'rail') renderRail();
+          else if (fxRailSheetOpen() && typeof window.fxRefreshRailSheet === 'function') window.fxRefreshRailSheet();   // v2.60.23：車站卡片（底部彈出）也要重畫，不然一直停在「正在讀取官網誤點…」
         }
       }).catch(() => {});
     }
@@ -8390,7 +8391,10 @@ $('#qClear').addEventListener('click', e => { e.preventDefault(); S.q = ''; $('#
 // ③ 下拉更新（每一個即時資料頁）、首頁的「重新整理」按鈕：隨時手動更新
 const AWAY_MS = 2 * 60 * 1000, DWELL_MS = 2000;
 var hiddenAt = 0, navKey = null, dwellT = 0, sessStart = Date.now(), seenPages = new Set();
+// v2.60.23：車站卡片（fxRail 底部彈出，不在完整時刻表畫面）開著時，也當成車站即時頁，納入每 10 秒自動更新
+function fxRailSheetOpen() { return !$('#sheetWrap').hidden && !!(S.sheet && S.sheet.type === 'fxRail' && S.rail && S.sheet.r === S.rail && !S.fxCardTT); }
 function liveKey() {   // 目前畫面是哪一個即時資料頁（null＝不是）
+  if (fxRailSheetOpen()) return 'rail:' + S.rail.op + (S.rail.ids || []).join(',');
   if (!$('#sheetWrap').hidden) return null;
   if (!S.page) return S.tab === 'settings' ? null : 'home';   // 首頁、公車、YouBike、車站四個分頁共用同一份附近資料
   if (S.page === 'rail' && S.rail) return 'rail:' + S.rail.op + (S.rail.ids || []).join(',');
@@ -8399,6 +8403,7 @@ function liveKey() {   // 目前畫面是哪一個即時資料頁（null＝不�
   return null;
 }
 function liveState() {   // { at: 資料時間, busy: 載入中, has: 有資料, run: 更新函式 }
+  if (fxRailSheetOpen()) return { at: S.railAt || 0, busy: S.railLoading, has: !!S.railData, run: loadRail };
   if (!S.page) return { at: tabAt(), busy: S.loading, has: !!S.data, run: () => refreshTab(true) };
   if (S.page === 'rail') return { at: S.railAt || 0, busy: S.railLoading, has: !!S.railData, run: loadRail };
   if (S.page === 'route') return { at: S.routeAt || 0, busy: S.routeLoading, has: !!S.routeData, run: () => loadRoute(false) };
@@ -8410,7 +8415,8 @@ function armDwell() {   // 剛進到某一頁時呼叫
   const k = liveKey(); if (!k) return;
   const L = liveState(); if (!L) return;
   if (k.startsWith('rail:') || k.startsWith('route:')) {
-    if (!L.busy) { seenPages.add(k); L.run(); }
+    if (!L.busy && !(L.has && L.at && Date.now() - L.at < 3000)) { seenPages.add(k); L.run(); }   // v2.60.23：打開時剛載入過（3 秒內）就不重抓，避免一進來送兩次
+    else seenPages.add(k);
     return;
   }
   if (L.busy) { seenPages.add(k); return; }                    // 打開時已經在載入了，這就是這一頁的那一次
@@ -8428,6 +8434,7 @@ function armDwell() {   // 剛進到某一頁時呼叫
 // document.hidden 時停；上一輪還在載入就跳過；第一次載入與下拉更新照舊（可用 TDX 備援）。
 var autoLast = { k: null, t: 0 };
 function autoRun() {
+  if (fxRailSheetOpen()) return loadRail(true);
   if (!S.page) return refresh(S.data && !S.error ? TAB_PART[S.tab] || null : null, false, true);
   if (S.page === 'rail') return loadRail(true);
   if (S.page === 'route') return loadRoute(false, true);
