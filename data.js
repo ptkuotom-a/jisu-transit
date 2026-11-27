@@ -1431,6 +1431,21 @@ async function fetchOfficialRoute(routeUID, name, items = [], sor = null, fresh 
   } else if (isTaoR(routeUID)) {
     res = await taoRouteEta(routeUID, ttl);
     if (res) res.src = res.src || "tyebus";
+  } else if (isTnnR(routeUID)) {
+    res = await jisuRouteEta(routeUID, ttl);
+    if (res && Array.isArray(res.list) && res.list.length) {
+      res.src = res.src || "jisu-live";
+    } else {
+      if (!sor) {
+        sor = sorMem.get("uid|" + routeUID);
+        if (!sor) {
+          const k = routeKind(routeUID), c = k && await IDB.get(`sor|${k.path}|${name}`).catch(() => null);
+          sor = c && c.d;
+        }
+      }
+      res = await tnbusRouteEta(routeUID, name, sor, ttl);
+      if (res) res.src = res.src || "tnbus";
+    }
   } else {
     if (!sor) {
       sor = sorMem.get("uid|" + routeUID);
@@ -1459,9 +1474,6 @@ async function fetchOfficialRoute(routeUID, name, items = [], sor = null, fresh 
     } else if (isTxgR(routeUID)) {
       res = await tcgoRouteEta(routeUID, name, sor, ttl);
       if (res) res.src = res.src || "tcgo";
-    } else if (isTnnR(routeUID)) {
-      res = await tnbusRouteEta(routeUID, name, sor, ttl);
-      if (res) res.src = res.src || "tnbus";
     } else if (isKhhR(routeUID)) {
       res = await twhRouteEta(routeUID, name, sor, ttl);
       if (res) res.src = res.src || "twh";
