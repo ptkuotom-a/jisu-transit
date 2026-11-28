@@ -278,6 +278,9 @@ body[data-tab="bus"] .mpin.bk, body[data-tab="bus"] .mpin.rl, body[data-tab="bik
 .rmap-me { width: 16px; height: 16px; border-radius: 50%; background: #4b8cff; border: 3px solid #fff; box-shadow: 0 0 0 7px rgba(75,140,255,.22); pointer-events: none; }
 .rmap-st { width: 22px; height: 22px; border-radius: 50%; border: 3px solid #111; box-shadow: 0 0 0 4px rgba(255,255,255,.18); pointer-events: none; }
 .mpin.bs{background:#3d8bff;color:#fff}.mpin.bk{background:#ffb400;color:#111;width:26px;height:26px}.mpin.rl{z-index:2}.mpin.rl{background:var(--lime);color:#111}
+.mpin-cluster{min-width:30px;height:24px;padding:0 8px;border-radius:999px;font:700 12px/24px system-ui,-apple-system,sans-serif;box-shadow:0 2px 6px rgba(0,0,0,.35);border:1.5px solid rgba(255,255,255,.85)}
+.mpin.bs.mpin-cluster{width:auto;height:24px;background:#2f78e8;color:#fff}
+.mpin.bk.mpin-cluster{width:auto;height:24px;background:#f5a600;color:#111}
 .mdot{width:20px;height:20px;border-radius:50%;background:#4ea1ff;border:3px solid #fff;box-shadow:0 0 0 6px rgba(78,161,255,.25)}
 .mdot .mfan{display:var(--compass-arrows,none);position:absolute;left:50%;top:50%;width:180px;height:180px;margin:-90px;z-index:-1;pointer-events:none;transform:rotate(var(--compass-fan,0deg));transform-origin:center}
 .mapcard .maplibregl-ctrl-attrib{background:rgba(0,0,0,.55)!important;color:#aaa;font-size:10px}.mapcard .maplibregl-ctrl-attrib a{color:#ccc}.mapcard .maplibregl-ctrl-attrib-button{filter:invert(1)}
@@ -1792,7 +1795,7 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 
 /* 2. 底部抽屜：彈出時帶一點回彈（下方用同色陰影補住回彈露出的縫） */
 .sheet{box-shadow:0 60px 0 #161817}
-.sheet-wrap.open .sheet{transition:transform .58s cubic-bezier(.2,1.12,.35,1)}
+.sheet-wrap.open .sheet{transition:transform .42s cubic-bezier(.22,1,.36,1)}
 
 /* 3. 提示訊息：從上方彈入，底部細條倒數 */
 .toast{transform:translate(-50%,-140%) scale(.86);overflow:hidden;
@@ -1944,7 +1947,7 @@ body[data-bar-exp="1"] .bar-grab-btn i,
 .bf button.box{width:100%;cursor:pointer;font:inherit}
 
 /* 搜尋區塊 */
-.fx-ss{z-index:45}
+.fx-ss{z-index:45}.fx-ss.ss-behind{z-index:25!important;pointer-events:none}
 .fx-ss .sheet{height:min(88%, calc(100% - env(safe-area-inset-top,0px) - 16px));max-height:none;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
 .fx-ss .sheet.drag{transition:none}
 .fx-ss .grab{flex:none;cursor:grab;touch-action:none}
@@ -2185,6 +2188,15 @@ body[data-tab="settings"] #fixedUpd{display:none}
 .mon-st{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:700;white-space:nowrap}
 .mon-st i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
 .mon-ok{color:#C6F135}.mon-slow{color:#FFB03A}.mon-bad{color:#FF5B4F}.mon-done{color:#8E918D}
+.mon-sys{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:0 0 12px}
+.mon-card{background:var(--card,#1b1f27);border:1px solid var(--line,rgba(255,255,255,.1));border-radius:14px;padding:12px 14px;font-size:12.5px;line-height:1.45}
+.mon-card-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:700;font-size:13px;margin-bottom:6px}
+.mon-grid{display:grid;grid-template-columns:1fr;gap:4px}
+.mon-kv{display:flex;justify-content:space-between;gap:10px;color:var(--muted,#9aa1ab)}
+.mon-kv b,.mon-kv span:last-child{color:var(--fg,#f2f5f7);font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.mon-sub{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line,rgba(255,255,255,.1));font-size:11.5px;color:var(--muted,#9aa1ab)}
+.mon-vps-row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.06);font-variant-numeric:tabular-nums}
+.mon-vps-row:last-child{border-bottom:none}
 
 </style>
 </head>
@@ -2242,7 +2254,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.27';   // 要跟 sw.js 的 VERSION（jisu-v2.60.27）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.31';   // 要跟 sw.js 的 VERSION（jisu-v2.60.31）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2406,6 +2418,7 @@ function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕�
 const TAB_ORDER = ['home','bus','bike','rail'];
 function setTab(k) {   // v2.37.0：已在頂端就不 scrollTo（iOS 會讓上方標題跳一下）；有捲動才在換完內容後回頂端
   if (typeof monStop === 'function') monStop();
+  if (S.tab !== k && typeof window.fxSearchClose === 'function') window.fxSearchClose('tab');
   if (S.tab && S.tab !== k && S.tab !== 'settings') S.prevTab = S.tab;
   S.tab = k;
   const sc = document.scrollingElement || document.documentElement, y = sc.scrollTop || window.scrollY || 0;
@@ -2512,8 +2525,42 @@ let stopGridCache = new Map();
 let stopGridPending = new Set();
 let stopDebounceT = 0;
 let lastOtpStopsData = null;
-let vpRailMarks = [], otpMarks = [], cachedPinMarks = [];
+let vpRailMarks = [], otpMarks = [], cachedPinMarks = [], vpBusBikeMarks = [];
 let LOCAL_RAIL_CACHE = { raw: null, list: [] };
+const vpCityMemWeb = new Map(), vpCityPendingWeb = new Set();
+const VP_CITY_BOX = {
+  Taipei: [24.96, 121.45, 25.21, 121.67], NewTaipei: [24.67, 121.28, 25.30, 122.01],
+  Taoyuan: [24.58, 120.98, 25.13, 121.48], Taichung: [23.99, 120.46, 24.45, 121.49],
+  Tainan: [22.88, 120.02, 23.42, 120.66], Kaohsiung: [22.47, 120.17, 23.48, 121.05],
+  Keelung: [25.06, 121.66, 25.19, 121.81], Hsinchu: [24.71, 120.90, 24.86, 121.03],
+  HsinchuCounty: [24.42, 120.91, 24.95, 121.42], MiaoliCounty: [24.28, 120.62, 24.74, 121.26],
+  ChanghuaCounty: [23.78, 120.25, 24.20, 120.68], NantouCounty: [23.43, 120.61, 24.25, 121.35],
+  YunlinCounty: [23.50, 120.12, 23.84, 120.74], Chiayi: [23.44, 120.40, 23.52, 120.50],
+  ChiayiCounty: [23.22, 120.12, 23.63, 120.96], PingtungCounty: [21.89, 120.34, 22.89, 120.90],
+  YilanCounty: [24.30, 121.32, 24.99, 122.01], HualienCounty: [23.10, 120.98, 24.37, 121.77],
+  TaitungCounty: [22.00, 120.74, 23.45, 121.62], PenghuCounty: [23.18, 119.31, 23.78, 119.73],
+  KinmenCounty: [24.36, 118.21, 24.53, 118.49], LienchiangCounty: [25.94, 119.90, 26.39, 120.52],
+};
+function vpCitiesForBounds(minLat, minLon, maxLat, maxLon) {
+  const cLat = (minLat + maxLat) / 2, cLon = (minLon + maxLon) / 2;
+  const hits = [];
+  for (const [city, [a, b, c, d]] of Object.entries(VP_CITY_BOX)) {
+    if (maxLat < a || minLat > c || maxLon < b || minLon > d) continue;
+    const midLat = (a + c) / 2, midLon = (b + d) / 2;
+    const inside = cLat >= a && cLat <= c && cLon >= b && cLon <= d ? 0 : 1;
+    hits.push({ city, score: inside * 1e6 + ((midLat - cLat) ** 2 + (midLon - cLon) ** 2) });
+  }
+  return hits.sort((x, y) => x.score - y.score).slice(0, 4).map(x => x.city);
+}
+function stopKeyOf(s) {
+  if (!s) return '';
+  const uid = s.stopUID || s.id || s.sid || '';
+  if (uid) return String(uid).replace(/^TW[:_]/i, '');
+  const lat = s.lat != null ? (+s.lat).toFixed(4) : '';
+  const lon = s.lon != null ? (+s.lon).toFixed(4) : '';
+  return `${s.name || ''}|${s.side || ''}|${lat},${lon}`;
+}
+window.stopKeyOf = stopKeyOf;
 const PIN_CACHE_KEY = 'jisu_pin_cache_v1';
 const PIN_CACHE_TTL = 24 * 3600 * 1000;
 const cleanHao = s => typeof s === 'string' ? s.replace(/號{2,}/g, '號') : s;
@@ -2565,46 +2612,7 @@ function savePinCache(lat, lon, busStops, bikes) {
   } catch (e) {}
 }
 function renderCachedViewportPins() {
-  if (!MAP || !window.maplibregl) return;
-  cachedPinMarks.forEach(m => m.remove());
-  cachedPinMarks = [];
-  const b = MAP.getBounds();
-  if (!b) return;
-  let bag = {};
-  try { bag = JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || '{}') || {}; } catch (e) { return; }
-  const now = Date.now();
-  const minLon = b.getWest() - 0.002, maxLon = b.getEast() + 0.002;
-  const minLat = b.getSouth() - 0.002, maxLat = b.getNorth() + 0.002;
-  const nearExist = (lat, lon) => [mapMarks, otpMarks, cachedPinMarks].some(arr => arr.some(m => {
-    const ll = m.getLngLat();
-    return Math.abs(ll.lat - lat) < 0.0001 && Math.abs(ll.lng - lon) < 0.0001;
-  }));
-  const add = (o, cls, svg, fn) => {
-    if (!o || o.lat == null || o.lon == null) return;
-    if (o.lat < minLat || o.lat > maxLat || o.lon < minLon || o.lon > maxLon) return;
-    if (nearExist(o.lat, o.lon)) return;
-    const el = document.createElement('button');
-    el.className = 'mpin ' + cls;
-    el.dataset.cachedPin = '1';
-    el.innerHTML = svg;
-    el.setAttribute('aria-label', (o.name || '') + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side === '對向' ? ' 對面' : ''));
-    el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
-    cachedPinMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP));
-  };
-  for (let la = Math.floor(minLat * 100); la <= Math.floor(maxLat * 100); la++) {
-    for (let lo = Math.floor(minLon * 100); lo <= Math.floor(maxLon * 100); lo++) {
-      const cell = bag[`${la},${lo}`];
-      if (!cell || !cell.t || now - cell.t > PIN_CACHE_TTL) continue;
-      for (const s of (cell.stops || [])) {
-        if (cachedPinMarks.length >= 65) break;
-        add(s, 'bs', I.busFill, stopSheet);
-      }
-      for (const bk of (cell.bikes || [])) {
-        if (cachedPinMarks.length >= 90) break;
-        add(bk, 'bk', I.bike, bikeSheet);
-      }
-    }
-  }
+  if (typeof renderViewportBusBikePins === 'function') renderViewportBusBikePins();
 }
 const BR_STN_UI = { TRTC: { R22A: 'RA', G03A: 'GA' } }, BR_HUB_UI = { TRTC: { R22: 'RA', G03: 'GA' } };
 const ALL_RAIL_OPS_RE = /^(TRA|THSR|TRTC|NTMC|TYMC|TMRT|KRTC|KLRT|NTDLRT|NTALRT)/i;
@@ -2662,19 +2670,30 @@ function matchLocalRail(s) {
 function openOtpBusStop(s) {
   const near = S.data && Array.isArray(S.data.busStops) ? S.data.busStops.find(x => x.name === s.name && x.lat != null && Math.abs(x.lat - s.lat) < 0.0006 && Math.abs(x.lon - s.lon) < 0.0006) : null;
   if (near) { stopSheet(near); return; }
+  const uid = (s.stopUID || s.id) ? String(s.stopUID || s.id).replace(/^TW[:_]/i, '') : null;
   if (!Array.isArray(s.routes) || !s.routes.length) {
-    const uid = s.id ? String(s.id).replace(/^TW[:_]/i, '') : null;
-    const s0 = { name: s.name || '公車站牌', lat: s.lat, lon: s.lon, stopUID: uid, dist: null, routes: [] };
+    const s0 = { name: s.name || '公車站牌', lat: s.lat, lon: s.lon, stopUID: uid, dist: s.dist ?? null, routes: [] };
+    if (S.sheet?.type === 'stop' && stopKeyOf(S.sheet.s) && stopKeyOf(S.sheet.s) === stopKeyOf(s0) && !document.getElementById('sheetWrap').hidden) return;
     stopSheet(s0);
-    if (uid && typeof api === 'function') {
+    if ((uid || (s0.lat != null && s0.lon != null)) && typeof api === 'function') {
       $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
       api('stopAt', { stopUID: uid, name: s0.name, lat: s0.lat, lon: s0.lon, uLat: S.data?.lat, uLon: S.data?.lon })
-        .then(st => { if (S.sheet?.s === s0) stopSheet(st, true); })
+        .then(st => { if (S.sheet?.type === 'stop' && S.sheet?.s === s0) stopSheet({ ...st, ...(uid && !st.stopUID ? { stopUID: uid } : {}) }, true); })
         .catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg({ stopUID: uid, name: s0.name, lat: s0.lat, lon: s0.lon })}"`); });
     }
     return;
   }
   stopSheet(s);
+}
+function openVpBikePin(b) {
+  if (!b) return;
+  if (S.sheet?.type === 'bike' && S.sheet?.b?.uid && b.uid && S.sheet.b.uid === b.uid && !document.getElementById('sheetWrap').hidden) return;
+  bikeSheet(b);
+  if (b.rent == null && b.ret == null && b.uid && typeof api === 'function') {
+    api('bikeAt', { uid: b.uid, name: b.name, lat: b.lat, lon: b.lon, uLat: S.data?.lat, uLon: S.data?.lon })
+      .then(nb => { if (nb && S.sheet?.type === 'bike' && S.sheet?.b?.uid === b.uid) bikeSheet(nb); })
+      .catch(() => {});
+  }
 }
 function renderViewportRailPins() {
   if (!MAP || !window.maplibregl) return;
@@ -2702,50 +2721,183 @@ function renderViewportRailPins() {
     vpRailMarks.push(new maplibregl.Marker({ element: el }).setLngLat([r.lon, r.lat]).addTo(MAP));
   }
 }
+function ensureViewportCityData(minLat, minLon, maxLat, maxLon) {
+  if (typeof api !== 'function' || !MAP || MAP.getZoom() < 10.5) return;
+  const cities = vpCitiesForBounds(minLat, minLon, maxLat, maxLon);
+  for (const city of cities) {
+    if (vpCityMemWeb.has(city) || vpCityPendingWeb.has(city)) continue;
+    vpCityPendingWeb.add(city);
+    Promise.resolve(api('viewportCityData', { city }))
+      .then(doc => {
+        if (doc && (doc.stops?.length || doc.bikes?.length)) {
+          vpCityMemWeb.set(city, doc);
+          renderViewportBusBikePins();
+        }
+      })
+      .catch(() => {})
+      .finally(() => { vpCityPendingWeb.delete(city); });
+  }
+}
+function clusterVpItems(items, cellDeg) {
+  const buckets = new Map();
+  for (const it of items) {
+    const key = `${Math.floor(it.lat / cellDeg)},${Math.floor(it.lon / cellDeg)}`;
+    let arr = buckets.get(key);
+    if (!arr) buckets.set(key, arr = []);
+    arr.push(it);
+  }
+  const singles = [], clusters = [];
+  for (const arr of buckets.values()) {
+    if (arr.length === 1) singles.push(arr[0]);
+    else {
+      let sLat = 0, sLon = 0;
+      for (const x of arr) { sLat += x.lat; sLon += x.lon; }
+      clusters.push({ count: arr.length, lat: sLat / arr.length, lon: sLon / arr.length });
+    }
+  }
+  return { singles, clusters };
+}
+function renderViewportBusBikePins() {
+  if (!MAP || !window.maplibregl) return;
+  vpBusBikeMarks.forEach(m => m.remove());
+  vpBusBikeMarks = [];
+  otpMarks.forEach(m => m.remove());
+  otpMarks = [];
+  cachedPinMarks.forEach(m => m.remove());
+  cachedPinMarks = [];
+  const b = MAP.getBounds();
+  if (!b) return;
+  const z = MAP.getZoom();
+  const minLon = b.getWest() - 0.002, maxLon = b.getEast() + 0.002;
+  const minLat = b.getSouth() - 0.002, maxLat = b.getNorth() + 0.002;
+  const cLat = (minLat + maxLat) / 2, cLon = (minLon + maxLon) / 2;
+  const inBox = (la, lo) => la != null && lo != null && la >= minLat && la <= maxLat && lo >= minLon && lo <= maxLon;
+
+  const isRailMode = s => s.mode === 'SUBWAY' || s.mode === 'RAIL' || s.mode === 'METRO' || s.mode === 'TRAM';
+  const busList = [], busSeen = new Set();
+  const addBus = s => {
+    if (!s || !inBox(s.lat, s.lon)) return;
+    const key = `${Math.round(s.lat * 2500)},${Math.round(s.lon * 2500)}|${s.name || ''}`;
+    if (busSeen.has(key)) return;
+    busSeen.add(key);
+    busList.push(s);
+  };
+  const bikeList = [], bikeByUid = new Map(), bikeCoord = new Set();
+  const addBike = bk => {
+    if (!bk || !inBox(bk.lat, bk.lon)) return;
+    const ckey = `${Math.round(bk.lat * 2500)},${Math.round(bk.lon * 2500)}`;
+    if (bk.uid && bikeByUid.has(bk.uid)) return;
+    if (!bk.uid && bikeCoord.has(ckey)) return;
+    if (bk.uid) bikeByUid.set(bk.uid, bk);
+    bikeCoord.add(ckey);
+    bikeList.push(bk);
+  };
+
+  for (const s of (S.data?.busStops || [])) addBus(s);
+  for (const bk of (S.data?.bikes || [])) addBike(bk);
+
+  if (lastOtpStopsData) {
+    const allow = Array.isArray(S.settings?.railSys) && S.settings.railSys.length ? new Set(S.settings.railSys) : null;
+    for (const s of (lastOtpStopsData.stops || [])) {
+      if (isRailMode(s)) {
+        if (!inBox(s.lat, s.lon)) continue;
+        const nearExist = [mapMarks, vpRailMarks, otpMarks].some(arr => arr.some(m => { const ll = m.getLngLat(); return Math.abs(ll.lat - s.lat) < 0.0001 && Math.abs(ll.lng - s.lon) < 0.0001; }));
+        if (nearExist) continue;
+        const matched = matchLocalRail(s), op = matched ? matched.op : inferOtpRailOp(s);
+        if (allow && !allow.has(op)) continue;
+        const rObj = matched || { op, kind: op === 'TRA' ? 'tra' : op === 'THSR' ? 'thsr' : 'metro', sys: (typeof SYS_ZH !== 'undefined' && SYS_ZH[op]) || '', name: s.name, lat: s.lat, lon: s.lon, ids: [s.id], lines: [] };
+        const el = document.createElement('button'); el.className = 'mpin rl'; el.dataset.railOp = op; el.innerHTML = sysIcon(op); el.setAttribute('aria-label', s.name || '');
+        el.addEventListener('click', e => { e.stopPropagation(); openRail(rObj); });
+        otpMarks.push(new maplibregl.Marker({ element: el }).setLngLat([s.lon, s.lat]).addTo(MAP));
+      } else addBus(s);
+    }
+    for (const bk of (lastOtpStopsData.bikes || [])) addBike(bk);
+  }
+  for (const tile of stopGridCache.values()) {
+    for (const s of (tile.stops || [])) if (!isRailMode(s)) addBus(s);
+    for (const bk of (tile.bikes || [])) addBike(bk);
+  }
+  for (const [city, doc] of vpCityMemWeb.entries()) {
+    const box = VP_CITY_BOX[city];
+    if (box && (maxLat < box[0] || minLat > box[2] || maxLon < box[1] || minLon > box[3])) continue;
+    for (const r of (doc.stops || [])) {
+      if (inBox(r[2], r[3])) addBus({ stopUID: r[0] || null, id: r[0] || null, name: r[1], lat: r[2], lon: r[3], routes: [], _vpCity: city });
+    }
+    for (const bk of (doc.bikes || [])) {
+      if (inBox(bk[3], bk[4])) addBike({ uid: bk[0], name: bk[1], address: bk[2] || null, lat: bk[3], lon: bk[4], capacity: bk[5], type: bk[6] });
+    }
+  }
+  try {
+    const bag = JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || '{}') || {};
+    const now = Date.now();
+    for (let la = Math.floor(minLat * 100); la <= Math.floor(maxLat * 100); la++) {
+      for (let lo = Math.floor(minLon * 100); lo <= Math.floor(maxLon * 100); lo++) {
+        const cell = bag[`${la},${lo}`];
+        if (!cell || !cell.t || now - cell.t > PIN_CACHE_TTL) continue;
+        for (const s of (cell.stops || [])) addBus(s);
+        for (const bk of (cell.bikes || [])) addBike(bk);
+      }
+    }
+  } catch (e) {}
+
+  const byDist = (a, b2) => ((a.lat - cLat) ** 2 + (a.lon - cLon) ** 2) - ((b2.lat - cLat) ** 2 + (b2.lon - cLon) ** 2);
+  const addSingle = (o, cls, kind, svg, fn) => {
+    const el = document.createElement('button');
+    el.className = 'mpin ' + cls;
+    el.dataset.pinKind = kind;
+    el.innerHTML = svg;
+    el.setAttribute('aria-label', (o.name || '') + (o.dirTxt ? ' ' + o.dirTxt : '') + (o.side === '對向' ? ' 對面' : ''));
+    el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
+    vpBusBikeMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP));
+  };
+  const addCluster = (c, cls, kind, label) => {
+    const el = document.createElement('button');
+    el.className = `mpin ${cls} mpin-cluster`;
+    el.dataset.pinKind = kind;
+    el.dataset.cluster = '1';
+    el.textContent = String(c.count);
+    el.setAttribute('aria-label', `${c.count}個${label}`);
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      MAP.easeTo({ center: [c.lon, c.lat], zoom: Math.min(16, Math.max(z + 2, 14.6)) });
+    });
+    vpBusBikeMarks.push(new maplibregl.Marker({ element: el }).setLngLat([c.lon, c.lat]).addTo(MAP));
+  };
+
+  const cellDeg = z >= 13.4 ? 0.006 : z >= 12.2 ? 0.015 : z >= 11 ? 0.032 : 0.07;
+  if (z < 14.2 && busList.length > 55) {
+    const { singles, clusters } = clusterVpItems(busList, cellDeg);
+    clusters.forEach(c => addCluster(c, 'bs', 'bus', '公車站'));
+    singles.sort(byDist).slice(0, 80).forEach(s => addSingle(s, 'bs', 'bus', I.busFill, openOtpBusStop));
+  } else {
+    busList.sort(byDist).slice(0, 220).forEach(s => addSingle(s, 'bs', 'bus', I.busFill, openOtpBusStop));
+  }
+  if (z < 14.2 && bikeList.length > 40) {
+    const { singles, clusters } = clusterVpItems(bikeList, cellDeg);
+    clusters.forEach(c => addCluster(c, 'bk', 'bike', 'YouBike'));
+    singles.sort(byDist).slice(0, 60).forEach(bk => addSingle(bk, 'bk', 'bike', I.bike, openVpBikePin));
+  } else {
+    bikeList.sort(byDist).slice(0, 140).forEach(bk => addSingle(bk, 'bk', 'bike', I.bike, openVpBikePin));
+  }
+  if (typeof window !== 'undefined') window.__vpPinStats = { zoom: +z.toFixed(2), busTotal: busList.length, bikeTotal: bikeList.length, rendered: vpBusBikeMarks.length };
+}
 function applyOtpStops(data) {
   if (!MAP || !data) return;
   lastOtpStopsData = data;
-  otpMarks.forEach(m => m.remove());
-  otpMarks = [];
-  const nearExist = (lat, lon) => [mapMarks, vpRailMarks, otpMarks].some(arr => arr.some(m => {
-    const ll = m.getLngLat();
-    return Math.abs(ll.lat - lat) < 0.0001 && Math.abs(ll.lng - lon) < 0.0001;
-  }));
-  const add = (o, cls, svg, fn, extra = {}) => {
-    if (o.lat == null || o.lon == null || nearExist(o.lat, o.lon)) return;
-    const el = document.createElement('button'); el.className = 'mpin ' + cls; el.innerHTML = svg;
-    if (extra.railOp) el.dataset.railOp = extra.railOp;
-    el.setAttribute('aria-label', o.name || '');
-    el.addEventListener('click', e => { e.stopPropagation(); fn(o); });
-    otpMarks.push(new maplibregl.Marker({ element: el }).setLngLat([o.lon, o.lat]).addTo(MAP));
-  };
-  const allStops = data.stops || [];
-  const isRailMode = s => s.mode === 'SUBWAY' || s.mode === 'RAIL' || s.mode === 'METRO' || s.mode === 'TRAM';
-  const railStops = allStops.filter(isRailMode);
-  const busStops = allStops.filter(s => !isRailMode(s));
-  const allow = Array.isArray(S.settings?.railSys) && S.settings.railSys.length ? new Set(S.settings.railSys) : null;
-  railStops.slice(0, 30).forEach(s => {
-    const matched = matchLocalRail(s);
-    const op = matched ? matched.op : inferOtpRailOp(s);
-    if (allow && !allow.has(op)) return;
-    const rObj = matched || { op, kind: op === 'TRA' ? 'tra' : op === 'THSR' ? 'thsr' : 'metro', sys: (typeof SYS_ZH !== 'undefined' && SYS_ZH[op]) || '', name: s.name, lat: s.lat, lon: s.lon, ids: [s.id], lines: [] };
-    add(s, 'rl', sysIcon(op), () => openRail(rObj), { railOp: op });
-  });
-  busStops.slice(0, 50).forEach(s => add(s, 'bs', I.busFill, openOtpBusStop));
-  (data.bikes || []).slice(0, 30).forEach(b => add(b, 'bk', I.bike, bikeSheet));
-  if (typeof renderCachedViewportPins === 'function') renderCachedViewportPins();
+  renderViewportBusBikePins();
 }
 function fetchOtpStopsInView() {
   const opt = arguments[0];
   if (!MAP) return;
   if (typeof renderViewportRailPins === 'function') renderViewportRailPins();
-  if (typeof renderCachedViewportPins === 'function') renderCachedViewportPins();
-  if (opt && opt.auto && typeof S !== 'undefined' && S.snapshotTag && (typeof GEO_LAST === 'undefined' || !GEO_LAST || Date.now() - GEO_LAST.t >= 60000) && (typeof mapUserMoved === 'undefined' || !mapUserMoved) && (typeof window === 'undefined' || Date.now() - (window.__bootWallT0 || 0) < 1200)) return;
-  if (typeof getSession !== 'function' || !getSession()) return;
   const b = MAP.getBounds();
   if (!b) return;
   const minLon = +b.getWest().toFixed(4), minLat = +b.getSouth().toFixed(4);
   const maxLon = +b.getEast().toFixed(4), maxLat = +b.getNorth().toFixed(4);
+  ensureViewportCityData(minLat, minLon, maxLat, maxLon);
+  renderViewportBusBikePins();
+  if (opt && opt.auto && typeof S !== 'undefined' && S.snapshotTag && (typeof GEO_LAST === 'undefined' || !GEO_LAST || Date.now() - GEO_LAST.t >= 60000) && (typeof mapUserMoved === 'undefined' || !mapUserMoved) && (typeof window === 'undefined' || Date.now() - (window.__bootWallT0 || 0) < 1200)) return;
+  if (typeof getSession !== 'function' || !getSession()) return;
   const rMinLat = Math.floor(minLat * 100), rMaxLat = Math.floor(maxLat * 100);
   const rMinLon = Math.floor(minLon * 100), rMaxLon = Math.floor(maxLon * 100);
 
@@ -2855,9 +3007,9 @@ function fetchOtpStopsInView() {
 }
 function onMapMoveIdle() {
   if (typeof renderViewportRailPins === 'function') renderViewportRailPins();
-  if (typeof renderCachedViewportPins === 'function') renderCachedViewportPins();
+  if (typeof renderViewportBusBikePins === 'function') renderViewportBusBikePins();
   clearTimeout(stopDebounceT);
-  stopDebounceT = setTimeout(() => { Promise.resolve(fetchOtpStopsInView({ auto: true })).catch(() => {}); }, 650);
+  stopDebounceT = setTimeout(() => { Promise.resolve(fetchOtpStopsInView({ auto: true })).catch(() => {}); }, 450);
 }
 
 function mountMap() {
@@ -2892,11 +3044,12 @@ function mountMap() {
         fadeDuration: 0, localIdeographFontFamily: '"PingFang TC","Noto Sans TC",sans-serif' });
       MAP.touchZoomRotate.disableRotation();
       MAP.on('moveend', onMapMoveIdle);
+      MAP.on('zoomend', () => { if (typeof renderViewportBusBikePins === 'function') renderViewportBusBikePins(); });
       MAP.on('dragstart', () => { mapUserMoved = true; if (locfOn) LOCF.onDrag(); });
       MAP.on('load', () => {
         const m = mapEl.querySelector('.mapload'); if (m) m.remove();
         renderViewportRailPins();
-        renderCachedViewportPins();
+        renderViewportBusBikePins();
         Promise.resolve(fetchOtpStopsInView({ auto: true })).catch(() => {});
       });
       MAP.on('error', () => {});
@@ -2908,7 +3061,7 @@ function mountMap() {
     if (D && D === mapKey) {
       if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();
       renderViewportRailPins();
-      renderCachedViewportPins();
+      renderViewportBusBikePins();
       if (lastOtpStopsData) applyOtpStops(lastOtpStopsData);
       return;
     }
@@ -2926,8 +3079,6 @@ function mountMap() {
       const holdFresh = !!(freshGeo && (S.snapshotTag || (S.loading && dOff > 50)));
       const anchor = holdFresh ? freshGeo : D;
       if (!holdFresh || dOff <= 300) {
-        (D.bikes || []).slice(0, 25).forEach(b => add(b, 'bk', I.bike, bikeSheet));
-        (D.busStops || []).slice(0, 40).forEach(s => add(s, 'bs', I.busFill, stopSheet));
         (D.rail || []).filter(r => r.lat != null).slice(0, 10).forEach(r => add(r, 'rl', sysIcon(r.op), openRail));
       }
       const g = freshGeo || D;
@@ -2948,9 +3099,9 @@ function mountMap() {
     }
     if (typeof OPEN_CENTER !== 'undefined') OPEN_CENTER.apply();
     renderViewportRailPins();
-    renderCachedViewportPins();
+    renderViewportBusBikePins();
     if (lastOtpStopsData) applyOtpStops(lastOtpStopsData);
-    setTimeout(() => { renderViewportRailPins(); renderCachedViewportPins(); Promise.resolve(fetchOtpStopsInView({ auto: true })).catch(() => {}); }, 400);
+    setTimeout(() => { renderViewportRailPins(); renderViewportBusBikePins(); Promise.resolve(fetchOtpStopsInView({ auto: true })).catch(() => {}); }, 400);
   }).catch(() => { const m = mapEl.querySelector('.mapload'); if (m) m.textContent = '地圖載入失敗，請稍後重新整理'; });
 }
 /* ---------- 手機方向：感測事件只更新 CSS 與首頁地圖 bearing ---------- */
@@ -3796,9 +3947,10 @@ function placeSearch(q, nearStops, nearBikes) {
   const row = (act, o, title, desc, d, c) => `<button class="trow nrow" data-act="${act}" data-i="${reg(o)}"><span class="tmain"><div class="td">${esc(title)}</div><div class="tt">${esc(desc)}</div></span>${d < 1e8 ? `<span class="pill">${distTxt(Math.round(d / 10) * 10)}</span>` : ''}<span class="chev">${I.chev}</span></button>`;
   const stops = st.length ? `<div class="board">` + st.slice(0, 15).map(({ c, x, d }) => row('stopAt', { name:x[0], lat:x[1], lon:x[2], r:x[3] }, x[0], CITY_ZH[c] || c, d, c)).join('') + `</div>` + (st.length > 15 ? `<div class="note">還有${st.length - 15}個站牌，請輸入更完整的名稱。</div>` : '') : '';
   const bikes = bk.length ? `<div class="board">` + bk.slice(0, 15).map(({ c, x, d }) => row('bikeAt', { uid:x[0], name:x[1], address:x[2] || null, lat:x[3], lon:x[4], capacity:x[5], type:x[6] }, x[1], x[2] || (CITY_ZH[c] || c), d, c)).join('') + `</div>` + (bk.length > 15 ? `<div class="note">還有${bk.length - 15}個站點，請輸入更完整的名稱。</div>` : '') : '';
-  return { stops, bikes, loading };
+  return { stops, bikes, loading, stopItems: st.slice(0, 15).map(({ c, x }) => ({ city: c, name: x[0], lat: x[1], lon: x[2] })) };
 }
 function refreshSearch() {
+  if (typeof window.__ssFillHome === 'function' && window.__ssFillHome()) return;
   if (!S.q || S.route || S.rail || S.line) return;
   const active = document.activeElement && document.activeElement.id === 'hmQ';
   const pos = active ? document.activeElement.selectionStart : null;
@@ -3809,23 +3961,83 @@ function refreshSearch() {
     if (pos != null) { try { inp.setSelectionRange(pos, pos); } catch (e) {} }
   }
 }
+let natStopT = 0;
+function reqNatStopSearch(qRaw) {
+  const q = String(qRaw || '').trim();
+  if (!q) { S.natStopsQ = ''; S.natStops = null; S.natStopsBusy = false; return; }
+  if (S.natStopsQ === q || S.natStopsPendQ === q) return;
+  S.natStopsPendQ = q;
+  S.natStopsBusy = true;
+  clearTimeout(natStopT);
+  natStopT = setTimeout(() => {
+    if ((S.q || '').trim() !== q) { if (S.natStopsPendQ === q) S.natStopsPendQ = ''; return; }
+    if (typeof api !== 'function') { S.natStopsPendQ = ''; S.natStopsBusy = false; return; }
+    api('stopSearch', { q, lat: S.data?.lat ?? null, lon: S.data?.lon ?? null })
+      .then(res => {
+        if (S.natStopsPendQ === q) S.natStopsPendQ = '';
+        if ((S.q || '').trim() === q) {
+          S.natStopsQ = q;
+          S.natStops = res && Array.isArray(res.list) ? res : { q, list: [], total: 0 };
+          S.natStopsBusy = false;
+          refreshSearch();
+        }
+      })
+      .catch(() => {
+        if (S.natStopsPendQ === q) S.natStopsPendQ = '';
+        if ((S.q || '').trim() === q) {
+          S.natStopsQ = q;
+          S.natStops = { q, list: [], total: 0 };
+          S.natStopsBusy = false;
+          refreshSearch();
+        }
+      });
+  }, 150);
+}
 function viewOf(tab) {
   if (tab === 'settings') return vSettings;
   if (tab === 'home') return vHome;
   return { home:vHome, bus:vBus, bike:vBike, rail:vRail }[tab];
 }
 function vSearch() {
-  const q = S.q.trim().toLowerCase(); const d = S.data;
+  const qRaw = S.q.trim(), q = qRaw.toLowerCase(); const d = S.data;
   if (!d) return skel(2);
   if (!q) return '';
+  reqNatStopSearch(qRaw);
   const routes = uniqRoutes(d).filter(r => r.route.toLowerCase().includes(q));
   const stops = d.busStops.filter(s => s.name.toLowerCase().includes(q));
   const bikes = d.bikes.filter(b => b.name.toLowerCase().includes(q));
   const P = placeSearch(q, stops, bikes);
+  const lat = d.lat, lon = d.lon;
+  const distM = (a, b) => (lat == null || a == null || b == null) ? 1e9 : Math.hypot((a - lat) * 111000, (b - lon) * 101000);
+  const normSn = n => String(n || '').replace(/\s+/g, '').replace(/(公車站|站)$/,'').toLowerCase();
+  const seenStops = [
+    ...stops.map(s => ({ k: normSn(s.name), lat: s.lat, lon: s.lon })),
+    ...(P.stopItems || []).map(s => ({ k: normSn(s.name), lat: s.lat, lon: s.lon }))
+  ];
+  const normStopItem = x => Array.isArray(x)
+    ? { name: x[0], lat: x[1], lon: x[2], r: x[3] ?? 0, city: x[4] || '' }
+    : x;
+  const natList = (S.natStopsQ === qRaw && Array.isArray(S.natStops?.list)) ? S.natStops.list.map(normStopItem) : [];
+  const natHits = [];
+  for (const x of natList) {
+    if (!x || !x.name || x.lat == null || x.lon == null) continue;
+    const nk = normSn(x.name);
+    if (seenStops.some(s => s.k === nk && Math.hypot((s.lat - x.lat) * 111000, (s.lon - x.lon) * 101000) <= 300)) continue;
+    seenStops.push({ k: nk, lat: x.lat, lon: x.lon });
+    natHits.push(x);
+  }
+  const natStopsHtml = natHits.length
+    ? `<div class="tgrp">全台站牌<span>${natHits.length}處</span></div><div class="board">` + natHits.slice(0, 20).map(x => {
+      const dm = distM(x.lat, x.lon);
+      const o = { name: x.name, lat: x.lat, lon: x.lon, r: x.r || 0, ...(x.uid ? { stopUID: x.uid } : {}) };
+      const cityLabel = (CITY_ZH[x.city] || x.city || '全台') + '・公車站牌';
+      return `<button class="trow nrow" data-act="stopAt" data-i="${reg(o)}"><span class="tmain"><div class="td">${esc(x.name)}</div><div class="tt">${esc(cityLabel)}</div></span>${dm < 1e8 ? `<span class="pill">${distTxt(Math.round(dm / 10) * 10)}</span>` : ''}<span class="chev">${I.chev}</span></button>`;
+    }).join('') + `</div>`
+    : (S.natStopsBusy && !stops.length && !P.stops ? `<div class="note" style="margin-top:8px">搜尋全台站牌中…</div>` : '');
   // 依類型分組；目前分頁的類型排最前面
   const sec = {};
   sec.route = (routes.length ? `<div class="sec"><h2>附近路線</h2></div><div class="chips">` + routes.map(r => `<button class="chip" data-act="route" data-i="${reg(r)}">${esc(r.route)} <span style="color:var(--muted);font-size:14px">${esc(r.stopName)}</span></button>`).join('') + `</div>` : '') + natSearch(S.q);
-  sec.stop = stops.length || P.stops ? `<div class="sec"><h2>站牌</h2></div>` + stops.map(stopCard).join('') + P.stops : '';
+  sec.stop = (stops.length || P.stops || natHits.length ? `<div class="sec"><h2>站牌</h2></div>` : '') + stops.map(stopCard).join('') + P.stops + natStopsHtml;
   sec.bike = bikes.length || P.bikes ? `<div class="sec"><h2>YouBike</h2></div>` + bikes.map(bikeCard).join('') + P.bikes : '';
   const rails = (d.rail || []).filter(r => (r.name + r.sys).toLowerCase().includes(q));
   sec.rail = (rails.length ? `<div class="sec"><h2>附近車站</h2></div>` + rails.map(railCard).join('') : '') + railSearchHtml(S.q);
@@ -4006,7 +4218,7 @@ function stopBlock(s, limit) {
       const sp = window.splitBusRouteName ? window.splitBusRouteName(r.route) : { name: r.route, note: '' };
       const rn = r.routeNote || sp.note || '';
       const ro = { ...r, route: sp.name || r.route, ...(rn ? { routeNote: rn } : {}), stopName: s.name };
-      return `<button class="rrow" data-act="route" data-i="${reg(ro)}"><span class="rno">${esc(ro.route)}${rn ? `<small class="rnote">${esc(rn)}</small>` : ''}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`;
+      return `<button class="rrow" data-act="route" data-rk="${esc((r.routeUID || '') + '|' + (r.dirNum ?? 0))}" data-i="${reg(ro)}"><span class="rno">${esc(ro.route)}${rn ? `<small class="rnote">${esc(rn)}</small>` : ''}</span><span class="rdest">${esc(destTxt(r))}</span>${etaPill(r)}</button>`;
     }).join('')
     : (s.loading || s.busPending || (!s.routes.length && !s.noLive && !s.noRoutes))
       ? `<div class="rrow"><span class="rno" style="font-size:13px;color:var(--c-sub);grid-column:1/-1">…</span></div>`
@@ -4119,8 +4331,8 @@ function vSettings() {
     <dt>YouBike 站點</dt><dd>YouBike 官方統一 feed 的站名與座標。手機比對站號和站名，有變才寫回雲端，一天最多一次；沒變不更新。車位不寫進雲端</dd>
     <dt>YouBike 車位</dt><dd>由這支手機直接讀 YouBike 官方統一 feed，不經雲端轉發。讀不到時，台北與新北改用市府開放資料，其餘縣市改用 TDX</dd>
     <dt>公車與軌道車站、時刻表</dt><dd>交通部 TDX 運輸資料流通服務（官方）</dd>
-    <dt>台北市公車即時到站</dt><dd>臺北市政府交通局開放資料（預估到站約每20秒更新、車輛到離站），經自己的伺服器整理；用於路線代碼 TPE 開頭的台北市公車（含開進新北的站）。新北市公車、公路客運與其他縣市照舊用 TDX；尚未發車時只顯示「尚未發車」</dd>
-    <dt>公路客運站牌</dt><dd>交通部公路局開放資料（政府資料開放平臺資料集 102885），每天檢查一次後存在雲端。App 下載這份雲端名單，不另外向 TDX 抓站牌清單。即時到站仍用 TDX</dd>
+    <dt>公車即時到站與時刻表</dt><dd>優先使用自建即時資料（/live/stops、/live/route），無即時資料時以雲端時刻表顯示下一班發車時刻</dd>
+    <dt>公車站牌清單</dt><dd>統一透過 OpenTripPlanner（OTP）取得附近與地圖站牌清單（含市區公車與公路客運）；暫時讀不到時顯示空狀態，下次重新整理再試</dd>
     <dt>公車站序（目的地篩選）</dt><dd>台北：臺北市政府交通局開放資料（站牌、路線、附屬路線站序）；新北：新北市政府交通局「公車站位資訊」；其他縣市與公路客運：TDX</dd>
     <dt>北捷、環狀線即時到站</dt><dd>北捷即時：北捷官網（擁擠度）→ Bus+ → TDX。先讀北捷官網「列車到站資訊」（含列車所在路段的擁擠度，經自己的伺服器整理）；讀不到時改用 Bus+ 公開資料（非官方），再不行改用 TDX 即時看板（只有進站中列車）＋時刻表。新北投、小碧潭支線官網未支援，照舊用 Bus+</dd>
     <dt>桃園機捷即時到站</dt><dd>桃捷即時：桃捷官網（直達／普通、車廂擁擠度）→ TDX。先讀桃園捷運官網列車到站資訊（全線一份，經自己的伺服器整理、快取 30 秒；擁擠度取四節車廂裡最擠的一節）；讀不到時改用 TDX 即時看板＋時刻表</dd>
@@ -4275,6 +4487,93 @@ function monFmtTime(ms) {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
 }
+function monSysHtml(data, nowMs) {
+  const tra = data?.tra || null;
+  const otp = data?.otp || null;
+  const vps = data?.vps || null;
+  const ago = iso => {
+    if (!iso) return '未提供';
+    const ms = typeof iso === 'number' ? iso : Date.parse(iso);
+    if (!Number.isFinite(ms)) return '未提供';
+    return monFmtAgo(Math.max(0, Math.round((nowMs - ms) / 1000)));
+  };
+  const fmtIsoTime = iso => {
+    if (!iso) return '未提供';
+    const ms = typeof iso === 'number' ? iso : Date.parse(iso);
+    if (!Number.isFinite(ms)) return String(iso);
+    const d = new Date(ms);
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${monFmtTime(ms)}`;
+  };
+  const stPill = (state, label) => `<span class="mon-st ${state === 'ok' ? 'mon-ok' : state === 'slow' ? 'mon-slow' : state === 'err' ? 'mon-bad' : 'mon-done'}"><i></i>${esc(label)}</span>`;
+
+  // 1. 台鐵即時狀態
+  const traAt = tra?.data_at || tra?.updated_at || null;
+  let traBadge = stPill('err', '讀取不到');
+  if (tra && !tra.missing) {
+    const ageS = traAt ? Math.round((nowMs - Date.parse(traAt)) / 1000) : null;
+    if (tra.paused_until && Date.parse(tra.paused_until) > nowMs) traBadge = stPill('err', '暫停保護');
+    else if (tra.last_error && (!traAt || (tra.last_error_at && Date.parse(tra.last_error_at) > Date.parse(traAt)))) traBadge = stPill('err', '錯誤');
+    else if (ageS != null && ageS > 600) traBadge = stPill('slow', '放慢');
+    else traBadge = stPill('ok', '正常');
+  }
+  const traCard = `<div class="mon-card">
+    <div class="mon-card-hd"><span>台鐵即時 (TRA)</span>${traBadge}</div>
+    <div class="mon-grid">
+      <div class="mon-kv"><span>資料時間</span><span>${esc(traAt ? ago(traAt) : (tra?.last_error || '未提供'))}</span></div>
+      <div class="mon-kv"><span>線上列車／車站</span><span>${tra?.trains != null ? `${tra.trains} 班` : '未提供'}${tra?.stations_with_data != null ? `・${tra.stations_with_data} 站` : ''}</span></div>
+      <div class="mon-kv"><span>狀態</span><span>${esc(tra?.last_error || (tra?.missing ? '讀取不到' : '正常抓取'))}</span></div>
+    </div>
+  </div>`;
+
+  // 2. OTP 與 GTFS 同步
+  const gSync = otp?.gtfs_sync || otp || null;
+  const gAt = otp?.applied_at || gSync?.synced_at || gSync?.generated_at || otp?.gtfs_sync_at || null;
+  const graphMtime = otp?.graph_mtime || gSync?.graph_mtime || null;
+  const grt = otp?.gtfsrt || null;
+  let otpBadge = stPill('done', '未連線');
+  if (otp && !otp.missing) {
+    if (otp.ok === false || gSync?.ok === false || otp.error) otpBadge = stPill('err', '同步異常');
+    else if (otp.updated_since_daily === false) otpBadge = stPill('slow', '待今日更新');
+    else if (grt && !grt.ok && grt.error) otpBadge = stPill('slow', 'RT 未連線');
+    else if (gAt || graphMtime || (grt && grt.ok)) otpBadge = stPill('ok', '正常');
+  } else otpBadge = stPill('err', '讀取不到');
+  const rtLine = grt && grt.ok !== false
+    ? `RT 實體 ${grt.total_entities ?? '—'}（台鐵 ${grt.tra_matched ?? '—'}／公車 ${grt.bus_matched ?? '—'}／NEW ${(grt.added_freq ?? 0) + (grt.added_direct ?? 0)}）`
+    : (grt?.error || '未連接 :8090');
+  const schedTxt = otp?.daily_timer ? `每日 ${otp.daily_timer.tpe || '03:00'} TPE (${otp.daily_timer.utc || '19:00'} UTC)` : '每日 03:00 TPE (19:00 UTC)';
+  const otpCard = `<div class="mon-card">
+    <div class="mon-card-hd"><span>OTP / GTFS 同步</span>${otpBadge}</div>
+    <div class="mon-grid">
+      <div class="mon-kv"><span>最近同步</span><span>${esc(fmtIsoTime(gAt))}</span></div>
+      <div class="mon-kv"><span>圖資重建</span><span>${esc(fmtIsoTime(graphMtime))}${otp?.graph_size_mb != null ? ` (${otp.graph_size_mb} MB)` : ''}</span></div>
+      <div class="mon-kv"><span>每日排程</span><span>${esc(schedTxt)}</span></div>
+      <div class="mon-kv"><span>OTP 套用率</span><span>${esc(otp?.otp_apply_rate != null ? `${otp.otp_apply_rate}%` : '未提供')}</span></div>
+    </div>
+    <div class="mon-sub">${esc(rtLine)}${otp?.otp_apply_rate_note ? `・${esc(otp.otp_apply_rate_note)}` : ''}</div>
+  </div>`;
+
+  // 3. 3 台 VPS 資源
+  const hosts = ['otp-a1', 'micro-1', 'micro-2'];
+  const vpsRows = hosts.map(name => {
+    const h = vps?.[name];
+    if (!h || h.missing || h.load1 == null && h.mem_avail_mb == null) {
+      return `<div class="mon-vps-row"><span><b>${esc(name)}</b></span><span class="mon-bad">讀取不到</span></div>`;
+    }
+    const loadTxt = h.load1 != null ? `Load ${Number(h.load1).toFixed(2)}` : 'Load —';
+    const stealTxt = h.steal_pct != null ? ` (steal ${h.steal_pct}%)` : '';
+    const memTxt = h.mem_avail_mb != null
+      ? (h.mem_total_mb ? `${(h.mem_avail_mb / 1024).toFixed(1)}/${(h.mem_total_mb / 1024).toFixed(1)} GB 可用` : `${h.mem_avail_mb} MB 可用`)
+      : '記憶體 —';
+    return `<div class="mon-vps-row"><span><b>${esc(name)}</b>${esc(stealTxt)}</span><span>${esc(loadTxt)}・${esc(memTxt)}</span></div>`;
+  }).join('');
+  const vpsOkCount = hosts.filter(n => vps?.[n] && !vps[n].missing && (vps[n].load1 != null || vps[n].mem_avail_mb != null)).length;
+  const vpsCard = `<div class="mon-card">
+    <div class="mon-card-hd"><span>VPS 主機資源</span>${stPill(vpsOkCount === 3 ? 'ok' : vpsOkCount > 0 ? 'slow' : 'err', `${vpsOkCount}/3 上線`)}</div>
+    <div>${vpsRows}</div>
+  </div>`;
+
+  return `<div class="mon-sys">${traCard}${otpCard}${vpsCard}</div>`;
+}
 function monHtml() {
   if (DEMO || S.auth?.role !== 'admin') {
     monStop();
@@ -4290,7 +4589,11 @@ function monHtml() {
       const cls = monClassify(src, nowMs, code);
       counts[cls.state]++;
       const [stText, stClass] = stMap[cls.state];
-      rowsHtml += `<div class="row mon-row"><span class="t">${esc(label)}<span class="mon-code">${esc(code)}</span><small>${esc(cls.text)}</small></span><span class="mon-st ${stClass}"><i></i>${stText}</span></div>`;
+      const intvTxt = src && !src.missing && src.update_age_p50_sec != null
+        ? (src.update_age_p50_sec < 60 ? '約每 1 分內更新' : `約每 ${Math.max(1, Math.round(src.update_age_p50_sec / 60))} 分更新`)
+        : '';
+      const subTxt = intvTxt ? `${cls.text}・${intvTxt}` : cls.text;
+      rowsHtml += `<div class="row mon-row"><span class="t">${esc(label)}<span class="mon-code">${esc(code)}</span><small>${esc(subTxt)}</small></span><span class="mon-st ${stClass}"><i></i>${stText}</span></div>`;
     }
   }
   const updText = MON.data ? `更新於 ${monFmtTime(MON.serverNowMs || nowMs)}` : (MON.loading ? '讀取監測資料中…' : '尚未更新');
@@ -4303,7 +4606,7 @@ function monHtml() {
   return `<div class="wrap mon-wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:32px">即時資訊監測</h1></div></div>
     <div class="mon-top-meta"><span class="mon-upd">${esc(updText)}</span><button class="refresh${MON.loading ? ' spin' : ''}" data-act="monRefresh" aria-label="重新整理監測">${I.refresh}<span>重新整理</span></button></div>
     ${MON.err ? `<div class="mon-err">${esc(MON.err)}</div>` : ''}
-    ${MON.data ? `${sumHtml}<div class="sg">${rowsHtml}</div>` : (!MON.err ? `<div class="note">${MON.loading ? '正在讀取全臺即時監測資料…' : '目前尚無資料'}</div>` : '')}
+    ${MON.data ? `${monSysHtml(MON.data, nowMs)}<div class="tgrp">公車來源（${MON_LIST.length} 區）</div>${sumHtml}<div class="sg">${rowsHtml}</div>` : (!MON.err ? `<div class="note">${MON.loading ? '正在讀取全臺即時監測資料…' : '目前尚無資料'}</div>` : '')}
   </div>`;
 }
 if (typeof window !== 'undefined') { window.openMon = openMon; window.monClassify = monClassify; window.MON_LIST = MON_LIST; window.monStop = monStop; window.monStart = monStart; }
@@ -5800,7 +6103,7 @@ function renderLine() {
     ? `${D.stops.length}站；${q.est && !q.live ? '依班距估算發車時間，' : ''}各站時間${D.noS2S ? '以每站約2分鐘估算' : '依 TDX 站間行駛時間推算'}${D.delay ? `，已含即時晚約${D.delay}分` : q.live ? '，本站為即時到站' : ''}`
     : q.kind === 'line'
     ? `${D.stops.length}站，目前在${esc(R.name || '')}${D.live ? '；時間為各站最近一班的即時到站' : (q.op === 'TRTC' || q.op === 'NTMC') ? '；只有本站顯示時間（同站牌看板）' : ''}`
-    : `${D.today === false && D.date ? `${+D.date.slice(5, 7)}/${+D.date.slice(8)}・` : ''}${D.suspended ? '這一天停駛（依台鐵當天時刻表）' : `${D.stops.length}站`}${q.kind === 'tra' && !D.suspended && D.today !== false ? (D.delay == null ? '；目前沒有即時位置' : D.delay > 0 ? `；目前晚${D.delay}分` : '；目前準點') : ''}`;
+    : `${D.today === false && D.date ? `${+D.date.slice(5, 7)}/${+D.date.slice(8)}・` : ''}${D.suspended ? '這一天停駛（依台鐵當天時刻表）' : `${D.stops.length}站`}${q.kind === 'tra' && !D.suspended && D.today !== false ? (D.delay == null ? '' : D.delay > 0 ? `；目前晚${D.delay}分` : '；目前準點') : ''}`;
 
   let h = `<div class="rt2-wrap">
     <div class="rt2-fixed-top">
@@ -5875,6 +6178,7 @@ function closeRoute(quiet) {
   S.back = [];
   if (!quiet && !reduceMotion()) slideEls(baseEls(), -innerWidth * PARA, 0, 280);   // 底下的主畫面跟著滑回來
   S.line = null; S.route = null; S.rail = null; S.railCrowd = null; S.stttCrowd = null; S.page = null; const p = $('#routePage'); p.classList.remove('open'); p.setAttribute('aria-hidden','true'); render();
+  if (typeof window.__ssResumeIfReady === 'function') window.__ssResumeIfReady();
   setTimeout(() => { if (!S.page && typeof fxMapRelease === 'function') fxMapRelease(); }, 400); }   // v2.51.7：離開規劃頁釋放地圖
 async function loadRoute(scroll, auto, fresh) {
   if (!S.route) return;
@@ -6160,6 +6464,7 @@ function routeHtml() {
     if (D && D.live === 'empty') h += `<div class="pupd">目前沒有車</div>`;
     if (D && D.live === 'fail') h += `<div class="pupd err"><i></i>暫時拿不到即時資料</div>`;
     if (D && D.live === 'none') h += `<div class="pupd">暫無即時資料</div>`;
+    if (D && D.live === 'schedule') h += `<div class="pupd">暫無即時資料，顯示表定發車時刻</div>`;
     if (D && D.live === 'ok' && D.liveSrc === 'twh' && !hasAnyPlate) h += `<div class="rmeta" style="margin:2px 4px 6px">目前即時來源僅提供預估到站時間，暫無車牌位置</div>`;
     if (!D) h += S.routeError && !S.routeLoading ? failBox(S.routeError, 'retryRoute') : skel(5);
     else {
@@ -6313,8 +6618,18 @@ function busTripSheet(key) {   // 停靠站一覽：這一班在各站的表定�
 let sheetSeq = 0;
 function bumpSheetSeq() { return ++sheetSeq; }
 window.__bumpSheetSeq = bumpSheetSeq;
-function openSheet(html) { bumpSheetSeq(); const w = $('#sheetWrap'); $('#sheet').innerHTML = '<div class="grab"></div>' + html; w.hidden = false; requestAnimationFrame(() => w.classList.add('open')); }
-function closeSheet() { const seq = sheetSeq, w = $('#sheetWrap'), sh = $('#sheet'); w.classList.remove('open'); setTimeout(() => { if (seq !== sheetSeq) return; w.hidden = true; S.sheet = null; if (sh) { sh.style.transform = ''; sh.style.transition = ''; } if (mpMap) { mpMap.remove(); mpMap = null; } }, 250); }
+function openSheet(html, opts) {
+  bumpSheetSeq();
+  const w = $('#sheetWrap'), sh = $('#sheet');
+  if (sh && !w.hidden && w.classList.contains('open')) {
+    sh.style.minHeight = sh.offsetHeight + 'px';
+    requestAnimationFrame(() => { if (sh.isConnected) sh.style.minHeight = ''; });
+  }
+  sh.innerHTML = '<div class="grab"></div>' + html;
+  w.hidden = false;
+  requestAnimationFrame(() => w.classList.add('open'));
+}
+function closeSheet() { const seq = sheetSeq, w = $('#sheetWrap'), sh = $('#sheet'); w.classList.remove('open'); setTimeout(() => { if (seq !== sheetSeq) return; w.hidden = true; S.sheet = null; if (sh) { sh.style.transform = ''; sh.style.transition = ''; sh.style.minHeight = ''; } if (mpMap) { mpMap.remove(); mpMap = null; } if (typeof window.__ssResumeIfReady === 'function') window.__ssResumeIfReady(); }, 250); }
 function stopSheet(s, nwtDone) {
   S.sheet = { type:'stop', s };
   const rCount = (s.routes || []).filter(r => r.routeUID && !r.noRoutes).length;
@@ -6571,7 +6886,7 @@ function planHtml() {
         </div>
         ${!window.fxPlanWhen && (P.showTimeDrawer || P.when !== 'now') ? `<div class="pl2-time-drawer">
           <div class="sseg">${[['now','現在出發'],['dep','指定出發'],['arr','指定抵達']].map(([k, l]) => `<button class="${P.when === k ? 'on' : ''}" data-act="planWhen" data-v="${k}">${l}</button>`).join('')}</div>
-          ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date(Date.now() + 15 * 60000)))}" min="${localIso(new Date())}">` : ''}
+          ${P.when !== 'now' ? `<input id="planTime" class="inp" type="datetime-local" value="${esc(P.time || localIso(new Date()))}" min="${localIso(new Date())}">` : ''}
         </div>` : ''}
         <div class="plab">交通工具<span>步行一定會用到</span></div>
         <div class="chips mchips">${PLAN_MODES.map(([k, l]) => `<button class="chip ${P.modes[k] ? 'chip-on' : ''}" data-act="planMode" data-v="${k}">${l}</button>`).join('')}<button class="chip ${P.modes.bike ? 'chip-on' : ''}" data-act="planMode" data-v="bike">YouBike</button><button class="chip ${P.modes.walk ? 'chip-on' : ''}" data-act="planMode" data-v="walk">步行</button></div>
@@ -6772,7 +7087,7 @@ async function planGo(more) {
   }
   renderPage();
   try {
-    const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, walk: !!P.modes.walk, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date(Date.now() + 15 * 60000))), more: more === true, onLive: L => planLiveDone(tok, L) });
+    const res = await api('planRoutes', { o:P.o, d:P.d, modes, yb: !!P.modes.bike, walk: !!P.modes.walk, when:P.when, time: P.when === 'now' ? null : (P.time || localIso(new Date())), more: more === true, onLive: L => planLiveDone(tok, L) });
     if (tok === P.tok) { P.res = res; P.err = null; P.moreUsed = more === true; P.liveBusy = res.some(r => r.livePending); }
   }
   catch (e) { if (tok === P.tok) { P.err = e.message === 'NO_PROXY' ? '尚未設定資料來源' : e.message; P.res = null; } }
@@ -6840,7 +7155,7 @@ function bdHtml(P) {
     }
   }
   const meta = B.meta || {};
-  h += `<div class="sub" style="margin-top:8px">試行範圍：時間來源依序為即時到站（現在或 60 分鐘內出發；臺北用市府開放資料，其他縣市用公車GO，再不行用官網）→ 逐站表定 → 推估（站間時間、半個班距、班表或直線距離）；候選路線用雲端站序，沒有站序的路線不列。步行時間用 OSRM 實際路網，讀不到時用直線估算。特殊日、國定假日的班次這版先不算（上方 Google／TDX 規劃不變）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}<br>路線資料 © OpenStreetMap 貢獻者・<a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">修正地圖</a></div>`;
+  h += `<div class="sub" style="margin-top:8px">試行範圍：時間來源依序為即時到站（現在或 60 分鐘內出發；優先使用自建即時，無即時資料時使用表定時刻）→ 逐站表定 → 推估（站間時間、半個班距、班表或直線距離）；候選路線用雲端站序，沒有站序的路線不列。步行時間用 OSRM 實際路網，讀不到時用直線估算。特殊日、國定假日的班次這版先不算（上方 Google／TDX 規劃不變）。${meta.opts && meta.opts.earlyLimitMin == null && q && q.when === 'arr' ? '沒設提早抵達下限，可能列出很早就到的班次。' : ''}${(B.notes || []).map(esc).join('；')}${meta.cities && meta.cities.length ? `；資料：${meta.cities.map(c => esc(c.city) + ' ' + new Date(c.t + 288e5).toISOString().slice(0, 10)).join('、')}` : ''}<br>路線資料 © OpenStreetMap 貢獻者・<a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener">修正地圖</a></div>`;
   return h;
 }
 async function bdGo() {
@@ -6926,9 +7241,15 @@ function pickResHtml() {
   const rail = (K.rail || []).slice(0, 6);
   if (rail.length) h += `<div class="tgrp">車站</div><div class="board">` + rail.map(r => pickRow({ name: r.name + (r.kind === 'metro' || /站$/.test(r.name) ? '' : '站'), lat:r.lat, lon:r.lon, sub:r.sys, st:1 }, `<span class="pico-s">${sysIcon(r.op)}</span>`, r.name, r.sys + ((r.lines || []).length ? '・' + r.lines.map(l => (LINE_LABEL[r.op] || {})[l] ? LINE_NAME[r.op][l] : l).join(' ') : ''))).join('') + `</div>`;
   const ql = q.toLowerCase(), stops = [];
-  for (const c of placeCities()) { const P = (S.place || {})[c]; if (!P) continue; for (const x of P.stops) if (x[0].toLowerCase().includes(ql)) stops.push({ c, x }); }
-  stops.sort((a, b) => (a.x[0].toLowerCase() === ql ? 0 : a.x[0].toLowerCase().startsWith(ql) ? 1 : 2) - (b.x[0].toLowerCase() === ql ? 0 : b.x[0].toLowerCase().startsWith(ql) ? 1 : 2));
-  if (stops.length) h += `<div class="tgrp">公車站牌</div><div class="board">` + stops.slice(0, 6).map(({ c, x }) => pickRow({ name:x[0], lat:x[1], lon:x[2], sub:'公車站牌・' + (CITY_ZH[c] || c) }, I.busFill, x[0], '公車站牌・' + (CITY_ZH[c] || c))).join('') + `</div>`;
+  for (const c of placeCities()) { const P = (S.place || {})[c]; if (!P) continue; for (const x of P.stops) if (x[0].toLowerCase().includes(ql)) stops.push({ c, name: x[0], lat: x[1], lon: x[2] }); }
+  const natList = (K.natStopsQ === q && Array.isArray(K.natStops)) ? K.natStops.map(x => Array.isArray(x) ? { city: x[4], name: x[0], lat: x[1], lon: x[2] } : x) : [];
+  for (const x of natList) {
+    if (!x || !x.name || x.lat == null || x.lon == null) continue;
+    if (stops.some(s => s.name === x.name && Math.hypot((s.lat - x.lat) * 111000, (s.lon - x.lon) * 101000) <= 300)) continue;
+    stops.push({ c: x.city, name: x.name, lat: x.lat, lon: x.lon });
+  }
+  stops.sort((a, b) => (a.name.toLowerCase() === ql ? 0 : a.name.toLowerCase().startsWith(ql) ? 1 : 2) - (b.name.toLowerCase() === ql ? 0 : b.name.toLowerCase().startsWith(ql) ? 1 : 2));
+  if (stops.length) h += `<div class="tgrp">公車站牌</div><div class="board">` + stops.slice(0, 10).map(s => pickRow({ name:s.name, lat:s.lat, lon:s.lon, sub:'公車站牌・' + (CITY_ZH[s.c] || s.c || '全台') }, I.busFill, s.name, '公車站牌・' + (CITY_ZH[s.c] || s.c || '全台'))).join('') + `</div>`;
   const gk = geoKindOf(q);
   const geo = K.geoQ === q ? K.geo : null;
   if (geo && geo.length) h += `<div class="tgrp">地址・地標</div><div class="board">` + geo.map(g => { const sub = geoSub(g); return pickRow({ name:g.name, lat:g.lat, lon:g.lon, sub:g.area || g.addr, note:g.note || '' }, I.pin, g.name, sub, geoBadgeHtml(g), g.note || ''); }).join('') + `</div>`;
@@ -6938,7 +7259,7 @@ function pickResHtml() {
   if (!h) h = `<div class="note" style="margin-top:8px">${q.length < 2 ? '再多打一個字…' : `找不到「${esc(q)}」。`}</div>`;
   return h;
 }
-let pickRailT = 0, pickGeoT = 0;
+let pickRailT = 0, pickGeoT = 0, pickStopT = 0;
 function runPickGeo(K, q, act) {
   if (!K || (K.q || '').trim() !== q || q.length < 2) return;
   K.geoLoading = true; K.geoErr = null; pickRefresh();
@@ -6954,9 +7275,10 @@ function pickInput(v) {
   // 全市站牌名單（第一次會下載，之後永久保存）
   S.place = S.place || {}; S.placeBusy = S.placeBusy || {};
   for (const c of placeCities()) if (!S.place[c] && !S.placeBusy[c]) { S.placeBusy[c] = true; api('placeIndex', { city:c }).then(j => { if (j) S.place[c] = j; }).catch(() => {}).finally(() => { S.placeBusy[c] = false; pickRefresh(); }); }
-  clearTimeout(pickRailT); clearTimeout(pickGeoT);
-  if (!q) { K.rail = null; K.geoLoading = false; pickRefresh(); return; }
+  clearTimeout(pickRailT); clearTimeout(pickGeoT); clearTimeout(pickStopT);
+  if (!q) { K.rail = null; K.natStops = null; K.natStopsQ = ''; K.geoLoading = false; pickRefresh(); return; }
   pickRailT = setTimeout(() => api('railSearch', { q, lat:S.data?.lat, lon:S.data?.lon }).then(r => { if (S.pick === K && K.q.trim() === q) { K.rail = r; pickRefresh(); } }).catch(() => {}), 200);
+  pickStopT = setTimeout(() => api('stopSearch', { q, lat:S.data?.lat ?? null, lon:S.data?.lon ?? null }).then(r => { if (S.pick === K && K.q.trim() === q) { K.natStopsQ = q; K.natStops = (r && Array.isArray(r.list)) ? r.list : []; pickRefresh(); } }).catch(() => {}), 200);
   // 台灣地址分片（/geocode）或一般地標（/geoSearch）；缺資料縣市不提供自動完成，須按 Enter 或點鈕才查
   const gk = geoKindOf(q); K.geoLoading = false;
   if (q.length >= 2 && !gk.missing) pickGeoT = setTimeout(() => runPickGeo(K, q, gk.act), 700);
@@ -7863,7 +8185,7 @@ async function refresh(part, manual, auto) {   // part＝'bus'／'bike'／'rail'
     const onEarly = part ? null : e => { if (tok !== S.refTok) return; S.snapshotTag = null; S.snapshotAt = null; const prev = S.data; if (prev && prev.bikes && prev.bikes.length && !prev.bikeError) { e.bikes = prev.bikes; e.favs = { ...e.favs, bike: (prev.favs && prev.favs.bike) || {} }; }
       const back = keepOld(e); S.data = e; S.error = null; S.partErr = {}; S.lastFetch = S.busAt = S.railNearAt = Date.now(); back();
       if (S.tab !== 'settings' && (!document.activeElement || document.activeElement.id !== 'q')) render(); else renderStatus(); };
-    // v2.49.27: 第一屏不等 /pda/stops，/od/eta 回來後先畫卡片
+    // v2.60.30：站牌清單回來先畫第一屏，即時到站與雲端時刻表回來後更新卡片
     const onBusEarly = (auto || (part && part !== 'bus')) ? null : e => {   // Opus：定時更新不走提早階段（照 v2.49.26）
       if (tok !== S.refTok) return;
       // Opus：只有站名的階段，畫面上已經有公車卡片（快照或上一次結果）時不蓋掉，避免已有的到站時間變成「…」
@@ -8047,7 +8369,7 @@ document.addEventListener('click', e => {
     case 'planNew': if (document.activeElement) document.activeElement.blur(); openPlan(); break;
     case 'planPick': openPick(el.dataset.v); break;
     case 'planSwap': { const P = S.plan; [P.o, P.d] = [P.d, P.o]; planChanged(); break; }   // v2.33.0：交換後不自動規劃
-    case 'planWhen': S.plan.when = el.dataset.v; if (el.dataset.v !== 'now' && !S.plan.time) S.plan.time = localIso(new Date(Date.now() + 15 * 60000)); planChanged(); break;
+    case 'planWhen': S.plan.when = el.dataset.v; if (el.dataset.v !== 'now' && !S.plan.time) S.plan.time = localIso(new Date()); planChanged(); break;
     case 'planMode': S.plan.modes[el.dataset.v] = S.plan.modes[el.dataset.v] ? 0 : 1; planSavePref(); planChanged(); break;
     case 'planGo': planGo(false); break;
     case 'planMore': planGo(true); break;
@@ -8125,7 +8447,7 @@ document.addEventListener('click', e => {
     case 'swapDir': if (S.route) { S.route.dirNum = S.route.dirNum === 1 ? 0 : 1; S.route.dest = null; S.routeData = null; renderRoute(); loadRoute(true); } break;
     case 'stop': if (o) stopSheet(o); break;
     case 'bikeSheet': if (o) bikeSheet(o); break;
-    case 'stopAt': if (o) { const s0 = { ...o, dist:null, routes:[] }; stopSheet(s0); $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
+    case 'stopAt': if (o) { const s0 = { ...o, dist:null, routes:[] }; if (S.sheet?.type === 'stop' && stopKeyOf(S.sheet.s) && stopKeyOf(S.sheet.s) === stopKeyOf(s0) && !document.getElementById('sheetWrap').hidden) break; stopSheet(s0); $('#sheet').insertAdjacentHTML('beforeend', '<div class="note" id="atLoad">讀取到站時間中…</div>');
       api('stopAt', { ...o, uLat:S.data?.lat, uLon:S.data?.lon }).then(s => { if (S.sheet?.s === s0) stopSheet(s, true); }).catch(e => { const n = $('#atLoad'); if (n) n.outerHTML = failBox('到站時間：' + (e.message || e), 'stopAt', `data-i="${reg(o)}"`); }); } break;
     // 讀取失敗後的「重試」：只在按下時重讀一次
     case 'retry': S.error = null; render(); refresh(); break;
@@ -9309,9 +9631,12 @@ async function demo(action, p) {
   /* ---------- 底部抽屜：內容依序浮上，車位數字從 0 跑上來 ---------- */
   if (typeof openSheet === 'function') {
     const orig = openSheet;
-    openSheet = function () {
+    openSheet = function (html, opts) {
+      const w = document.getElementById('sheetWrap');
+      const wasOpen = !!(w && !w.hidden && w.classList.contains('open'));
+      const isStop = S.sheet?.type === 'stop';
       const r = orig.apply(this, arguments);
-      if (!RM()) {
+      if (!RM() && !isStop && !(opts && opts.noAnim) && !wasOpen) {
         const sh = document.getElementById('sheet');
         [...sh.children].filter(c => !c.classList.contains('grab')).slice(0, 10).forEach((c, i) =>
           anim(c, [{ opacity: 0, transform: 'translateY(20px)' }, { opacity: 1, transform: 'none' }], { duration: 700, delay: 90 + i * 45, easing: SPRING, fill: 'backwards' }));
@@ -9440,7 +9765,7 @@ async function demo(action, p) {
 
   const minDay = () => min && new Date(min.getFullYear(), min.getMonth(), min.getDate());
   const outDay = d => (min && dayKey(d) < dayKey(min)) || (max && dayKey(d) > dayKey(max));
-  const defVal = () => { if (dt) { const d = new Date(Date.now() + 15 * 60000); d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0); return d; }
+  const defVal = () => { if (dt) { const d = new Date(); d.setSeconds(0, 0); return d; }
     const t = new Date(); t.setHours(0, 0, 0, 0); return min && t < min ? minDay() : t; };
 
   function placePill() {
@@ -9587,7 +9912,7 @@ async function demo(action, p) {
   enhance();
   // v2.60.3：規劃頁「出發：現在」時間面板。opt = { when:'now'|'dep'|'arr', time:'YYYY-MM-DDTHH:MM' }，done(v) 收到 { when, time }
   window.fxPlanWhen = (opt, done) => {
-    const d0 = new Date(Date.now() + 15 * 60000); d0.setMinutes(Math.ceil(d0.getMinutes() / 5) * 5, 0, 0);
+    const d0 = new Date(); d0.setSeconds(0, 0);
     const fake = { type: 'datetime-local', value: opt && opt.when !== 'now' && opt.time && parse(opt.time, true) > new Date() ? opt.time : fmt(d0, true), min: fmt(new Date(), true), max: '' };
     open(fake, { mode: opt && opt.when === 'arr' ? 'arr' : 'dep', done });
   };
@@ -9604,7 +9929,7 @@ async function demo(action, p) {
   const NONE_IC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8M8.5 8.5l5 5M13.5 8.5l-5 5"/></svg>';
 
   /* ======================= 1＋2 搜尋區塊 ======================= */
-  const SS = { open: false, mode: null, pickActive: false, prev: new Set() };
+  const SS = { open: false, mode: null, pickActive: false, prev: new Set(), savedQ: '', savedScrollTop: 0, suspended: false };
   const W = document.createElement('div');
   W.className = 'sheet-wrap fx-ss'; W.id = 'ssWrap'; W.hidden = true;
   W.innerHTML = `<div class="scrim"></div><div class="sheet" role="dialog" aria-modal="true">
@@ -9654,7 +9979,7 @@ async function demo(action, p) {
   let postT = 0;
   const waitingTxt = t => /搜尋中|讀取中|下載|中…/.test(t);
   function post() {
-    if (!SS.open) return;
+    if (!SS.open || SS.suspended) return;
     const q = inp.value.trim(), txt = res.textContent;
     const waiting = waitingTxt(txt);
     box.classList.toggle('busy', !!q && waiting);
@@ -9693,7 +10018,7 @@ async function demo(action, p) {
   }
   function ssClose(why) {
     if (!SS.open) return;
-    SS.open = false; W.classList.remove('open'); inp.blur();
+    SS.open = false; SS.suspended = false; SS.savedQ = ''; SS.savedScrollTop = 0; W.classList.remove('ss-behind', 'open'); inp.blur();
     if (why !== 'map') SS.pickActive = false;
     const mode = SS.mode;
     if (mode === 'home') S.q = '';
@@ -9701,7 +10026,29 @@ async function demo(action, p) {
     setTimeout(() => { if (!SS.open) { W.hidden = true; res.innerHTML = ''; } }, 300);
     if (why !== 'act' && (mode === 'home' || mode === 'bus')) render();
   }
+  function resumeIfReady() {
+    if (!SS.open || !SS.suspended) return;
+    if (S.page) return;
+    const sw = document.getElementById('sheetWrap');
+    if (sw && !sw.hidden) return;
+    W.classList.remove('ss-behind');
+    inp.value = SS.savedQ ?? inp.value;
+    S.q = inp.value;
+    if (!res.children.length && inp.value.trim()) fill();
+    const y = SS.savedScrollTop || 0;
+    res.scrollTop = y;
+    requestAnimationFrame(() => { if (SS.open && res) res.scrollTop = y; });
+    SS.suspended = false;
+  }
   window.fxSearchClose = ssClose;
+  window.__ssResumeIfReady = resumeIfReady;
+  window.__ssFillHome = () => {
+    if (!SS.open || SS.mode !== 'home' || SS.suspended) return false;
+    const y = res.scrollTop;
+    fill();
+    res.scrollTop = y;
+    return true;
+  };
 
   // 鍵盤：區塊頂在鍵盤上方
   const VV = window.visualViewport;
@@ -9760,11 +10107,20 @@ async function demo(action, p) {
     const tend = () => { if (!t) return; const x = t; t = null; if (!x.on) return; sheet.classList.remove('drag'); sheet.style.transform = ''; if (x.dy > 90) ssClose(); };
     sheet.addEventListener('touchend', tend); sheet.addEventListener('touchcancel', tend);
   })();
-  // 點了結果：區塊先收起，原本的動作照常執行
+  // 點了結果：首頁搜尋進入詳情時保留狀態於底層，返回時恢復；其餘模式先收起
+  const KEEP_DETAIL_ACTS = new Set(['route', 'rail', 'stop', 'stopAt', 'bikeSheet', 'bikeAt']);
   W.addEventListener('click', e => {
     const el = e.target.closest('[data-act]'); if (!el || !res.contains(el)) return;
     const act = el.dataset.act;
     if (act === 'pickSel' || act === 'geoManualPick' || act === 'geoManualBf') return;   // pickSel／手動地址搜尋不先關閉
+    if (SS.mode === 'home' && KEEP_DETAIL_ACTS.has(act)) {
+      SS.savedScrollTop = res.scrollTop || 0;
+      SS.savedQ = inp.value;
+      SS.suspended = true;
+      W.classList.add('ss-behind');
+      inp.blur();
+      return;
+    }
     ssClose(act === 'mapPick' ? 'map' : 'act');
   }, true);
   // 入口：首頁、公車的搜尋按鈕
@@ -9791,9 +10147,17 @@ async function demo(action, p) {
     return h.replace(/<label class="box">([\s\S]*?)<input[^>]*id="bfq"[^>]*><\/label>/, (m, ic) =>
       `<button type="button" class="box" data-act="fxSS" data-v="bus">${ic}<span class="ph">要去哪？列出會到的路線</span></button>`).replace('<div id="bfSug"></div>', '');
   };
-  // 有非同步結果時（例如車站搜尋）主畫面會重畫：搜尋區塊跟著更新
+  // 有非同步結果時（例如車站搜尋）主畫面會重畫：搜尋區塊跟著更新（保留 scrollTop；進入詳情暫停期間不重洗）
   const oRender = render;
-  render = function () { const r = oRender.apply(this, arguments); if (SS.open && SS.mode === 'home') fill(); return r; };
+  render = function () {
+    const r = oRender.apply(this, arguments);
+    if (SS.open && SS.mode === 'home' && !SS.suspended) {
+      const y = res.scrollTop;
+      fill();
+      res.scrollTop = y;
+    }
+    return r;
+  };
 
   // 路線規劃：選起點／終點改用區塊
   openPick = function (which) {
@@ -9848,10 +10212,84 @@ async function demo(action, p) {
       <div class="btns" style="${s.lat ? '' : 'grid-template-columns:1fr'}">${s.lat ? `<button class="btn pri" data-act="nav" data-lat="${s.lat}" data-lon="${s.lon}">${I.nav}步行前往</button>` : ''}
         ${rs.length ? `<button class="btn sec2 ${allFav ? 'on' : ''}" data-act="fxFavStop" data-i="${reg(s)}">${allFav ? I.star : I.starO}${allFav ? '已收藏' : '收藏'}</button>` : ''}</div>`;
   }
+  function patchStopSheetLive(s) {
+    const sh = document.getElementById('sheet');
+    if (!sh || !S.sheet || S.sheet.type !== 'stop') return false;
+    sh.querySelector('#atLoad')?.remove();
+    const rs = stopRoutes(s);
+    const rows = [...sh.querySelectorAll('.fx-stoplist .rrow[data-rk]')];
+    const rowKeysMatch = rs.length > 0 && rows.length === rs.length && rs.every((r, i) => rows[i].dataset.rk === `${r.routeUID || ''}|${r.dirNum ?? 0}`);
+    if (rowKeysMatch) {
+      S.sheet.s = s;
+      const first = rs[0], fe = first ? eta(first) : null;
+      const firstNm = first ? (window.normBusName ? window.normBusName(first.route) : first.route) : '';
+      const fcls = !fe ? 'c-off' : (fe.k === 'off' ? 'c-off' : 'c-ok');
+      const kpiB = sh.querySelector('.nums .num:first-child b');
+      if (kpiB) {
+        kpiB.className = fcls;
+        kpiB.style.fontSize = fe && fe.t.length > 4 ? '24px' : '';
+        const wantedHtml = `${fe ? esc(fe.t) : '—'}${first ? `<span class="fx-numsub">${esc(firstNm)}</span>` : ''}`;
+        if (kpiB.innerHTML !== wantedHtml) kpiB.innerHTML = wantedHtml;
+      }
+      for (let i = 0; i < rs.length; i++) {
+        const r = rs[i], row = rows[i];
+        const e = eta(r);
+        const pill = row.querySelector('.eta');
+        if (pill) {
+          const nxtCls = `eta ${e.k}`;
+          if (pill.className !== nxtCls) pill.className = nxtCls;
+          if (pill.textContent !== e.t) pill.textContent = e.t;
+        }
+        const sp = window.splitBusRouteName ? window.splitBusRouteName(r.route) : { name: r.route, note: '' };
+        const rn = r.routeNote || sp.note || '';
+        const ro = { ...r, route: sp.name || r.route, ...(rn ? { routeNote: rn } : {}), stopName: s.name };
+        row.dataset.i = String(reg(ro));
+        const dEl = row.querySelector('.rdest');
+        const dt = destTxt(r);
+        if (dEl && dEl.textContent !== dt) dEl.textContent = dt;
+      }
+      if (s._updAt) {
+        const pEl = sh.querySelector('.pupd');
+        const txt = updTxt(s._updAt);
+        if (pEl && txt) pEl.innerHTML = `<i></i>${txt}`;
+        else if (!pEl && txt) {
+          const addr = sh.querySelector('.addr');
+          if (addr) addr.insertAdjacentHTML('afterend', pupd(s._updAt));
+        }
+      }
+      return true;
+    }
+    const existingList = sh.querySelector('.fx-stoplist');
+    const addr = sh.querySelector('.addr');
+    const numCount = sh.querySelector('.nums .num:nth-child(2) b');
+    const kpiB = sh.querySelector('.nums .num:first-child b');
+    if (existingList && addr) {
+      S.sheet.s = s;
+      addr.textContent = `${s.dist != null ? `距離${distTxt(s.dist)}・` : ''}${rs.length}條路線`;
+      if (numCount) numCount.textContent = String(rs.length);
+      const first = rs[0], fe = first ? eta(first) : null;
+      const firstNm = first ? (window.normBusName ? window.normBusName(first.route) : first.route) : '';
+      const fcls = !fe ? 'c-off' : (fe.k === 'off' ? 'c-off' : 'c-ok');
+      if (kpiB) {
+        kpiB.className = fcls;
+        kpiB.style.fontSize = fe && fe.t.length > 4 ? '24px' : '';
+        kpiB.innerHTML = `${fe ? esc(fe.t) : '—'}${first ? `<span class="fx-numsub">${esc(firstNm)}</span>` : ''}`;
+      }
+      const nextBody = stopBlock(s, 0).replace(/<div class="stop.*?>/, '<div class="stop fx-stoplist" style="background:none;border:0;padding:0;margin:0">').replace(/<div class="stop-h">[\s\S]*?<\/div>/, '');
+      existingList.outerHTML = nextBody;
+      return true;
+    }
+    return false;
+  }
   const oStop = stopSheet;
-  stopSheet = function (s) {
+  stopSheet = function (s, nwtDone) {
+    const sw = document.getElementById('sheetWrap');
+    const curOpen = !!(sw && !sw.hidden && S.sheet?.type === 'stop');
+    const sameStop = curOpen && (S.sheet.s === s || (stopKeyOf(S.sheet.s) && stopKeyOf(S.sheet.s) === stopKeyOf(s)));
+    if (!nwtDone && sameStop) return;
+    if (nwtDone && sameStop && patchStopSheetLive(s)) return;
     const os = openSheet;
-    openSheet = () => os(stopHtml(s));
+    openSheet = (html, opts) => os(stopHtml(s), { ...(opts || {}), noAnim: curOpen || !!nwtDone });
     try { return oStop.apply(this, arguments); } finally { openSheet = os; }
   };
 
@@ -10321,6 +10759,7 @@ async function demo(action, p) {
     }
     if (ret.mode === 'cardTT') reopenCardTT(ret);
     else reopenCardLive(ret);
+    if (!S.page && typeof window.__ssResumeIfReady === 'function') window.__ssResumeIfReady();
   }
   closeRoute = function (quiet) {
     if (S.page === 'line' && S.fxLineFromCard && S.fxLineReturn) {

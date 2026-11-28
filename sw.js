@@ -1,6 +1,6 @@
 // 極速通勤 Service Worker：快取優先（同源 GET 有快取直回，換版靠 VERSION）；即時資料不攔截
-// build 2.60.1
-const VERSION = "jisu-v2.60.27";
+// build 2.60.31
+const VERSION = "jisu-v2.60.31";
 const SHELL = [
   "./", "./index.html", "./geocode.js", "./data.js", "./busdirect.js", "./s2stime.js", "./config.js", "./manifest.webmanifest",
   "./data/pda-thb-map.json",
@@ -27,7 +27,7 @@ self.addEventListener("message", e => {
 
 self.addEventListener("fetch", e => {
   const req = e.request, url = new URL(req.url);
-  if (url.hostname === "www.thsrc.com.tw" || url.pathname.endsWith("/StationCrowdForecast.json") || url.pathname === "/thsr-crowd" || url.pathname.endsWith("/thsr-crowd") || url.pathname === "/admin/monitor" || url.pathname.endsWith("/admin/monitor")) return; // v2.60.16/v2.60.17/v2.60.27：即時監測與高鐵預測絕不攔截、不快取
+  if (url.hostname === "www.thsrc.com.tw" || url.pathname.endsWith("/StationCrowdForecast.json") || url.pathname === "/thsr-crowd" || url.pathname.endsWith("/thsr-crowd") || url.pathname.startsWith("/admin/monitor") || url.pathname.includes("/admin/monitor")) return; // v2.60.16/v2.60.17/v2.60.28：即時監測與高鐵預測絕不攔截、不快取
   if (req.method !== "GET" || url.origin !== location.origin) return; // TDX 等外部請求不攔截
   if (url.pathname.endsWith("/sw.js")) return; // sw.js 本身不攔截
 
