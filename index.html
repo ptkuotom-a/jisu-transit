@@ -2173,6 +2173,19 @@ body[data-tab="settings"] #fixedUpd{display:none}
 .tmain .tt .tt-txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tmain .tt .tt-note{display:block;margin-top:2px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+/* v2.60.27：設定 › 即時資訊監測（管理者專用） */
+.wrap.mon-wrap{max-width:680px}
+.mon-top-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px 10px;color:var(--muted);font-size:13px}
+.mon-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:14px 10px;margin-bottom:14px;text-align:center}
+.mon-kpi{min-width:0}
+.mon-kpi b{display:block;font-size:26px;font-weight:900;line-height:1.1;font-variant-numeric:tabular-nums}
+.mon-kpi span{display:block;margin-top:4px;font-size:12.5px;color:var(--muted);font-weight:600}
+.mon-err{background:rgba(255,91,79,.12);border:1px solid rgba(255,91,79,.38);border-radius:16px;padding:10px 14px;margin:0 0 12px;color:#FF5B4F;font-size:13.5px;line-height:1.45}
+.mon-code{color:var(--dim);font-size:12.5px;font-weight:600;margin-left:6px;letter-spacing:.2px}
+.mon-st{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:700;white-space:nowrap}
+.mon-st i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+.mon-ok{color:#C6F135}.mon-slow{color:#FFB03A}.mon-bad{color:#FF5B4F}.mon-done{color:#8E918D}
+
 </style>
 </head>
 <body>
@@ -2229,7 +2242,7 @@ body[data-tab="settings"] #fixedUpd{display:none}
 // v2.50.0：跟 v2.49.30 一樣只有網址帶 ?demo 才用示範資料；data.js 沒載入時不偷偷改用假資料，改顯示錯誤
 const DEMO = /[?&]demo/.test(location.search);
 const DATAJS_ERR = '資料程式（data.js）載入失敗';
-const APP_VERSION = 'v2.60.26';   // 要跟 sw.js 的 VERSION（jisu-v2.60.20）一致；SW 回報版本前先顯示這個
+const APP_VERSION = 'v2.60.27';   // 要跟 sw.js 的 VERSION（jisu-v2.60.27）一致；SW 回報版本前先顯示這個
 const NO_DATA_JS = !DEMO && typeof window.dataApi !== 'function';
 if (NO_DATA_JS) window.dataApi = () => Promise.reject(new Error(DATAJS_ERR));
 
@@ -2392,6 +2405,7 @@ function pillSettle(pill, to, ms = 220) {   // 從目前位置滑到 to 按鈕�
 }
 const TAB_ORDER = ['home','bus','bike','rail'];
 function setTab(k) {   // v2.37.0：已在頂端就不 scrollTo（iOS 會讓上方標題跳一下）；有捲動才在換完內容後回頂端
+  if (typeof monStop === 'function') monStop();
   if (S.tab && S.tab !== k && S.tab !== 'settings') S.prevTab = S.tab;
   S.tab = k;
   const sc = document.scrollingElement || document.documentElement, y = sc.scrollTop || window.scrollY || 0;
@@ -4139,6 +4153,160 @@ if (typeof window !== 'undefined') window.openAdv = openAdv;
 function advHtml() {
   return `<div class="wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:34px">進階設定</h1></div></div>${vAdvanced()}${S.auth?.role === 'admin' ? s2sHtml() : ''}</div>`;
 }
+// ---------- v2.60.27：設定 › 即時資訊監測（僅管理者） ----------
+const MON_LIST = [
+  ['TPE','臺北'], ['NWT','新北'], ['TAO','桃園'], ['TXG','臺中'], ['TNN','臺南'], ['KHH','高雄'],
+  ['KEE','基隆'], ['THB','公路客運'], ['ILA','宜蘭'], ['HSZ','新竹市'], ['HSQ','新竹縣'], ['MIA','苗栗'],
+  ['CHA','彰化'], ['NAN','南投'], ['YUN','雲林'], ['CYI','嘉義市'], ['CYQ','嘉義縣'], ['PIF','屏東'],
+  ['TTT','臺東'], ['HUA','花蓮'], ['PEN','澎湖'], ['KIN','金門'], ['LIE','連江'], ['BPS','竹苗客運'],
+];
+const MON = { timer:null, loading:false, data:null, err:null, serverNowMs:0, clientAtMs:0, tok:0 };
+function monFmtAgo(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return '尚未成功';
+  if (sec < 60) return `${Math.round(sec)} 秒前`;
+  if (sec < 3600) return `${Math.round(sec / 60)} 分前`;
+  return `${(sec / 3600).toFixed(1).replace(/\.0$/, '')} 小時前`;
+}
+function monAllowedSec(src, code) {
+  const c = code || src?.code || '';
+  if (c === 'TPE' || c === 'NWT' || c === 'KHH') return Math.max(120, 60 + 90);
+  const hasBus = ((src.hot || 0) > 0) || ((src.vehicles_routes || 0) > 0);
+  const base = c === 'TNN' ? (hasBus ? 120 : ((src.warm_min || 5) * 60)) : (hasBus ? 60 : ((src.warm_min || 5) * 60));
+  return Math.max(base * 2, base + 90);
+}
+function monClassify(src, nowMs, code) {
+  if (!src || src.missing) return { state:'err', text:'狀態檔讀不到' };
+  const routes = src.routes || 0, skipped = src.skipped || 0;
+  const skipAllMs = src.skip_all_until ? Date.parse(src.skip_all_until) : 0;
+  if ((skipAllMs > nowMs) || (routes > 0 && skipped >= routes)) {
+    return { state:'done', text:'全部收班，停到明早 05:00' };
+  }
+  if (routes <= 0) return { state:'err', text:'沒有路線資料' };
+  const cyc = src.cycle || {};
+  const lastOkMs = src.last_ok ? Date.parse(src.last_ok) : 0;
+  const ageSec = lastOkMs ? Math.max(0, Math.round((nowMs - lastOkMs) / 1000)) : Infinity;
+  const lastErrMs = src.last_error_at ? Date.parse(src.last_error_at) : 0;
+  const pausedMs = src.paused_until ? Date.parse(src.paused_until) : 0;
+  const stillFailing = (cyc.failed || 0) > 0 || (lastErrMs > 0 && (!lastOkMs || lastErrMs > lastOkMs)) || pausedMs > nowMs;
+  const maxSec = monAllowedSec(src, code);
+  const cycZero = (cyc.sent || 0) > 0 && (cyc.ok || 0) === 0;
+  const overdueFail = ageSec > maxSec && stillFailing;
+  if (cycZero || overdueFail) {
+    const reason = pausedMs > nowMs ? '來源暫停保護中' : src.last_error ? String(src.last_error) : cycZero ? '這輪全失敗' : '逾時且仍在失敗';
+    const agoTxt = lastOkMs ? `最近成功 ${monFmtAgo(ageSec)}` : '尚無成功紀錄';
+    return { state:'err', text:`${reason}・${agoTxt}` };
+  }
+  const h = src.host || {}, backoff = h.backoff_level || 0, gapMs = h.min_gap_ms || 0;
+  if (backoff > 0 || gapMs > 0) {
+    const gapSec = gapMs >= 1000 && gapMs % 1000 === 0 ? String(gapMs / 1000) : String(Math.round(gapMs / 100) / 10);
+    const reqN = cyc.sent || cyc.requests || 0;
+    const skPart = skipped > 0 ? `・收班 ${skipped} 條` : '';
+    return { state:'slow', text:`間距 ${gapSec} 秒、這輪送出 ${reqN} 筆${skPart}` };
+  }
+  const agoTxt = lastOkMs ? `最近成功 ${monFmtAgo(ageSec)}` : '正常更新中';
+  const skPart = skipped > 0 ? `・收班 ${skipped} 條` : '';
+  return { state:'ok', text:`${agoTxt}${skPart}` };
+}
+function monNowMs() {
+  if (MON.serverNowMs && MON.clientAtMs) return MON.serverNowMs + Math.max(0, Date.now() - MON.clientAtMs);
+  return Date.now();
+}
+function monCanPoll() {
+  return !DEMO && S.auth?.role === 'admin' && S.page === 'mon' && (typeof document === 'undefined' || !document.hidden);
+}
+function monStop() {
+  if (MON.timer) { clearInterval(MON.timer); MON.timer = null; }
+  MON.tok++;
+  MON.loading = false;
+}
+function monStart() {
+  if (!monCanPoll()) { monStop(); return; }
+  if (!MON.timer) MON.timer = setInterval(() => { if (monCanPoll()) monFetch(); else monStop(); }, 30000);
+}
+async function monFetch() {
+  if (!monCanPoll() || MON.loading) return;
+  const base = getProxyUI();
+  const sess = (typeof getSession === 'function' ? getSession() : null) || S.auth;
+  if (!base || !sess?.token || sess.role !== 'admin') {
+    MON.err = '只有管理者可以使用';
+    if (S.page === 'mon') renderPage();
+    return;
+  }
+  const tok = ++MON.tok;
+  MON.loading = true;
+  if (S.page === 'mon') renderPage();
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const tm = ac ? setTimeout(() => ac.abort(), 8000) : 0;
+  try {
+    const r = await fetch(base + '/admin/monitor', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { 'x-session': sess.token },
+      ...(ac ? { signal: ac.signal } : {}),
+    });
+    const j = await r.json().catch(() => null);
+    if (tok !== MON.tok) return;
+    if (!r.ok || !j || !j.sources) throw new Error((j && j.message) || `讀取失敗（HTTP ${r.status}）`);
+    MON.data = j;
+    MON.err = null;
+    MON.serverNowMs = (j.now && Date.parse(j.now)) || Date.now();
+    MON.clientAtMs = Date.now();
+  } catch (e) {
+    if (tok !== MON.tok) return;
+    MON.err = e && e.name === 'AbortError' ? '監測資料請求逾時' : ((e && e.message) || '監測資料暫時讀不到');
+  } finally {
+    if (tm) clearTimeout(tm);
+    if (tok === MON.tok) {
+      MON.loading = false;
+      if (S.page === 'mon') renderPage();
+    }
+  }
+}
+function openMon() {
+  if (DEMO || S.auth?.role !== 'admin') return;
+  S.back = []; S.page = 'mon';
+  const p = $('#routePage'); if (!p.classList.contains('open') && !reduceMotion()) slideEls(baseEls(), 0, -innerWidth * PARA, 280, () => slideEls(baseEls(), 0, 0, 0));
+  p.classList.add('open'); p.setAttribute('aria-hidden','false'); p.scrollTop = 0;
+  renderPage();
+  monStart();
+  monFetch();
+}
+function monFmtTime(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+function monHtml() {
+  if (DEMO || S.auth?.role !== 'admin') {
+    monStop();
+    return `<div class="wrap mon-wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:32px">即時資訊監測</h1></div></div><div class="mon-err">只有管理者可以使用</div></div>`;
+  }
+  const nowMs = monNowMs();
+  const stMap = { ok:['正常','mon-ok'], slow:['放慢','mon-slow'], err:['錯誤','mon-bad'], done:['收班','mon-done'] };
+  const counts = { ok:0, slow:0, err:0, done:0 };
+  let rowsHtml = '';
+  if (MON.data && MON.data.sources) {
+    for (const [code, label] of MON_LIST) {
+      const src = MON.data.sources[code];
+      const cls = monClassify(src, nowMs, code);
+      counts[cls.state]++;
+      const [stText, stClass] = stMap[cls.state];
+      rowsHtml += `<div class="row mon-row"><span class="t">${esc(label)}<span class="mon-code">${esc(code)}</span><small>${esc(cls.text)}</small></span><span class="mon-st ${stClass}"><i></i>${stText}</span></div>`;
+    }
+  }
+  const updText = MON.data ? `更新於 ${monFmtTime(MON.serverNowMs || nowMs)}` : (MON.loading ? '讀取監測資料中…' : '尚未更新');
+  const sumHtml = `<div class="mon-sum">
+    <div class="mon-kpi"><b class="mon-ok">${counts.ok}</b><span>正常</span></div>
+    <div class="mon-kpi"><b class="mon-slow">${counts.slow}</b><span>放慢</span></div>
+    <div class="mon-kpi"><b class="mon-bad">${counts.err}</b><span>錯誤</span></div>
+    <div class="mon-kpi"><b class="mon-done">${counts.done}</b><span>收班</span></div>
+  </div>`;
+  return `<div class="wrap mon-wrap"><div class="ptop"><button class="back" data-act="closeRoute">${I.back}返回</button><div class="rhead"><h1 style="font-size:32px">即時資訊監測</h1></div></div>
+    <div class="mon-top-meta"><span class="mon-upd">${esc(updText)}</span><button class="refresh${MON.loading ? ' spin' : ''}" data-act="monRefresh" aria-label="重新整理監測">${I.refresh}<span>重新整理</span></button></div>
+    ${MON.err ? `<div class="mon-err">${esc(MON.err)}</div>` : ''}
+    ${MON.data ? `${sumHtml}<div class="sg">${rowsHtml}</div>` : (!MON.err ? `<div class="note">${MON.loading ? '正在讀取全臺即時監測資料…' : '目前尚無資料'}</div>` : '')}
+  </div>`;
+}
+if (typeof window !== 'undefined') { window.openMon = openMon; window.monClassify = monClassify; window.MON_LIST = MON_LIST; window.monStop = monStop; window.monStart = monStart; }
 // ---------- JT-20261107-02：雙北站間旅行時間（TDX 加值 S2STravelTime，歷史推估）管理者一次匯入一條 ----------
 // 不會自動全部匯入：每按一次「匯入這一條」才打一次 TDX；「找下一條」只讀雲端資料，不打 TDX。
 // v2.49.11：匯入失敗時顯示 Worker 回的診斷原文（全部當文字 escape；0 照實顯示；沒有的欄位寫「未提供」，不猜）
@@ -4662,7 +4830,7 @@ function vAccount() {
   return `<div class="sgh">帳號</div>
   <div class="sg">
     <div class="row"><span class="t"><b>${esc(S.auth.name || '')}</b></span><span class="v">${ROLE_ZH[S.auth.role] || ''}</span></div>
-    ${S.auth.role === 'admin' ? `<button class="row" data-act="openAdv"><span class="t">進階設定<small>Worker 網址、更新時刻表、每日訪客檢查</small></span><span class="chev">${I.chev}</span></button>` : ''}
+    ${S.auth.role === 'admin' ? `<button class="row" data-act="openAdv"><span class="t">進階設定<small>Worker 網址、更新時刻表、每日訪客檢查</small></span><span class="chev">${I.chev}</span></button><button class="row" data-act="openMon"><span class="t">即時資訊監測<small>全臺公車即時來源狀態</small></span><span class="chev">${I.chev}</span></button>` : ''}
     <button class="row act bad" data-act="logout"><span class="t">登出</span></button>
   </div>`;
 }
@@ -5686,6 +5854,7 @@ function openRoute(r) {
   renderRoute(); loadRoute(true, false, true);
 }
 function closeRoute(quiet) {
+  if (typeof monStop === 'function') monStop();
   if ((S.page === 'bustt' || (S.page === 'route' && S.routeSubTab === 'tt')) && S.route) {   // v2.44.0／v2.60.14：公車時刻表 → 回路線頁
     if (!quiet) { popAnim(); return; }
     S.page = 'route'; S.routeSubTab = 'stops'; S.bustt = null; renderRoute(); $('#routePage').scrollTop = S.routeScroll || 0; return;
@@ -6220,8 +6389,8 @@ function openPlan(resetTime = true) {
   renderPage();
   if ((P.o && P.o.here && P.o.lat == null) || (P.d && P.d.here && P.d.lat == null)) planFillHere().then(() => { if (S.page === 'plan') renderPage(); });
 }
-const PLAN_PAGES = ['plan','planPick','planDetail','adv','siri'];
-function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : pg === 'siri' ? siriHtml() : ''; }
+const PLAN_PAGES = ['plan','planPick','planDetail','adv','siri','mon'];
+function pageHtml(pg) { return pg === 'plan' ? planHtml() : pg === 'planPick' ? pickHtml() : pg === 'planDetail' ? detailHtml() : pg === 'adv' ? advHtml() : pg === 'siri' ? siriHtml() : pg === 'mon' ? monHtml() : ''; }
 let PL2_MAP = null, pl2MapEl = null;
 // v2.60.3（第 4 條根因）：返回動畫時，底下墊的上一頁（section.page.under，在 #routePage 前面）也有一份 #planHeroMap。
 // 以前用整份文件的第一個 #planHeroMap，找到的是墊底那份，地圖掛進去後墊底頁被移除，地圖跟著離開畫面（容器 0×0），回到輸入頁只看到黑底。一律只找 #routePage 裡的。
@@ -6310,6 +6479,7 @@ function fxMapRelease() {   // 離開規劃頁：釋放規劃頁的地圖（WebG
 }
 
 function renderPage() {
+  if (S.page !== 'mon' && typeof monStop === 'function') monStop();
   if (typeof fxMapRelease === 'function') fxMapRelease();
   if (!PLAN_PAGES.includes(S.page)) return;
   const pg = $('#routePage'); pg.innerHTML = pageHtml(S.page);
@@ -7996,6 +8166,8 @@ document.addEventListener('click', e => {
     }
     case 'saveProxy': saveProxy(); break;
     case 'openAdv': openAdv(); break;
+    case 'openMon': openMon(); break;
+    case 'monRefresh': monFetch(); break;
     case 'railSys': {
       const cur = new Set(S.settings.railSys || []); const k = el.dataset.v;
       cur.has(k) ? cur.delete(k) : cur.add(k);
@@ -8731,17 +8903,24 @@ function lgErr(msg, fields) {
 async function checkAuth() {
   if (DEMO) return;
   const s = localStorage.getItem("jisu_skip_me") ? getSession() : await api('authMe').catch(() => null);
-  if (!s) { S.auth = null; showLogin('登入已失效，請重新登入'); return; }
+  if (!s) { if (typeof monStop === 'function') monStop(); S.auth = null; showLogin('登入已失效，請重新登入'); return; }
   const changed = !S.auth || S.auth.role !== s.role || S.auth.name !== s.name;
-  S.auth = s; if (changed && S.tab === 'settings') render();
+  S.auth = s; if (S.auth.role !== 'admin' && typeof monStop === 'function') monStop();
+  if (changed && S.tab === 'settings') render();
 }
 async function doLogout() {
   if (!confirm('確定要登出嗎？')) return;
+  if (typeof monStop === 'function') monStop();
+  MON.data = null; MON.err = null;
   await api('authLogout').catch(() => {});
   S.auth = null; S.s2s = null;   // JT-20261108-01：登出清掉這頁記憶體裡的拒收樣本
   showLogin();
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (typeof monStop === 'function') monStop(); }
+  else if (typeof monCanPoll === 'function' && monCanPoll()) { monStart(); monFetch(); }
+  if (document.visibilityState === 'visible' && S.auth && !DEMO) checkAuth();
+});
 async function startApp() {
   if (appStarted) {
     render(); refresh(); stationLink();
